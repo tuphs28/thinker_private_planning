@@ -1,0 +1,60 @@
+nohup [] &> log/transformer.log &
+cd C:\Users\chung\Documents\RS\thinker\torchbeast
+
+python -m torchbeast.monobeast --env Sokoban-v0 --num_actors 48 --use_lstm --entropy_cost 0.001 --total_steps 100000000 --learning_rate 0.0004 --epsilon 0.01 --entropy_cost 0.01 --batch_size 32 --unroll_length 40 --num_buffers 60 --num_threads 48 --lamb 0.97 --xpid baseline_lstm
+
+python -m torchbeast.monobeast --env BreakoutNoFrameskip-v4 --use_tran --tran_layer_n 2 --tran_mem_n 4 --num_actors 48 --entropy_cost 0.001 --total_steps 100000000 --learning_rate 0.0004 --epsilon 0.01 --entropy_cost 0.01 --batch_size 32 --unroll_length 40 --num_buffers 60 --num_threads 48 --lamb 0.97 --xpid test
+
+
+python -m torchbeast.monobeast --env Sokoban-v0 --use_tran --num_im_actions 8 --num_actors 2 --xpid test
+
+nohup python -m torchbeast.monobeast --mode test --env Sokoban-v0 --use_tran --num_im_actions 8 --learning_rate 0.0003 --model_cost 84 --grad_norm_clipping 10 --xpid transformer_new_4 &> log/transformer_new_4.log &
+
+Cloud:=============================================================================================================================================
+ssh schk@cmh.mywire.org tmux attach -d -t 
+ssh -p 19523 root@ssh6.vast.ai -L 8080:localhost:8080
+ssh -p 16481 root@ssh5.vast.ai -L 8080:localhost:8080
+
+scp -P 25461 C:\Users\chung\Documents\RS\thinker\torchbeast\torchbeast\monobeast.py root@ssh6.vast.ai:~/Users/chung/Documents/RS/thinker/torchbeast/torchbeast
+scp -P 24417 root@ssh5.vast.ai:~/logs.tar.gz C:\Users\chung\Documents\logs
+
+scp C:\Users\chung\Documents\RS\thinker\torchbeast\torchbeast\*.py hk:~/RS/thinker/torchbeast/torchbeast
+scp C:\Users\chung\Documents\RS\thinker\torchbeast\torchbeast\*.py cam:~/RS/thinker/torchbeast/torchbeast
+scp -P 16481 C:\Users\chung\Documents\RS\thinker\torchbeast\torchbeast\*.py root@ssh5.vast.ai:~/RS/thinker/torchbeast/torchbeast
+
+Setup:=============================================================================================================================================
+cd C:\Users\chung\Documents\RS
+tar -czvf thinker.tar.gz thinker
+scp -P 27773 thinker.tar.gz root@ssh3.vast.ai:~
+
+tar -xvf thinker.tar.gz
+apt install python-opencv nano zip
+pip install pillow imageio scipy opencv-python gym==0.21.0 gym[accept-rom-license]==0.21.0 gym[atari]==0.21.0
+
+Results:=============================================================================================================================================
+old hyper (unroll_length:20):
+sokoban:
+baseline has an asy performance of ~5
+baseline with LSTM - not learning???
+transformer_v0.1 - not learning at all
+transformer_v0.2 - added shortcut and no grad from transformer: similar performance to baseline (though a bit slower)
+
+breakout:
+baseline has an asy performance of ~100
+transformer - learning when mem_n=1, layer_n=1, no dropout, no ff 
+
+new hyper
+baseline working well with asy perf. of ~7
+baseline with LSTM - not learning!
+transformer with no model - not learning!
+
+Running:=============================================================================================================================================
+hk:  [r_pos] python -m torchbeast.conv_monobeast --env Sokoban-v0 --learning_rate 0.0004 --entropy_cost 0.001 --reg_cost 0.1 --tran_t 1 --tran_layer_n 6 --tran_mem_n 8 --tran_ff_n 32 --tran_skip --tran_conv --tran_rpos
+uk:  [r_pos, long mem] python -m torchbeast.conv_monobeast --env Sokoban-v0 --learning_rate 0.0004 --entropy_cost 0.001 --reg_cost 0.1 --tran_t 1 --tran_layer_n 6 --tran_mem_n 16 --tran_ff_n 32 --tran_skip --tran_conv --tran_rpos
+v1: [r_pos, large, entro] python -m torchbeast.conv_monobeast --env Sokoban-v0 --learning_rate 0.0004 --entropy_cost 0.01 --reg_cost 0.1 --tran_t 1 --tran_layer_n 6 --tran_mem_n 8 --tran_ff_n 64 --tran_skip --tran_conv --tran_rpos
+v2: [r_pos, large] python -m torchbeast.conv_monobeast --env Sokoban-v0 --learning_rate 0.0004 --entropy_cost 0.001 --reg_cost 0.1 --tran_t 1 --tran_layer_n 6 --tran_mem_n 8 --tran_ff_n 32 --tran_skip --tran_conv --tran_rpos
+cam: [r_pos, flatten]  python -m torchbeast.conv_monobeast --env Sokoban-v0 --learning_rate 0.0004 --entropy_cost 0.001 --reg_cost 0.1 --tran_t 1 --tran_layer_n 6 --tran_mem_n 16 --tran_ff_n 256 --tran_skip --tran_rpos
+
+cd C:\Users\chung\Documents\RS\thinker\torchbeast
+python -m torchbeast.test_monobeast --env Sokoban-v0 --learning_rate 0.0002 --entropy_cost 0.005 --reg_cost 0.1 --tran_t 1 --tran_layer_n 1 --tran_mem_n 1 --tran_ff_n 32
+
