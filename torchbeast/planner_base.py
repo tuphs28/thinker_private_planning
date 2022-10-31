@@ -170,9 +170,10 @@ class Actor_net(nn.Module):
         core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))   
         
         policy_logits = self.policy(core_output)
-        im_policy_logits = self.im_policy(core_output)
+        im_policy_logits = self.im_policy(core_output)        
+        reset_policy_logits_p = self.reset(core_output)
+        reset_policy_logits = torch.cat([reset_policy_logits_p, torch.zeros_like(reset_policy_logits_p)], dim=-1)   
         baseline = self.baseline(core_output)
-        reset_logits = self.reset(core_output)
         
         if self.gb_ste:
             if u is not None: 
@@ -181,9 +182,8 @@ class Actor_net(nn.Module):
             else:
                 u_action = None
                 u_reset = None
-            im_action, u_action = gumbel_softmax(im_policy_logits, self.temp, u=u_action, hard=True)
-            n_reset_logits = torch.cat([reset_logits, torch.zeros_like(reset_logits)], dim=-1)    
-            reset, u_reset = gumbel_softmax(n_reset_logits, self.temp, u=u_reset, hard=True)
+            im_action, u_action = gumbel_softmax(im_policy_logits, self.temp, u=u_action, hard=True)             
+            reset, u_reset = gumbel_softmax(reset_policy_logits, self.temp, u=u_reset, hard=True)
             reset = reset[:, 0]
             u = torch.cat([u_action, u_reset], dim=-1)
         elif self.ste:
@@ -191,12 +191,12 @@ class Actor_net(nn.Module):
             im_action_h = torch.multinomial(im_action_p, num_samples=1)
             im_action = (im_action_h - im_action_p).detach() + im_action_p
           
-            reset_p = torch.sigmoid(reset_logits)
+            reset_p = torch.sigmoid(reset_policy_logits_p)
             reset_h = torch.bernoulli(reset_p)
             reset = (reset_h - reset_p).detach() + reset_p
         else:
             im_action = F.softmax(im_policy_logits, dim=1)
-            reset = torch.sigmoid(reset_logits)
+            reset = torch.sigmoid(reset_policy_logits_p)
             
         
         action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
@@ -207,17 +207,19 @@ class Actor_net(nn.Module):
         
         policy_logits = policy_logits.view(T, B, self.num_actions)
         action = action.view(T, B)                
-        im_policy_logits = im_policy_logits.view(T, B, self.num_actions)
-        im_action = im_action.view(T, B, self.num_actions)        
-        baseline = baseline.view(T, B)
+        im_policy_logits = im_policy_logits.view(T, B, self.num_actions)        
+        im_action = im_action.view(T, B, self.num_actions)                
+        reset_policy_logits = reset_policy_logits.view(T, B, 2)
         reset = reset.view(T, B)     
+        baseline = baseline.view(T, B)
         
         ret_dict = dict(policy_logits=policy_logits[0],                         
                         action=action[0], 
                         im_policy_logits=im_policy_logits[0],                         
-                        im_action=im_action[0],                        
-                        baseline=baseline[0], 
+                        im_action=im_action[0],                                                
+                        reset_policy_logits=reset_policy_logits[0], 
                         reset=reset[0],
+                        baseline=baseline[0], 
                         reg_loss=reg_loss[0], )
         if self.gb_ste:
             ret_dict['uniform'] = u
@@ -272,6 +274,8 @@ class Actor_Wrapper(nn.Module):
                     v0 = v.clone()
                     logit0 = logit.clone()
                     if self.actor.gb_ste: u_list = []
+                    im_logit_list = []
+                    reset_logit_list = []
                 
                 time = F.one_hot(torch.tensor([t], device=device).long(), self.rec_t).tile([bsz, 1])                        
 
@@ -283,13 +287,19 @@ class Actor_Wrapper(nn.Module):
                 else:
                     u = None                    
                 
-                actor_output, core_state = self.actor(actor_input, done=done, core_state=core_state,
+                actor_output, core_state = self.actor(actor_input, 
+                                                      done=done, 
+                                                      core_state=core_state,
                                                       u=u)                
                 if self.actor.gb_ste: u_list.append(actor_output['uniform'].unsqueeze(1))
+                im_logit_list.append(actor_output['im_policy_logits'].unsqueeze(1))
+                reset_logit_list.append(actor_output['reset_policy_logits'].unsqueeze(1))
                 
                 if t == self.rec_t - 1:
                     if self.actor.gb_ste:
                         actor_output["uniform"] = torch.concat(u_list, dim=1)
+                        actor_output['im_policy_logits'] = torch.concat(im_logit_list, dim=1)
+                        actor_output['reset_policy_logits'] = torch.concat(reset_logit_list, dim=1)
                     if step == 0:
                         all_actor_output = {k: [v.unsqueeze(0)] for k, v in actor_output.items()}
                     else:
@@ -377,6 +387,8 @@ def define_parser():
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.01,
                         type=float, help="Entropy cost/multiplier.")
+    parser.add_argument("--im_entropy_cost", default=0.01,
+                        type=float, help="Entropy cost/multiplier.")    
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=1,
@@ -429,7 +441,7 @@ plogger = file_writer.FileWriter(
 )
 
 flags.device = None
-if not flags.disable_cuda and torch.cuda.is_available():
+if not flags.disable_cuda and torch.cuda.is_available(): 
     logging.info("Using CUDA.")
     flags.device = torch.device("cuda")
 else:
@@ -500,7 +512,7 @@ scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
-    "pg_loss", "baseline_loss", "entropy_loss"]
+    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss"]
 logger.info("# Step\t%s", "\t".join(stat_keys))
 
 step, stats, last_returns, tot_eps = 0, {}, deque(maxlen=400), 0
@@ -583,7 +595,7 @@ try:
         print_str =  "Steps %i @ %.1f SPS. Eps %i. L400 Return %f. Loss %f" % (step, sps, tot_eps, 
             np.average(last_returns) if len(last_returns) > 0 else 0., total_loss)
 
-        for s in ["pg_loss", "baseline_loss", "entropy_loss", "reg_loss"]:
+        for s in ["pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reg_loss"]:
             if s in stats:
                 print_str += " %s %f" % (s, stats[s])
 
@@ -604,12 +616,3 @@ finally:
 
 checkpoint()
 plogger.close()
-
-step = flags.total_steps + 1
-for thread in threads:
-     thread.join()
-
-for _ in range(flags.num_actors):
-    free_queue.put(None)
-for actor in actor_processes:
-    actor.join(timeout=1)     

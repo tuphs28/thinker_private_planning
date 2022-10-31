@@ -228,9 +228,15 @@ def learn(
         entropy_loss = flags.entropy_cost * compute_entropy_loss(
             learner_outputs["policy_logits"]
         )
+        im_entropy_loss = (1 / flags.rec_t) * flags.im_entropy_cost * (
+            compute_entropy_loss(torch.flatten(
+                learner_outputs["im_policy_logits"], start_dim=1, end_dim=2)) + 
+            compute_entropy_loss(torch.flatten(
+                learner_outputs["reset_policy_logits"], start_dim=1, end_dim=2)))
+
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
 
-        total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
+        total_loss = pg_loss + baseline_loss + entropy_loss + im_entropy_loss + reg_loss
 
         episode_returns = batch["episode_return"][batch["done"]]
         stats = {
@@ -240,6 +246,7 @@ def learn(
             "pg_loss": pg_loss.item(),
             "baseline_loss": baseline_loss.item(),
             "entropy_loss": entropy_loss.item(),
+            "im_entropy_loss": im_entropy_loss.item(),
             "reg_loss": reg_loss.item()
         }
 
@@ -264,9 +271,11 @@ def create_buffers(flags, obs_shape, num_actions) -> Buffers:
         episode_return=dict(size=(T + 1,), dtype=torch.float32),
         episode_step=dict(size=(T + 1,), dtype=torch.int32),
         policy_logits=dict(size=(T + 1, num_actions), dtype=torch.float32),
-        baseline=dict(size=(T + 1,), dtype=torch.float32),
-        last_action=dict(size=(T + 1,), dtype=torch.int64),
         action=dict(size=(T + 1,), dtype=torch.int64),
+        im_policy_logits=dict(size=(T + 1, flags.rec_t, num_actions), dtype=torch.float32),
+        reset_policy_logits=dict(size=(T + 1, flags.rec_t, 2), dtype=torch.float32),
+        last_action=dict(size=(T + 1,), dtype=torch.int64),        
+        baseline=dict(size=(T + 1,), dtype=torch.float32),        
         reg_loss=dict(size=(T + 1,), dtype=torch.float32),
         uniform=dict(size=(T + 1, flags.rec_t, num_actions+2), dtype=torch.float32)
     )
