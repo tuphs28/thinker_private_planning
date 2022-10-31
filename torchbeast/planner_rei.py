@@ -385,19 +385,19 @@ class ModelWrapper(gym.Wrapper):
         self.num_actions = env.action_space.n
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf,
-          shape=(4 + num_actions * 3 + self.rec_t, 1, 1), dtype=float)
+          shape=(5 + num_actions * 3 + self.rec_t, 1, 1), dtype=float)
         
     def reset(self, **kwargs):
         x = self.env.reset()
         self.cur_t = 0        
-        out = self.use_model(x, 0., 0, self.cur_t)        
+        out = self.use_model(x, 0., 0, self.cur_t, 1.)        
         return out.unsqueeze(-1).unsqueeze(-1)
     
     def step(self, action):  
         re_action, im_action, reset = action
         if self.cur_t < self.rec_t - 1:
           self.cur_t += 1
-          out = self.use_model(None, None, im_action, self.cur_t)          
+          out = self.use_model(None, None, im_action, self.cur_t, reset)          
           r = 0.
           done = False
           info = {'cur_t': self.cur_t}  
@@ -405,15 +405,16 @@ class ModelWrapper(gym.Wrapper):
         else:
           self.cur_t = 0
           x, r, done, info = self.env.step(re_action)          
-          out = self.use_model(x, r, re_action, self.cur_t )          
+          out = self.use_model(x, r, re_action, self.cur_t, 1.)          
           info['cur_t'] = self.cur_t
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info
         
-    def use_model(self, x, r, a, cur_t):
+    def use_model(self, x, r, a, cur_t, reset):
         # input: 
         # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
         # cur_t: int; reset at cur_t == 0  
         a = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)           
+        reset = torch.tensor([[reset]], dtype=torch.float32)
         if cur_t == 0:
           x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
           r = torch.tensor(r, dtype=torch.float32).unsqueeze(0)    
@@ -435,7 +436,7 @@ class ModelWrapper(gym.Wrapper):
           self.v0 = v.clone()
           self.logit0 = logit.clone()        
         time = F.one_hot(torch.tensor([cur_t], device=a.device).long(), self.rec_t)
-        out = torch.concat([a, r, v, logit, self.r0, self.v0, self.logit0, time], dim=-1)   
+        out = torch.concat([reset, a, r, v, logit, self.r0, self.v0, self.logit0, time], dim=-1)   
         return out[0]
         
 class Actor_net(nn.Module):    
@@ -658,7 +659,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args()
 
 raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 

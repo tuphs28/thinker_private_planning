@@ -232,7 +232,7 @@ class Actor_Wrapper(nn.Module):
         self.model = model
         self.num_actions = model.num_actions        
         self.rec_t = rec_t
-        self.obs_shape = (3 * num_actions + 4 + self.rec_t, 1, 1)        
+        self.obs_shape = (3 * num_actions + 5 + self.rec_t, 1, 1)        
         if actor is None:
             self.actor = Actor_net(obs_shape=self.obs_shape, num_actions=self.num_actions, flags=flags)
         else:
@@ -268,6 +268,8 @@ class Actor_Wrapper(nn.Module):
                 r = (reward if t == 0 else rs[-1]).unsqueeze(-1)
                 v = vs[-1].unsqueeze(-1)
                 logit = logits[-1]                    
+                re = (torch.ones(bsz, 1, device=state.device, dtype=torch.float32) if t == 0 else
+                  reset.unsqueeze(-1))  
                 
                 if t == 0:
                     r0 = r.clone()
@@ -279,7 +281,7 @@ class Actor_Wrapper(nn.Module):
                 
                 time = F.one_hot(torch.tensor([t], device=device).long(), self.rec_t).tile([bsz, 1])                        
 
-                actor_input = torch.concat([a, r, v, logit, r0, v0, logit0, time], dim=-1)     
+                actor_input = torch.concat([re, a, r, v, logit, r0, v0, logit0, time], dim=-1)     
                 actor_input = actor_input.unsqueeze(-1).unsqueeze(-1)
                 
                 if 'uniform' in x.keys():
@@ -311,8 +313,8 @@ class Actor_Wrapper(nn.Module):
                 if t < self.rec_t - 1:                
                     rs, vs, logits, encodeds = self.model.forward_encoded(encoded, im_action.unsqueeze(0), 
                                                                           one_hot=True)
-                    reset = reset.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-                    encoded = reset * encoded_reset + (1 - reset) * encodeds[-1]
+                    reset_ex = reset.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                    encoded = reset_ex * encoded_reset + (1 - reset_ex) * encodeds[-1]
         
         all_actor_output = {k: torch.concat(v) for k, v in all_actor_output.items()}
         return all_actor_output, core_state  
@@ -430,7 +432,7 @@ checkpoint = torch.load("../models/model_1.tar")
 model_learner.load_state_dict(checkpoint["model_state_dict"])  
 model_actor.load_state_dict(checkpoint["model_state_dict"])  
 
-logging.basicConfig(format='%(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(message)s', level=logging.DEBUG)            
 
 mp.set_sharing_strategy('file_system')
 

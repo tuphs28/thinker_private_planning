@@ -228,11 +228,14 @@ def learn(
         entropy_loss = flags.entropy_cost * compute_entropy_loss(
             learner_outputs["policy_logits"]
         )
-        im_entropy_loss = (1 / flags.rec_t) * flags.im_entropy_cost * (
-            compute_entropy_loss(torch.flatten(
-                learner_outputs["im_policy_logits"], start_dim=1, end_dim=2)) + 
-            compute_entropy_loss(torch.flatten(
-                learner_outputs["reset_policy_logits"], start_dim=1, end_dim=2)))
+        if flags.im_entropy_cost > 0:
+            im_entropy_loss = (1 / flags.rec_t) * flags.im_entropy_cost * (
+                compute_entropy_loss(torch.flatten(
+                    learner_outputs["im_policy_logits"], start_dim=1, end_dim=2)) + 
+                compute_entropy_loss(torch.flatten(
+                    learner_outputs["reset_policy_logits"], start_dim=1, end_dim=2)))
+        else:
+            im_entropy_loss = torch.tensor(0.)
 
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
 
