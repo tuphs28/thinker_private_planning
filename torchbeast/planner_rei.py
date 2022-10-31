@@ -277,7 +277,8 @@ def learn(
         re_entropy_loss = compute_entropy_loss(learner_outputs["policy_logits"])
         im_entropy_loss = compute_entropy_loss(learner_outputs["im_policy_logits"])                                       
         reset_entropy_loss = compute_entropy_loss(learner_outputs["reset_policy_logits"]) 
-        entropy_loss = flags.entropy_cost * (re_entropy_loss + im_entropy_loss + reset_entropy_loss)
+        entropy_loss = flags.entropy_cost * (re_entropy_loss)
+        im_entropy_loss = flags.im_entropy_cost * (im_entropy_loss + reset_entropy_loss)
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
 
@@ -289,6 +290,7 @@ def learn(
             "pg_loss": pg_loss.item(),
             "baseline_loss": baseline_loss.item(),
             "entropy_loss": entropy_loss.item(),
+            "im_entropy_loss": im_entropy_loss.item(),
             "reg_loss": reg_loss.item()
         }
 
@@ -565,7 +567,7 @@ class Actor_net(nn.Module):
                         reg_loss=reg_loss, )
         
         return (ret_dict, core_state)      
-
+    
 def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
@@ -628,6 +630,8 @@ def define_parser():
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.01,
                         type=float, help="Entropy cost/multiplier.")
+    parser.add_argument("--im_entropy_cost", default=0.01,
+                        type=float, help="Imagainary Entropy cost/multiplier.")    
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=1,
@@ -659,7 +663,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()
+flags = parser.parse_args()        
 
 raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
@@ -752,7 +756,7 @@ scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
-    "pg_loss", "baseline_loss", "entropy_loss"]
+    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss"]
 logger.info("# Step\t%s", "\t".join(stat_keys))
 
 step, stats, last_returns, tot_eps = 0, {}, deque(maxlen=400), 0
@@ -831,7 +835,7 @@ try:
         print_str =  "Steps %i @ %.1f SPS. Eps %i. L400 Return %f. Loss %f" % (step, sps, tot_eps, 
             np.average(last_returns) if len(last_returns) > 0 else 0., total_loss)
 
-        for s in ["pg_loss", "baseline_loss", "entropy_loss", "reg_loss"]:
+        for s in ["pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reg_loss"]:
             if s in stats:
                 print_str += " %s %f" % (s, stats[s])
 
@@ -851,4 +855,5 @@ finally:
         actor.join(timeout=1)
 
 checkpoint()
-plogger.close()        
+plogger.close()
+    

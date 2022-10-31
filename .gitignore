@@ -5,3 +5,4 @@ past/
 .ipynb_checkpoints/
 torchbeast/.ipynb_checkpoints/
 *.pyc
+tmp/
