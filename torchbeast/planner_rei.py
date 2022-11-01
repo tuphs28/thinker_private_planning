@@ -80,7 +80,7 @@ def act(
         timings = prof.Timings()  # Keep track of how fast things are.
 
         gym_env = ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-                               model=model, rec_t=flags.rec_t)
+                               model=model, rec_t=flags.rec_t, discounting=flags.discounting, aug_stat=flags.aug_stat)
         seed = actor_index ^ int.from_bytes(os.urandom(4), byteorder="little")
         gym_env.seed(seed)
         env = Environment(gym_env)
@@ -93,7 +93,7 @@ def act(
                 break
 
             # Write old rollout end.
-            for key in env_output:                
+            for key in env_output:           
                 if key in buffers: buffers[key][index][0, ...] = env_output[key]
             for key in agent_output:
                 if key in buffers: buffers[key][index][0, ...] = agent_output[key]                    
@@ -377,17 +377,21 @@ class Environment:
         self.episode_return = state[0].clone()
         self.episode_step = state[1].clone()
         self.gym_env.restore_state(state[2])
-
+        
 class ModelWrapper(gym.Wrapper):
-    def __init__(self, env, model, rec_t):
+    def __init__(self, env, model, rec_t, discounting=0.99, aug_stat=True):
         gym.Wrapper.__init__(self, env)
         self.env = env
         self.model = model                
         self.rec_t = rec_t
         self.num_actions = env.action_space.n
+        obs_n = (7 + num_actions * 7 + self.rec_t if aug_stat else 
+            5 + num_actions * 3 + self.rec_t)
         self.observation_space = gym.spaces.Box(
-          low=-np.inf, high=np.inf,
-          shape=(5 + num_actions * 3 + self.rec_t, 1, 1), dtype=float)
+          low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
+        self.discounting = discounting
+        self.aug_stat = aug_stat
+        self.use_model = self.use_model_aug if aug_stat else self.use_model_base
         
     def reset(self, **kwargs):
         x = self.env.reset()
@@ -411,7 +415,86 @@ class ModelWrapper(gym.Wrapper):
           info['cur_t'] = self.cur_t
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info
         
-    def use_model(self, x, r, a, cur_t, reset):
+        
+    def use_model_aug(self, x, r, a, cur_t, reset):
+        # input: 
+        # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
+        # cur_t: int; reset at cur_t == 0  
+        with torch.no_grad():
+            if cur_t == 0:
+                self.rollout_depth = 0.
+                self.re_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)   
+                x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                _, vs, logits, encodeds = self.model(x, self.re_action.unsqueeze(0), one_hot=True)                
+                self.encoded = encodeds[-1]    
+                self.encoded_reset = self.encoded.clone()
+                
+                self.re_reward = torch.tensor([[r]], dtype=torch.float32)                
+                self.v0 = vs[-1].unsqueeze(-1).clone()
+                self.logit0 = logits[-1].clone()
+                
+                self.im_action = torch.zeros(1, self.num_actions, dtype=torch.float32)
+                self.im_reset = torch.tensor([[1.]], dtype=torch.float32)
+                self.im_reward = torch.zeros(1, 1, dtype=torch.float32)                                
+                self.v = vs[-1].unsqueeze(-1)
+                self.logit = logits[-1]
+                self.rollout_first_action = torch.zeros(1, self.num_actions, dtype=torch.float32)
+                self.rollout_return_wo_v = torch.zeros(1, 1, dtype=torch.float32)   
+                self.rollout_return = torch.zeros(1, 1, dtype=torch.float32)                
+                self.q_s_a = torch.zeros(1, self.num_actions, dtype=torch.float32)
+                self.n_s_a = torch.zeros(1, self.num_actions, dtype=torch.float32)                
+            else:
+                self.rollout_depth += 1                
+                
+                self.im_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)   
+                rs, vs, logits, encodeds = self.model.forward_encoded(self.encoded, 
+                   self.im_action.unsqueeze(0), one_hot=True)
+                self.encoded = encodeds[-1]        
+                
+                self.im_reward = rs[-1].unsqueeze(-1)
+                self.v = vs[-1].unsqueeze(-1)    
+                self.logit = logits[-1]     
+                
+                if self.im_reset: 
+                    # last action's reset is true; re-initialize everything                    
+                    self.rollout_first_action = self.im_action.clone()
+                    self.rollout_return_wo_v = torch.zeros(1, 1, dtype=torch.float32)   
+                    self.rollout_depth = 1                      
+                    
+                self.rollout_return_wo_v += (self.discounting ** (self.rollout_depth-1)) * self.im_reward
+                self.rollout_return = self.rollout_return_wo_v + (
+                    self.discounting ** (self.rollout_depth)) * self.v                    
+                    
+                self.im_reset = torch.tensor([[reset]], dtype=torch.float32)
+                if self.im_reset:                    
+                    rollout_first_action_label = torch.argmax(self.rollout_first_action, dim=1)                    
+                    q = self.q_s_a[:, rollout_first_action_label]
+                    n = self.n_s_a[:, rollout_first_action_label]                    
+                    ret = self.rollout_return[:, 0]
+                    self.n_s_a[:, rollout_first_action_label] += 1                    
+                    self.q_s_a[:, rollout_first_action_label] = (n * q) / (n + 1) + ret / (n + 1)
+        time = F.one_hot(torch.tensor([cur_t]).long(), self.rec_t)
+        depc = torch.tensor([[self.discounting ** (self.rollout_depth-1)]])
+        ret_dict = {"re_action": self.re_action,
+                    "re_reward": self.re_reward,
+                    "v0": self.v0,
+                    "logit0": self.logit0,
+                    "im_action": self.im_action,
+                    "im_reset": self.im_reset,
+                    "im_reward": self.im_reward,
+                    "v": self.v,
+                    "logit": self.logit,
+                    "rollout_first_action": self.rollout_first_action,
+                    "rollout_return": self.rollout_return,
+                    "n_s_a": self.n_s_a,
+                    "q_s_a": self.q_s_a,
+                    "time": time,
+                    "depc": depc}
+        self.ret_dict = ret_dict
+        out = torch.concat(list(ret_dict.values()), dim=-1)   
+        return out[0]        
+        
+    def use_model_base(self, x, r, a, cur_t, reset):
         # input: 
         # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
         # cur_t: int; reset at cur_t == 0  
@@ -567,7 +650,7 @@ class Actor_net(nn.Module):
                         reg_loss=reg_loss, )
         
         return (ret_dict, core_state)      
-    
+
 def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
@@ -626,6 +709,8 @@ def define_parser():
 
     parser.add_argument("--rec_t", default=5, type=int, metavar="N",
                         help="Number of planning steps.")
+    parser.add_argument("--aug_stat", action="store_true",
+                        help="Whether to use augmented stat.")    
 
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.01,
@@ -663,7 +748,38 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args([])        
+
+flags.xpid = None
+flags.env = "Sokoban-v0"
+flags.num_actors = 1
+flags.batch_size = 32
+flags.unroll_length = 20
+flags.learning_rate = 0.0002
+flags.entropy_cost = 0.001
+flags.im_entropy_cost = 0.00001
+flags.reg_cost = 0.1
+flags.discounting = 0.99
+flags.lamb = 1.
+
+flags.trun_bs = False
+flags.total_steps = 500000000
+flags.disable_adam = False
+
+flags.tran_t = 1
+flags.tran_mem_n = 16
+flags.tran_layer_n = 3
+flags.tran_lstm = True
+flags.tran_lstm_no_attn = True
+flags.tran_norm_first = False
+flags.tran_ff_n = 256
+flags.tran_skip = True
+flags.tran_erasep = False
+flags.tran_dim = 64
+flags.tran_rpos = True
+
+flags.rec_t = 5
+flags.aug_stat = False
 
 raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
@@ -673,7 +789,7 @@ checkpoint = torch.load("../models/model_1.tar")
 model.load_state_dict(checkpoint["model_state_dict"])    
 
 env = Environment(ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-                               model=model, rec_t=flags.rec_t))
+     model=model, rec_t=flags.rec_t, discounting=flags.discounting, aug_stat=flags.aug_stat))
 
 obs_shape = env.gym_env.observation_space.shape
 
@@ -855,5 +971,4 @@ finally:
         actor.join(timeout=1)
 
 checkpoint()
-plogger.close()
-    
+plogger.close()        
