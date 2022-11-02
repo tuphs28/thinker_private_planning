@@ -923,7 +923,7 @@ class ConvTransformerRNN(Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def forward(self, src: Tensor, core_state, notdone, notdone_attn=None): -> Tensor:
+    def forward(self, src: Tensor, core_state, notdone, notdone_attn=None) -> Tensor:
         # src: (batch_size, d_in, h, w)
         # Core state stored in the form of mask, (k_0, k_1, ...), (v_0, v_1, ...)
         # mask shape: (batch_size, mem_n)
