@@ -923,11 +923,12 @@ class ConvTransformerRNN(Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
     
-    def forward(self, src: Tensor, core_state, notdone) -> Tensor:
+    def forward(self, src: Tensor, core_state, notdone, notdone_attn=None): -> Tensor:
         # src: (batch_size, d_in, h, w)
         # Core state stored in the form of mask, (k_0, k_1, ...), (v_0, v_1, ...)
         # mask shape: (batch_size, mem_n)
         # key k and value v shape: (batch_size, mem_n, num_head, tot_head_dim)
+        if notdone_attn is None: notdone_attn = notdone     
         
         bsz = src.shape[0]
         input = src.unsqueeze(0)
@@ -936,7 +937,7 @@ class ConvTransformerRNN(Module):
         out = core_state[3] * notdone.float().view(1, bsz, 1, 1, 1)
 
         src_mask = core_state[0][0]
-        src_mask[~(notdone.bool()), :] = True
+        src_mask[~(notdone_attn.bool()), :] = True
         src_mask[:, :-1] = src_mask[:, 1:].clone().detach()
         src_mask[:, -1] = False                        
         src_mask_ = src_mask.view(bsz, 1, 1, -1).broadcast_to(bsz, self.num_heads, 1, -1).contiguous().view(bsz * self.num_heads, 1, -1)               
