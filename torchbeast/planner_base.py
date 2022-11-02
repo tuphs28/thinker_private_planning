@@ -75,6 +75,187 @@ def gumbel_softmax(logits, temperature, u=None, hard=True):
     y_hard = (y_hard - y).detach() + y
     return y_hard.view(-1, n_class), u
 
+class Actor_Wrapper(nn.Module):    
+    def __init__(self, flags, model, actor=None):
+        
+        super(Actor_Wrapper, self).__init__()   
+        self.model = model
+        self.num_actions = model.num_actions        
+        self.rec_t = flags.rec_t
+        self.discounting = flags.discounting
+        self.aug_stat = flags.aug_stat
+        
+        obs_n = (7 + num_actions * 7 + self.rec_t if self.aug_stat else 
+            5 + num_actions * 3 + self.rec_t)       
+        if actor is None:
+            self.actor = Actor_net(obs_shape=(obs_n, 1, 1), num_actions=self.num_actions, flags=flags)
+        else:
+            self.actor = actor   
+        self.use_model = self.use_model_aug if self.aug_stat else self.use_model_base        
+            
+    def initial_state(self, batch_size):
+        return self.actor.initial_state(batch_size)
+            
+    def forward(self, x, core_state=None):                      
+        # x is env_output object with:
+        # frame: T x B x C x H x W
+        # last_action: T x B
+        # reward: T x B
+        
+        tot_step, bsz, _, _, _ = x['frame'].shape
+        device = x['frame'].device        
+        self.model.train(False)
+        
+        for step in range(tot_step):
+        
+            state = x['frame'][step]        
+            action = F.one_hot(x['last_action'][step], self.num_actions)
+            reward = x['reward'][step]   
+            done = x['done'][step]
+            reset = torch.ones(bsz, device=device)
+            
+            u_list, im_logit_list, reset_logit_list = [], [], []                
+            for t in range(self.rec_t):                 
+                actor_input = self.use_model(state, reward, action, t, reset)                
+                reset_ex = reset.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                self.encoded = reset_ex * self.encoded_reset + (1 - reset_ex) * self.encoded               
+                
+                if 'uniform' in x.keys():
+                    u = x['uniform'][step][:, t]
+                else:
+                    u = None                    
+                actor_output, core_state = self.actor(actor_input, 
+                                                      done=done, 
+                                                      core_state=core_state,
+                                                      u=u)                
+                if self.actor.gb_ste: u_list.append(actor_output['uniform'].unsqueeze(1))
+                im_logit_list.append(actor_output['im_policy_logits'].unsqueeze(1))
+                reset_logit_list.append(actor_output['reset_policy_logits'].unsqueeze(1))
+                
+                action = actor_output["im_action"]
+                reset = actor_output["reset"]
+        
+            if self.actor.gb_ste:
+                actor_output["uniform"] = torch.concat(u_list, dim=1)
+                actor_output['im_policy_logits'] = torch.concat(im_logit_list, dim=1)
+                actor_output['reset_policy_logits'] = torch.concat(reset_logit_list, dim=1)
+            if step == 0:
+                all_actor_output = {k: [v.unsqueeze(0)] for k, v in actor_output.items()}
+            else:
+                for k, v in actor_output.items(): all_actor_output[k].append(v.unsqueeze(0))        
+        
+        all_actor_output = {k: torch.concat(v) for k, v in all_actor_output.items()}
+        return all_actor_output, core_state      
+    
+    def use_model_aug(self, x, r, a, cur_t, reset):
+        # input: 
+        # r: reward - [B]; x: frame - [B, C, H, W]; a: action - [B, num_actions]
+        # cur_t: int; reset at cur_t == 0  
+        device = a.device
+        bsz = a.shape[0]
+        if cur_t == 0:
+            self.rollout_depth = torch.zeros(bsz, dtype=torch.float32, device=device)
+            self.re_action = a
+            _, vs, logits, encodeds = self.model(x, self.re_action.unsqueeze(0), one_hot=True)                
+            self.encoded = encodeds[-1]    
+            self.encoded_reset = self.encoded.clone()
+
+            self.re_reward = r.unsqueeze(-1)              
+            self.v0 = vs[-1].unsqueeze(-1).clone()
+            self.logit0 = logits[-1].clone()
+
+            self.im_action = torch.zeros(bsz, self.num_actions, dtype=torch.float32, device=device)
+            self.im_reset = torch.ones(bsz, 1, dtype=torch.float32, device=device)
+            self.im_reward = torch.zeros(bsz, 1, dtype=torch.float32, device=device)                              
+            self.v = vs[-1].unsqueeze(-1)
+            self.logit = logits[-1]
+            self.rollout_first_action = torch.zeros(bsz, self.num_actions, dtype=torch.float32, device=device)  
+            self.rollout_return_wo_v = torch.zeros(bsz, 1, dtype=torch.float32, device=device)     
+            self.rollout_return = torch.zeros(bsz, 1, dtype=torch.float32, device=device)     
+            self.q_s_a = torch.zeros(bsz, self.num_actions, dtype=torch.float32, device=device)      
+            self.n_s_a = torch.zeros(bsz, self.num_actions, dtype=torch.float32, device=device)                   
+        else:
+            self.rollout_depth = self.rollout_depth + 1                
+
+            self.im_action = a
+            rs, vs, logits, encodeds = self.model.forward_encoded(self.encoded, 
+               self.im_action.unsqueeze(0), one_hot=True)
+            self.encoded = encodeds[-1]        
+
+            self.im_reward = rs[-1].unsqueeze(-1)
+            self.v = vs[-1].unsqueeze(-1)    
+            self.logit = logits[-1]     
+
+            self.rollout_first_action = (self.im_reset * self.im_action + (1 - self.im_reset) * 
+                self.rollout_first_action)
+            self.rollout_return_wo_v = (self.im_reset * torch.zeros_like(self.rollout_return_wo_v) + 
+                                        (1 - self.im_reset) * self.rollout_return_wo_v)
+            self.rollout_depth = (self.im_reset[:,0] * torch.ones_like(self.rollout_depth) + 
+                                        (1 - self.im_reset)[:,0] * self.rollout_depth)
+
+            self.rollout_return_wo_v = (self.rollout_return_wo_v + (self.discounting ** (self.rollout_depth-1)
+                                                                   ).unsqueeze(-1) * self.im_reward)
+            self.rollout_return = self.rollout_return_wo_v + (
+                self.discounting ** (self.rollout_depth).unsqueeze(-1)) * self.v                    
+            
+            self.im_reset = reset.unsqueeze(-1)
+            
+            new_q_s_a = self.q_s_a * self.n_s_a / (self.n_s_a + 1) + self.rollout_return / (self.n_s_a + 1)
+            new_q_s_a = new_q_s_a * self.rollout_first_action + self.q_s_a * (1 - self.rollout_first_action)
+            self.q_s_a = (self.im_reset * new_q_s_a + (1 - self.im_reset) * self.q_s_a)
+            self.n_s_a = (self.im_reset * (self.n_s_a + self.rollout_first_action) + 
+                (1 - self.im_reset) * self.n_s_a)
+            
+            
+        time = F.one_hot(torch.tensor([cur_t], device=device).long(), self.rec_t).tile([bsz, 1])
+        depc = self.discounting ** (self.rollout_depth-1).unsqueeze(-1)
+        ret_dict = {"re_action": self.re_action,
+                    "re_reward": self.re_reward,
+                    "v0": self.v0,
+                    "logit0": self.logit0,
+                    "im_action": self.im_action,
+                    "im_reset": self.im_reset,
+                    "im_reward": self.im_reward,
+                    "v": self.v,
+                    "logit": self.logit,
+                    "rollout_first_action": self.rollout_first_action,
+                    "rollout_return": self.rollout_return,
+                    "n_s_a": self.n_s_a,
+                    "q_s_a": self.q_s_a,
+                    "time": time,
+                    "depc": depc}
+        self.ret_dict = ret_dict
+        out = torch.concat(list(ret_dict.values()), dim=-1)   
+        out = out.unsqueeze(-1).unsqueeze(-1)  
+        return out          
+    
+    def use_model_base(self, x, r, a, cur_t, reset):
+        bsz = a.shape[0]
+        if cur_t == 0:
+            rs, vs, logits, encodeds = self.model(x, a.unsqueeze(0), one_hot=True)
+            self.encoded = encodeds[0] 
+            self.encoded_reset = encodeds[0].clone()
+            self.r0 = r.unsqueeze(-1).clone()
+            self.v0 = vs[-1].unsqueeze(-1).clone()
+            self.logit0 = logits[-1].clone() 
+            r = r.unsqueeze(-1)
+            v = vs[-1].unsqueeze(-1)
+            logit = logits[-1]     
+        else:
+            rs, vs, logits, encodeds = self.model.forward_encoded(self.encoded, 
+                a.unsqueeze(0), one_hot=True)
+            self.encoded = encodeds[-1] 
+            r = rs[-1].unsqueeze(-1)
+            v = vs[-1].unsqueeze(-1)
+            logit = logits[-1]  
+            
+        re = reset.unsqueeze(-1)
+        time = F.one_hot(torch.tensor([cur_t], device=a.device).long(), self.rec_t).tile([bsz, 1])                        
+
+        actor_input = torch.concat([re, a, r, v, logit, self.r0, self.v0, self.logit0, time], dim=-1)     
+        actor_input = actor_input.unsqueeze(-1).unsqueeze(-1)    
+        return actor_input
+
 class Actor_net(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):
 
@@ -225,100 +406,6 @@ class Actor_net(nn.Module):
             ret_dict['uniform'] = u
         return (ret_dict, core_state)      
     
-class Actor_Wrapper(nn.Module):    
-    def __init__(self, flags, model, actor=None, rec_t=5):
-        
-        super(Actor_Wrapper, self).__init__()   
-        self.model = model
-        self.num_actions = model.num_actions        
-        self.rec_t = rec_t
-        self.obs_shape = (3 * num_actions + 5 + self.rec_t, 1, 1)        
-        if actor is None:
-            self.actor = Actor_net(obs_shape=self.obs_shape, num_actions=self.num_actions, flags=flags)
-        else:
-            self.actor = actor   
-            
-    def initial_state(self, batch_size):
-        return self.actor.initial_state(batch_size)
-            
-    def forward(self, x, core_state=None):                      
-        # x is env_output object with:
-        # frame: T x B x C x H x W
-        # last_action: T x B
-        # reward: T x B
-        
-        tot_step, bsz, _, _, _ = x['frame'].shape
-        device = x['frame'].device        
-        self.model.train(False)
-        
-        for step in range(tot_step):
-        
-            state = x['frame'][step]        
-            action = F.one_hot(x['last_action'][step], self.num_actions)
-            reward = x['reward'][step]   
-            done = x['done'][step]
-            
-            rs, vs, logits, encodeds = self.model(state, action.unsqueeze(0), one_hot=True)
-            encoded_reset = encodeds[0].clone()
-            encoded = encodeds[0]
-
-            for t in range(self.rec_t): 
-                
-                a = action if t == 0 else im_action  
-                r = (reward if t == 0 else rs[-1]).unsqueeze(-1)
-                v = vs[-1].unsqueeze(-1)
-                logit = logits[-1]                    
-                re = (torch.ones(bsz, 1, device=state.device, dtype=torch.float32) if t == 0 else
-                  reset.unsqueeze(-1))  
-                
-                if t == 0:
-                    r0 = r.clone()
-                    v0 = v.clone()
-                    logit0 = logit.clone()
-                    if self.actor.gb_ste: u_list = []
-                    im_logit_list = []
-                    reset_logit_list = []
-                
-                time = F.one_hot(torch.tensor([t], device=device).long(), self.rec_t).tile([bsz, 1])                        
-
-                actor_input = torch.concat([re, a, r, v, logit, r0, v0, logit0, time], dim=-1)     
-                actor_input = actor_input.unsqueeze(-1).unsqueeze(-1)
-                
-                if 'uniform' in x.keys():
-                    u = x['uniform'][step][:, t]
-                else:
-                    u = None                    
-                
-                actor_output, core_state = self.actor(actor_input, 
-                                                      done=done, 
-                                                      core_state=core_state,
-                                                      u=u)                
-                if self.actor.gb_ste: u_list.append(actor_output['uniform'].unsqueeze(1))
-                im_logit_list.append(actor_output['im_policy_logits'].unsqueeze(1))
-                reset_logit_list.append(actor_output['reset_policy_logits'].unsqueeze(1))
-                
-                if t == self.rec_t - 1:
-                    if self.actor.gb_ste:
-                        actor_output["uniform"] = torch.concat(u_list, dim=1)
-                        actor_output['im_policy_logits'] = torch.concat(im_logit_list, dim=1)
-                        actor_output['reset_policy_logits'] = torch.concat(reset_logit_list, dim=1)
-                    if step == 0:
-                        all_actor_output = {k: [v.unsqueeze(0)] for k, v in actor_output.items()}
-                    else:
-                        for k, v in actor_output.items(): all_actor_output[k].append(v.unsqueeze(0))
-                
-                reset = actor_output["reset"]
-                im_action = actor_output["im_action"]
-
-                if t < self.rec_t - 1:                
-                    rs, vs, logits, encodeds = self.model.forward_encoded(encoded, im_action.unsqueeze(0), 
-                                                                          one_hot=True)
-                    reset_ex = reset.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-                    encoded = reset_ex * encoded_reset + (1 - reset_ex) * encodeds[-1]
-        
-        all_actor_output = {k: torch.concat(v) for k, v in all_actor_output.items()}
-        return all_actor_output, core_state  
-
 def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
@@ -377,6 +464,9 @@ def define_parser():
 
     parser.add_argument("--rec_t", default=5, type=int, metavar="N",
                         help="Number of planning steps.")
+    parser.add_argument("--aug_stat", action="store_true",
+                        help="Whether to use augmented stat.")      
+    
     parser.add_argument("--ste", action="store_true",
                         help="Whether to use ste backprop.")
     parser.add_argument("--gb_ste", action="store_true",
@@ -422,7 +512,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()   
+flags = parser.parse_args()        
 
 env = create_env(flags)
 obs_shape, num_actions = env.observation_space.shape, env.action_space.n
@@ -432,7 +522,7 @@ checkpoint = torch.load("../models/model_1.tar")
 model_learner.load_state_dict(checkpoint["model_state_dict"])  
 model_actor.load_state_dict(checkpoint["model_state_dict"])  
 
-logging.basicConfig(format='%(message)s', level=logging.DEBUG)            
+logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
 mp.set_sharing_strategy('file_system')
 
@@ -466,7 +556,7 @@ B = flags.batch_size
 
 env = create_env(flags)
 
-actor_net = Actor_Wrapper(flags, model_actor, actor=None, rec_t=flags.rec_t)
+actor_net = Actor_Wrapper(flags, model_actor, actor=None)
 buffers = create_buffers(flags, env.observation_space.shape, env.action_space.n)
 
 actor_net.share_memory()
@@ -491,7 +581,7 @@ for i in range(flags.num_actors):
     actor_processes.append(actor)
 
 learner_net = Actor_Wrapper(flags, model_learner, actor=None, 
-                            rec_t=flags.rec_t).to(device=flags.device)
+                            ).to(device=flags.device)
 
 if not flags.disable_adam:
     print("Using Adam...")        
