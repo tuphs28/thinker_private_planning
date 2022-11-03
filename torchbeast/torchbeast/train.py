@@ -255,8 +255,19 @@ def learn(
 
         optimizer.zero_grad()
         total_loss.backward()
+        optimize_params = optimizer.param_groups[0]['params']
+
         if flags.grad_norm_clipping > 0:
-            nn.utils.clip_grad_norm_(model.parameters(), flags.grad_norm_clipping)
+            total_norm = nn.utils.clip_grad_norm_(optimize_params, flags.grad_norm_clipping)
+        else:
+            total_norm = 0.
+            parameters = [p for p in optimize_params if p.grad is not None and p.requires_grad]
+            for p in parameters:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+        stats["total_norm"] = total_norm
+
         optimizer.step()
         scheduler.step()
 
