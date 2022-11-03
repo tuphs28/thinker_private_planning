@@ -604,7 +604,7 @@ scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
-    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss"]
+    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "total_norm"]
 logger.info("# Step\t%s", "\t".join(stat_keys))
 
 step, stats, last_returns, tot_eps = 0, {}, deque(maxlen=400), 0
@@ -687,7 +687,8 @@ try:
         print_str =  "Steps %i @ %.1f SPS. Eps %i. L400 Return %f. Loss %f" % (step, sps, tot_eps, 
             np.average(last_returns) if len(last_returns) > 0 else 0., total_loss)
 
-        for s in ["pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reg_loss"]:
+        for s in ["pg_loss", "baseline_loss", "entropy_loss", 
+                  "im_entropy_loss", "reg_loss", "total_norm"]:
             if s in stats:
                 print_str += " %s %f" % (s, stats[s])
 
