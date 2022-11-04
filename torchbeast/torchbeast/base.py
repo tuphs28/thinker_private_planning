@@ -67,7 +67,7 @@ def define_parser():
                         help="Root dir where experiment data will be saved.")
     parser.add_argument("--num_actors", default=32, type=int, metavar="N",
                         help="Number of actors (default: 32).")
-    parser.add_argument("--total_steps", default=15000000, type=int, metavar="T",
+    parser.add_argument("--total_steps", default=40000000, type=int, metavar="T",
                         help="Total environment steps to train for.")
     parser.add_argument("--batch_size", default=32, type=int, metavar="B",
                         help="Learner batch size.")
@@ -82,7 +82,7 @@ def define_parser():
 
 
     # Loss settings.
-    parser.add_argument("--entropy_cost", default=0.01,
+    parser.add_argument("--entropy_cost", default=0.005,
                         type=float, help="Entropy cost/multiplier.")
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
