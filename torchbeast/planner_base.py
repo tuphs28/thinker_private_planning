@@ -537,44 +537,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args([])        
-
-flags.xpid = None
-flags.env = "Sokoban-v0"
-flags.num_actors = 1
-flags.batch_size = 32
-flags.unroll_length = 20
-flags.learning_rate = 0.0004
-flags.grad_norm_clipping = 40
-
-flags.entropy_cost = 0.001
-flags.im_entropy_cost = 0.
-flags.discounting = 0.97
-flags.lamb = 1.
-
-flags.trun_bs = False
-flags.total_steps = 100000000
-flags.disable_adam = False
-
-flags.tran_t = 1
-flags.tran_mem_n = 5
-flags.tran_layer_n = 3
-flags.tran_lstm = True
-flags.tran_lstm_no_attn = False
-flags.tran_norm_first = False
-flags.tran_ff_n = 256
-flags.tran_skip = False
-flags.tran_erasep = False
-flags.tran_dim = 64
-flags.tran_rpos = True
-flags.no_mem = True
-
-flags.rec_t = 5
-flags.aug_stat = True
-flags.ste = False
-flags.gb_ste = True
-flags.gb_ste_temp_max = 1
-flags.gb_ste_temp_min = 0.5
+flags = parser.parse_args()        
 
 env = create_env(flags)
 obs_shape, num_actions = env.observation_space.shape, env.action_space.n
