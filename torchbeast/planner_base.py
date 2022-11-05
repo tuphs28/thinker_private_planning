@@ -84,6 +84,7 @@ class Actor_Wrapper(nn.Module):
         self.rec_t = flags.rec_t
         self.discounting = flags.discounting
         self.aug_stat = flags.aug_stat
+        self.no_mem = flags.no_mem
         
         obs_n = (7 + num_actions * 7 + self.rec_t if self.aug_stat else 
             5 + num_actions * 3 + self.rec_t)       
@@ -96,7 +97,7 @@ class Actor_Wrapper(nn.Module):
     def initial_state(self, batch_size):
         return self.actor.initial_state(batch_size)
             
-    def forward(self, x, core_state=None):                      
+    def forward(self, x, core_state=None, debug=False):                      
         # x is env_output object with:
         # frame: T x B x C x H x W
         # last_action: T x B
@@ -114,7 +115,10 @@ class Actor_Wrapper(nn.Module):
             done = x['done'][step]
             reset = torch.ones(bsz, device=device)
             
-            u_list, im_logit_list, reset_logit_list = [], [], []                
+            u_list, im_logit_list, reset_logit_list = [], [], []  
+            if self.no_mem: 
+                core_state = self.initial_state(bsz)
+                core_state = tuple(v.to(device) for v in core_state)
             for t in range(self.rec_t):                 
                 actor_input = self.use_model(state, reward, action, t, reset)                
                 reset_ex = reset.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
@@ -124,6 +128,7 @@ class Actor_Wrapper(nn.Module):
                     u = x['uniform'][step][:, t]
                 else:
                     u = None                    
+                self.actor_input = actor_input
                 actor_output, core_state = self.actor(actor_input, 
                                                       done=done, 
                                                       core_state=core_state,
@@ -134,7 +139,16 @@ class Actor_Wrapper(nn.Module):
                 
                 action = actor_output["im_action"]
                 reset = actor_output["reset"]
-        
+              
+                if debug:
+                  np.set_printoptions(suppress=True)   
+                  print("===========STEP:%d============" % t)
+                  print("actor_input: \n", actor_input[0,:,0,0])
+                  print("im_action: \n", actor_output["im_action"].cpu().detach().numpy())
+                  print("im_prob: \n", F.softmax(actor_output["im_policy_logits"], dim=-1).cpu().detach().numpy())
+                  print("reset_prob: \n", F.softmax(actor_output["reset_policy_logits"], dim=-1).cpu().detach().numpy())
+                  print("reset: ", reset.cpu().detach().numpy())                
+            
             if self.actor.gb_ste:
                 actor_output["uniform"] = torch.concat(u_list, dim=1)
                 actor_output['im_policy_logits'] = torch.concat(im_logit_list, dim=1)
@@ -143,6 +157,13 @@ class Actor_Wrapper(nn.Module):
                 all_actor_output = {k: [v.unsqueeze(0)] for k, v in actor_output.items()}
             else:
                 for k, v in actor_output.items(): all_actor_output[k].append(v.unsqueeze(0))        
+            
+            if debug:
+              print("=========F=STEP:%d============")
+              print("model logits: \n", self.logit0.cpu().detach().numpy())
+              print("model prob: \n", F.softmax(self.logit0, dim=-1).cpu().detach().numpy())
+              print("prob: \n", F.softmax(all_actor_output["policy_logits"][-1], dim=-1).cpu().detach().numpy())
+              print("action: \n", all_actor_output["action"][-1].cpu().detach().numpy())        
         
         all_actor_output = {k: torch.concat(v) for k, v in all_actor_output.items()}
         return all_actor_output, core_state      
@@ -153,6 +174,7 @@ class Actor_Wrapper(nn.Module):
         # cur_t: int; reset at cur_t == 0  
         device = a.device
         bsz = a.shape[0]
+        
         if cur_t == 0:
             self.rollout_depth = torch.zeros(bsz, dtype=torch.float32, device=device)
             self.re_action = a
@@ -174,6 +196,7 @@ class Actor_Wrapper(nn.Module):
             self.rollout_return = torch.zeros(bsz, 1, dtype=torch.float32, device=device)     
             self.q_s_a = torch.zeros(bsz, self.num_actions, dtype=torch.float32, device=device)      
             self.n_s_a = torch.zeros(bsz, self.num_actions, dtype=torch.float32, device=device)                   
+            self.ret_dict = None
         else:
             self.rollout_depth = self.rollout_depth + 1                
 
@@ -206,9 +229,9 @@ class Actor_Wrapper(nn.Module):
             self.n_s_a = (self.im_reset * (self.n_s_a + self.rollout_first_action) + 
                 (1 - self.im_reset) * self.n_s_a)
             
-            
         time = F.one_hot(torch.tensor([cur_t], device=device).long(), self.rec_t).tile([bsz, 1])
         depc = self.discounting ** (self.rollout_depth-1).unsqueeze(-1)
+        self.last_ret_dict = self.ret_dict
         ret_dict = {"re_action": self.re_action,
                     "re_reward": self.re_reward,
                     "v0": self.v0,
@@ -294,7 +317,7 @@ class Actor_net(nn.Module):
                                        h=self.conv_out_hw, w=self.conv_out_hw, d_model=self.d_model, 
                                        num_heads=8, dim_feedforward=self.tran_ff_n, 
                                        mem_n=self.tran_mem_n, norm_first=self.tran_norm_first,
-                                       num_layers=self.tran_layer_n, rpos=self.rpos, conv=False)   
+                                       num_layers=self.tran_layer_n, rpos=True, conv=False)   
                          
         
         if self.tran_skip:
@@ -465,7 +488,9 @@ def define_parser():
     parser.add_argument("--rec_t", default=5, type=int, metavar="N",
                         help="Number of planning steps.")
     parser.add_argument("--aug_stat", action="store_true",
-                        help="Whether to use augmented stat.")      
+                        help="Whether to use augmented stat.")    
+    parser.add_argument("--no_mem", action="store_true",
+                        help="Whether to erase all memories after each real action.")        
     
     parser.add_argument("--ste", action="store_true",
                         help="Whether to use ste backprop.")
@@ -512,7 +537,44 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args([])        
+
+flags.xpid = None
+flags.env = "Sokoban-v0"
+flags.num_actors = 1
+flags.batch_size = 32
+flags.unroll_length = 20
+flags.learning_rate = 0.0004
+flags.grad_norm_clipping = 40
+
+flags.entropy_cost = 0.001
+flags.im_entropy_cost = 0.
+flags.discounting = 0.97
+flags.lamb = 1.
+
+flags.trun_bs = False
+flags.total_steps = 100000000
+flags.disable_adam = False
+
+flags.tran_t = 1
+flags.tran_mem_n = 5
+flags.tran_layer_n = 3
+flags.tran_lstm = True
+flags.tran_lstm_no_attn = False
+flags.tran_norm_first = False
+flags.tran_ff_n = 256
+flags.tran_skip = False
+flags.tran_erasep = False
+flags.tran_dim = 64
+flags.tran_rpos = True
+flags.no_mem = True
+
+flags.rec_t = 5
+flags.aug_stat = True
+flags.ste = False
+flags.gb_ste = True
+flags.gb_ste_temp_max = 1
+flags.gb_ste_temp_min = 0.5
 
 env = create_env(flags)
 obs_shape, num_actions = env.observation_space.shape, env.action_space.n
