@@ -115,7 +115,7 @@ class Actor_Wrapper(nn.Module):
             done = x['done'][step]
             reset = torch.ones(bsz, device=device)
             
-            u_list, im_logit_list, reset_logit_list = [], [], []  
+            u_list, im_logit_list, reset_logit_list, im_action_list, reset_action_list = [], [], [], [], []
             if self.no_mem: 
                 core_state = self.initial_state(bsz)
                 core_state = tuple(v.to(device) for v in core_state)
@@ -135,7 +135,9 @@ class Actor_Wrapper(nn.Module):
                                                       u=u)                
                 if self.actor.gb_ste: u_list.append(actor_output['uniform'].unsqueeze(1))
                 im_logit_list.append(actor_output['im_policy_logits'].unsqueeze(1))
+                im_action_list.append(actor_output['im_action'].unsqueeze(1))                
                 reset_logit_list.append(actor_output['reset_policy_logits'].unsqueeze(1))
+                reset_action_list.append(actor_output['reset'].unsqueeze(1))
                 
                 action = actor_output["im_action"]
                 reset = actor_output["reset"]
@@ -151,8 +153,13 @@ class Actor_Wrapper(nn.Module):
             
             if self.actor.gb_ste:
                 actor_output["uniform"] = torch.concat(u_list, dim=1)
-                actor_output['im_policy_logits'] = torch.concat(im_logit_list, dim=1)
-                actor_output['reset_policy_logits'] = torch.concat(reset_logit_list, dim=1)
+                
+            actor_output['im_policy_logits'] = torch.concat(im_logit_list, dim=1)
+            actor_output['im_action'] = torch.concat(im_action_list, dim=1)
+            actor_output['reset_policy_logits'] = torch.concat(reset_logit_list, dim=1)
+            actor_output['reset_action'] = torch.concat(reset_action_list, dim=1)
+
+            
             if step == 0:
                 all_actor_output = {k: [v.unsqueeze(0)] for k, v in actor_output.items()}
             else:
@@ -500,6 +507,9 @@ def define_parser():
                         help="Beginning temp. for gb-ste.")
     parser.add_argument("--gb_ste_temp_min", default=0.5, type=int, metavar="N",
                         help="Ending temp. for gb-ste.")    
+    
+    parser.add_argument("--model_type_nn", default=0,
+                        type=float, help="Model type.")    
 
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.01,
@@ -539,11 +549,16 @@ def define_parser():
 parser = define_parser()
 flags = parser.parse_args()        
 
+if flags.model_type_nn == 0:
+    model_path = "../models/model_1.tar" 
+elif flags.model_type_nn == 1:
+    model_path = "../models/large_model_1.tar"     
+
 env = create_env(flags)
 obs_shape, num_actions = env.observation_space.shape, env.action_space.n
 model_learner = Model(flags, obs_shape, num_actions=num_actions)
 model_actor = Model(flags, obs_shape, num_actions=num_actions)
-checkpoint = torch.load("../models/model_1.tar")
+checkpoint = torch.load(model_path)
 model_learner.load_state_dict(checkpoint["model_state_dict"])  
 model_actor.load_state_dict(checkpoint["model_state_dict"])  
 
