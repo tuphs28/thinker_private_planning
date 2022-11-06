@@ -72,6 +72,7 @@ def n_step_greedy(env, net, n):
     action = torch.multinomial(prob, num_samples=1)[:, 0]
     
     return action, prob, q_ret  
+# Generating data for learning model [RUN]
 
 Buffers = typing.Dict[str, typing.List[torch.Tensor]]
 
@@ -189,18 +190,24 @@ class ResBlock(nn.Module):
         return out
     
 class FrameEncoder(nn.Module):    
-    def __init__(self, num_actions, frame_channels=3):
+    def __init__(self, num_actions, frame_channels=3, type_nn=0):
         self.num_actions = num_actions
         super(FrameEncoder, self).__init__() 
+        
+        if type_nn == 0:
+            n_block = 1
+        elif type_nn == 1:
+            n_block = 2
+        
         self.conv1 = nn.Conv2d(in_channels=frame_channels+num_actions, out_channels=128//DOWNSCALE_C, kernel_size=3, stride=2, padding=1) 
-        res = nn.ModuleList([ResBlock(inplanes=128//DOWNSCALE_C) for i in range(1)]) # Deep: 2 blocks here
+        res = nn.ModuleList([ResBlock(inplanes=128//DOWNSCALE_C) for i in range(n_block)]) # Deep: 2 blocks here
         self.res1 = torch.nn.Sequential(*res)
         self.conv2 = nn.Conv2d(in_channels=128//DOWNSCALE_C, out_channels=256//DOWNSCALE_C, 
                                kernel_size=3, stride=2, padding=1) 
-        res = nn.ModuleList([ResBlock(inplanes=256//DOWNSCALE_C) for i in range(1)]) # Deep: 3 blocks here
+        res = nn.ModuleList([ResBlock(inplanes=256//DOWNSCALE_C) for i in range(n_block)]) # Deep: 3 blocks here
         self.res2 = torch.nn.Sequential(*res)
         self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
-        res = nn.ModuleList([ResBlock(inplanes=256//DOWNSCALE_C) for i in range(1)]) # Deep: 3 blocks here
+        res = nn.ModuleList([ResBlock(inplanes=256//DOWNSCALE_C) for i in range(n_block)]) # Deep: 3 blocks here
         self.res3 = torch.nn.Sequential(*res)
         self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
     
@@ -221,17 +228,33 @@ class FrameEncoder(nn.Module):
         return x
     
 class DynamicModel(nn.Module):
-    def __init__(self, num_actions, inplanes=256):        
+    def __init__(self, num_actions, inplanes=256, type_nn=0):        
         super(DynamicModel, self).__init__()
-        res = nn.ModuleList([ResBlock(inplanes=inplanes+num_actions, outplanes=inplanes)] + [
-            ResBlock(inplanes=inplanes) for i in range(4)]) # Deep: 15 blocks here
+        self.type_nn = type_nn
+        if type_nn == 0:
+            res = nn.ModuleList([ResBlock(inplanes=inplanes+num_actions, outplanes=inplanes)] + [
+                    ResBlock(inplanes=inplanes) for i in range(4)]) 
+        elif type_nn == 1:                      
+            res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(15)] + [
+                    ResBlock(inplanes=inplanes, outplanes=inplanes*num_actions)])
+
+        
         self.res = torch.nn.Sequential(*res)
         self.num_actions = num_actions
     
-    def forward(self, x, actions):      
-        actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
-        x = torch.concat([x, actions], dim=1)
-        return self.res(x)
+    def forward(self, x, actions):              
+        bsz, c, h, w = x.shape
+        if self.training:
+            x.register_hook(lambda grad: grad * 0.5)
+        if self.type_nn == 0:
+            actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
+            x = torch.concat([x, actions], dim=1)
+            out = self.res(x)
+        elif self.type_nn == 1:            
+            res_out = self.res(x).view(bsz, self.num_actions, c, h, w)        
+            actions = actions.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            out = torch.sum(actions * res_out, dim=1)
+        return out
     
 class Output_rvpi(nn.Module):   
     def __init__(self, num_actions, input_shape):         
@@ -252,13 +275,14 @@ class Output_rvpi(nn.Module):
         return r, v, logits
 
 class Model(nn.Module):    
-    def __init__(self, flags, obs_shape, num_actions):
+    def __init__(self, flags, obs_shape, num_actions):        
         super(Model, self).__init__()      
         self.flags = flags
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
-        self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0])
-        self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=256//DOWNSCALE_C)
+        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large
+        self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
+        self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=256//DOWNSCALE_C, type_nn=self.type_nn)
         self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(256//DOWNSCALE_C, 
                       obs_shape[1]//16, obs_shape[1]//16))
         
@@ -324,7 +348,6 @@ def compute_cross_entropy_loss(logits, target_logits, mask):
     return -torch.sum(target_policy * log_policy * (~mask).float().unsqueeze(-1))
 
 def compute_loss_m(model, batch):
-
     rs, vs, logits, _ = model(batch['frame'][0], batch['action'])
     logits = logits[:-1]
 
@@ -350,17 +373,17 @@ def compute_loss_m(model, batch):
     done_masks = []
     done = torch.zeros(vs.shape[1]).bool().to(batch['done'].device)
     for t in range(vs.shape[0]):
-        done = torch.logical_or(done, batch['done'][t])
+        if t > 0: done = torch.logical_or(done, batch['done'][t])
         done_masks.append(done.unsqueeze(0))
 
     done_masks = torch.concat(done_masks[:-1], dim=0)
     
     # compute final loss
     huberloss = torch.nn.HuberLoss(reduction='none', delta=1.0)    
-    rs_loss = torch.sum(huberloss(rs, target_rewards.detach()) * (~done_masks).float())
-    #rs_loss = torch.sum(((rs - target_rewards) ** 2) * (~r_logit_done_masks).float())
-    vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
-    #vs_loss = torch.sum(((vs[:-1] - target_vs) ** 2) * (~v_done_masks).float())
+    #rs_loss = torch.sum(huberloss(rs, target_rewards.detach()) * (~done_masks).float())
+    rs_loss = torch.sum(((rs - target_rewards) ** 2) * (~done_masks).float())
+    #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
+    vs_loss = torch.sum(((vs[:-1] - target_vs) ** 2) * (~done_masks).float())
     logits_loss = compute_cross_entropy_loss(logits, target_logits.detach(), done_masks)
     
     return rs_loss, vs_loss, logits_loss
@@ -371,32 +394,32 @@ def n_step_greedy_model(state, action, model, n, encoded=None, temp=20.):
     
     # Either input state, action (S_t, A_{t-1}) or the encoded Z_t
     # state / encoded in the shape of (B, C, H, W)
-    # action in the shape of (B)
-    
-    bsz = state.shape[0] if encoded is None else encoded.shape[0]
-    device = state.device if encoded is None else encoded.device
-    num_actions = model.num_actions    
-    
-    q_ret = torch.zeros(bsz, num_actions).to(device)        
-    
-    for act in range(num_actions):        
-        new_action = torch.Tensor(np.full(bsz, act)).long().to(device)    
-        if encoded is None:            
-            old_new_actions = torch.concat([action.unsqueeze(0), new_action.unsqueeze(0)], dim=0)
-            rs, vs, logits, encodeds = model(state, old_new_actions)
-        else:
-            rs, vs, logits, encodeds = model.forward_encoded(encoded, new_action.unsqueeze(0))
-        
-        if n > 1:
-            action, prob, sub_q_ret = n_step_greedy_model(state=None, action=None, 
-                       model=model, n=n-1, encoded=encodeds[1])
-            ret = rs[0] + flags.discounting * torch.max(sub_q_ret, dim=1)[0] 
-        else:
-            ret = rs[0] + flags.discounting * vs[1]
-        q_ret[:, act] = ret
-    
-    prob = F.softmax(temp*q_ret, dim=1)
-    action = torch.multinomial(prob, num_samples=1)[:, 0]
+    # action in the shape of (B)    
+    with torch.no_grad():    
+      bsz = state.shape[0] if encoded is None else encoded.shape[0]
+      device = state.device if encoded is None else encoded.device
+      num_actions = model.num_actions    
+
+      q_ret = torch.zeros(bsz, num_actions).to(device)        
+
+      for act in range(num_actions):        
+          new_action = torch.Tensor(np.full(bsz, act)).long().to(device)    
+          if encoded is None:            
+              old_new_actions = torch.concat([action.unsqueeze(0), new_action.unsqueeze(0)], dim=0)
+              rs, vs, logits, encodeds = model(state, old_new_actions)
+          else:
+              rs, vs, logits, encodeds = model.forward_encoded(encoded, new_action.unsqueeze(0))
+
+          if n > 1:
+              action, prob, sub_q_ret = n_step_greedy_model(state=None, action=None, 
+                         model=model, n=n-1, encoded=encodeds[1])
+              ret = rs[0] + flags.discounting * torch.max(sub_q_ret, dim=1)[0] 
+          else:
+              ret = rs[0] + flags.discounting * vs[1]
+          q_ret[:, act] = ret
+
+      prob = F.softmax(temp*q_ret, dim=1)
+      action = torch.multinomial(prob, num_samples=1)[:, 0]
     
     return action, prob, q_ret        
    
