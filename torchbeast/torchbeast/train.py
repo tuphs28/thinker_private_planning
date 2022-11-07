@@ -231,15 +231,20 @@ def learn(
         if flags.im_entropy_cost > 0:
             im_entropy_loss = (1 / flags.rec_t) * flags.im_entropy_cost * (
                 compute_entropy_loss(torch.flatten(
-                    learner_outputs["im_policy_logits"], start_dim=1, end_dim=2)) + 
+                    learner_outputs["im_policy_logits"], start_dim=1, end_dim=2)))
+        else:
+            im_entropy_loss = torch.tensor(0., device=flags.device)
+
+        if flags.reset_entropy_cost > 0:
+            reset_entropy_loss = (1 / flags.rec_t) * flags.reset_entropy_cost * (
                 compute_entropy_loss(torch.flatten(
                     learner_outputs["reset_policy_logits"], start_dim=1, end_dim=2)))
         else:
-            im_entropy_loss = torch.tensor(0.)
+            reset_entropy_loss = torch.tensor(0., device=flags.device)
 
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
 
-        total_loss = pg_loss + baseline_loss + entropy_loss + im_entropy_loss + reg_loss
+        total_loss = pg_loss + baseline_loss + entropy_loss + im_entropy_loss + reset_entropy_loss + reg_loss
 
         episode_returns = batch["episode_return"][batch["done"]]
         stats = {
@@ -250,6 +255,7 @@ def learn(
             "baseline_loss": baseline_loss.item(),
             "entropy_loss": entropy_loss.item(),
             "im_entropy_loss": im_entropy_loss.item(),
+            "reset_entropy_loss": reset_entropy_loss.item(),
             "reg_loss": reg_loss.item()
         }
 

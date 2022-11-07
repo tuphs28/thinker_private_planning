@@ -110,8 +110,12 @@ class Actor_Wrapper(nn.Module):
         for step in range(tot_step):
         
             state = x['frame'][step]        
-            action = F.one_hot(x['last_action'][step], self.num_actions)
-            reward = x['reward'][step]   
+            if self.no_mem:
+                action = F.one_hot(torch.zeros_like(x['last_action'][step]), self.num_actions)
+                reward = torch.zeros_like(x['reward'][step])
+            else:
+                action = F.one_hot(x['last_action'][step], self.num_actions)                
+                reward = x['reward'][step]   
             done = x['done'][step]
             reset = torch.ones(bsz, device=device)
             
@@ -302,6 +306,8 @@ class Actor_net(nn.Module):
         self.tran_ff_n = flags.tran_ff_n             # number of dim of ff in transformer (not on LSTM)        
         self.tran_skip = flags.tran_skip             # whether to add skip connection
         self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim
+        self.reset_sep = flags.reset_sep
+        
         self.ste = flags.ste
         self.gb_ste = flags.gb_ste
         
@@ -337,7 +343,7 @@ class Actor_net(nn.Module):
         self.im_policy = nn.Linear(256, self.num_actions)        
         self.policy = nn.Linear(256, self.num_actions)        
         self.baseline = nn.Linear(256, 1)        
-        self.reset = nn.Linear(256, 1)        
+        self.reset = nn.Linear(256, 2 if self.reset_sep else 1)        
         
         if self.gb_ste:
             self.register_buffer('temp', torch.tensor(flags.gb_ste_temp_max, dtype=torch.float32))
@@ -382,8 +388,11 @@ class Actor_net(nn.Module):
         
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)        
-        reset_policy_logits_p = self.reset(core_output)
-        reset_policy_logits = torch.cat([reset_policy_logits_p, torch.zeros_like(reset_policy_logits_p)], dim=-1)   
+        reset_policy_logits_p = self.reset(core_output)        
+        if self.reset_sep:
+            reset_policy_logits = reset_policy_logits_p
+        else:
+            reset_policy_logits = torch.cat([reset_policy_logits_p, torch.zeros_like(reset_policy_logits_p)], dim=-1)               
         baseline = self.baseline(core_output)
         
         if self.gb_ste:
@@ -435,7 +444,7 @@ class Actor_net(nn.Module):
         if self.gb_ste:
             ret_dict['uniform'] = u
         return (ret_dict, core_state)      
-    
+
 def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
@@ -501,7 +510,9 @@ def define_parser():
     parser.add_argument("--aug_stat", action="store_true",
                         help="Whether to use augmented stat.")    
     parser.add_argument("--no_mem", action="store_true",
-                        help="Whether to erase all memories after each real action.")        
+                        help="Whether to erase all memories after each real action.")   
+    parser.add_argument("--reset_sep", action="store_true",
+                        help="Whether to use two logits for reset action.")       
     
     parser.add_argument("--ste", action="store_true",
                         help="Whether to use ste backprop.")
@@ -519,7 +530,9 @@ def define_parser():
     parser.add_argument("--entropy_cost", default=0.01,
                         type=float, help="Entropy cost/multiplier.")
     parser.add_argument("--im_entropy_cost", default=0.01,
-                        type=float, help="Entropy cost/multiplier.")    
+                        type=float, help="Imagaginary Action Entropy cost/multiplier.")    
+    parser.add_argument("--reset_entropy_cost", default=0.01,
+                        type=float, help="Reset Entropy cost/multiplier.")        
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=1,
@@ -551,7 +564,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()     
+flags = parser.parse_args()        
 
 if flags.model_type_nn == 0:
     model_path = "../models/model_1.tar" 
@@ -662,7 +675,7 @@ if flags.load_checkpoint:
     
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
-    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "total_norm"]
+    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reset_entropy_loss", "total_norm"]
 logger.info("# Step\t%s", "\t".join(stat_keys))
 
 step, stats, last_returns, tot_eps = 0, {}, deque(maxlen=400), 0
@@ -748,7 +761,7 @@ try:
             np.average(last_returns) if len(last_returns) > 0 else 0., total_loss)
 
         for s in ["pg_loss", "baseline_loss", "entropy_loss", 
-                  "im_entropy_loss", "reg_loss", "total_norm"]:
+                  "im_entropy_loss", "reset_entropy_loss", "reg_loss", "total_norm"]:
             if s in stats:
                 print_str += " %s %f" % (s, stats[s])
 
