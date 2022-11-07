@@ -447,12 +447,16 @@ def define_parser():
 
     parser.add_argument("--xpid", default=None,
                         help="Experiment id (default: None).")
-
-    # Training settings.
+    
+    
     parser.add_argument("--disable_checkpoint", action="store_true",
                         help="Disable saving checkpoint.")
+    parser.add_argument("--load_checkpoint", default="",
+                        help="Load checkpoint directory.")
     parser.add_argument("--savedir", default="~/RS/thinker/logs/torchbeast",
                         help="Root dir where experiment data will be saved.")
+    
+    # Training settings.
     parser.add_argument("--num_actors", default=48, type=int, metavar="N",
                         help="Number of actors (default: 48).")
     parser.add_argument("--total_steps", default=100000000, type=int, metavar="T",
@@ -547,7 +551,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args()     
 
 if flags.model_type_nn == 0:
     model_path = "../models/model_1.tar" 
@@ -566,8 +570,12 @@ logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
 mp.set_sharing_strategy('file_system')
 
-if flags.xpid is None:
-    flags.xpid = "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
+if flags.load_checkpoint:
+    flags.savedir = os.path.split(os.path.split(flags.load_checkpoint)[0])[0]
+    flags.xpid = os.path.split(os.path.split(flags.load_checkpoint)[0])[-1]    
+else:
+    if flags.xpid is None:
+        flags.xpid = "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
 plogger = file_writer.FileWriter(
     xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir
 )
@@ -597,10 +605,13 @@ B = flags.batch_size
 env = create_env(flags)
 
 actor_net = Actor_Wrapper(flags, model_actor, actor=None)
+if flags.load_checkpoint:
+    train_checkpoint = torch.load(flags.load_checkpoint)
+    actor_net.load_state_dict(train_checkpoint["model_state_dict"])  
+
 buffers = create_buffers(flags, env.observation_space.shape, env.action_space.n)
 
 actor_net.share_memory()
-
 # Add initial RNN state.
 initial_agent_state_buffers = []
 for _ in range(flags.num_buffers):
@@ -620,8 +631,10 @@ for i in range(flags.num_actors):
     actor.start()
     actor_processes.append(actor)
 
-learner_net = Actor_Wrapper(flags, model_learner, actor=None, 
-                            ).to(device=flags.device)
+learner_net = Actor_Wrapper(flags, model_learner, actor=None)
+if flags.load_checkpoint:
+    learner_net.load_state_dict(train_checkpoint["model_state_dict"])
+learner_net = learner_net.to(device=flags.device)    
 
 if not flags.disable_adam:
     print("Using Adam...")        
@@ -634,20 +647,27 @@ else:
         momentum=flags.momentum,
         eps=flags.epsilon,
         alpha=flags.alpha,)
+    
+if flags.load_checkpoint:
+    optimizer.load_state_dict(train_checkpoint["optimizer_state_dict"])
+    
 print("All parameters: ")
 for k, v in learner_net.named_parameters(): print(k, v.numel())    
 
 def lr_lambda(epoch):
     return 1 - min(epoch * T * B, flags.total_steps) / flags.total_steps
-
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
+if flags.load_checkpoint:
+    scheduler.load_state_dict(train_checkpoint["scheduler_state_dict"])
+    
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
     "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "total_norm"]
 logger.info("# Step\t%s", "\t".join(stat_keys))
 
 step, stats, last_returns, tot_eps = 0, {}, deque(maxlen=400), 0
+if flags.load_checkpoint:
+    step = train_checkpoint["scheduler_state_dict"]["_step_count"] * T * B
 
 def batch_and_learn(i, lock=threading.Lock()):
     """Thread target for the learning process."""
