@@ -80,7 +80,8 @@ def act(
         timings = prof.Timings()  # Keep track of how fast things are.
 
         gym_env = ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-                               model=model, rec_t=flags.rec_t, discounting=flags.discounting, aug_stat=flags.aug_stat)
+                               model=model, rec_t=flags.rec_t, discounting=flags.discounting, 
+                               aug_stat=flags.aug_stat, no_mem=flags.no_mem)
         seed = actor_index ^ int.from_bytes(os.urandom(4), byteorder="little")
         gym_env.seed(seed)
         env = Environment(gym_env)
@@ -296,8 +297,19 @@ def learn(
 
         optimizer.zero_grad()
         total_loss.backward()
+        
+        optimize_params = optimizer.param_groups[0]['params']
         if flags.grad_norm_clipping > 0:
-            nn.utils.clip_grad_norm_(model.parameters(), flags.grad_norm_clipping)
+            total_norm = nn.utils.clip_grad_norm_(optimize_params, flags.grad_norm_clipping)
+        else:
+            total_norm = 0.
+            parameters = [p for p in optimize_params if p.grad is not None and p.requires_grad]
+            for p in parameters:
+                param_norm = p.grad.detach().data.norm(2)
+                total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+        stats["total_norm"] = total_norm
+        
         optimizer.step()
         scheduler.step()
 
@@ -379,7 +391,7 @@ class Environment:
         self.gym_env.restore_state(state[2])
         
 class ModelWrapper(gym.Wrapper):
-    def __init__(self, env, model, rec_t, discounting=0.99, aug_stat=True):
+    def __init__(self, env, model, rec_t, discounting=0.99, aug_stat=True, no_mem=True):
         gym.Wrapper.__init__(self, env)
         self.env = env
         self.model = model                
@@ -392,6 +404,8 @@ class ModelWrapper(gym.Wrapper):
         self.discounting = discounting
         self.aug_stat = aug_stat
         self.use_model = self.use_model_aug if aug_stat else self.use_model_base
+        self.no_mem = no_mem
+        self.model.train(False)
         
     def reset(self, **kwargs):
         x = self.env.reset()
@@ -423,13 +437,21 @@ class ModelWrapper(gym.Wrapper):
         with torch.no_grad():
             if cur_t == 0:
                 self.rollout_depth = 0.
-                self.re_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)   
+                if self.no_mem:
+                    self.re_action = F.one_hot(torch.zeros(1, dtype=torch.long), self.num_actions)   
+                else:
+                    self.re_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)                   
+                
                 x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
                 _, vs, logits, encodeds = self.model(x, self.re_action.unsqueeze(0), one_hot=True)                
                 self.encoded = encodeds[-1]    
                 self.encoded_reset = self.encoded.clone()
                 
-                self.re_reward = torch.tensor([[r]], dtype=torch.float32)                
+                if self.no_mem:
+                    self.re_reward = torch.tensor([[0.]], dtype=torch.float32)                
+                else:
+                    self.re_reward = torch.tensor([[r]], dtype=torch.float32)                
+                    
                 self.v0 = vs[-1].unsqueeze(-1).clone()
                 self.logit0 = logits[-1].clone()
                 
@@ -540,6 +562,7 @@ class Actor_net(nn.Module):
         self.tran_ff_n = flags.tran_ff_n             # number of dim of ff in transformer (not on LSTM)        
         self.tran_skip = flags.tran_skip             # whether to add skip connection
         self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim
+        self.no_mem = flags.no_mem
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -602,6 +625,10 @@ class Actor_net(nn.Module):
         notdone = ~(done.bool())
         
         for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):                
+            if self.no_mem and obs["cur_t"][0, n] == 0:
+                core_state = self.initial_state(B)
+                core_state = tuple(v.to(x.device) for v in core_state)
+                
             # Input shape: B, self.conv_out + self.num_actions + 1, H, W
             for t in range(self.tran_t):                
                 if t > 0: nd = torch.ones(B).to(x.device).bool()                    
@@ -627,7 +654,6 @@ class Actor_net(nn.Module):
         baseline = self.baseline(core_output)
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
-                    1e-3 * torch.sum(im_policy_logits**2, dim=-1) / 2 +
                     1e-5 * torch.sum(core_output**2, dim=-1) / 2)
         reg_loss = reg_loss.view(T, B)
         
@@ -670,11 +696,11 @@ def define_parser():
                         help="Root dir where experiment data will be saved.")
     parser.add_argument("--num_actors", default=48, type=int, metavar="N",
                         help="Number of actors (default: 48).")
-    parser.add_argument("--total_steps", default=100000000, type=int, metavar="T",
+    parser.add_argument("--total_steps", default=500000000, type=int, metavar="T",
                         help="Total environment steps to train for.")
     parser.add_argument("--batch_size", default=32, type=int, metavar="B",
                         help="Learner batch size.")
-    parser.add_argument("--unroll_length", default=20, type=int, metavar="T",
+    parser.add_argument("--unroll_length", default=100, type=int, metavar="T",
                         help="The unroll length (time dimension).")
     parser.add_argument("--num_buffers", default=None, type=int,
                         metavar="N", help="Number of shared-memory buffers.")
@@ -686,7 +712,7 @@ def define_parser():
     # Architecture settings
     parser.add_argument("--tran_dim", default=64, type=int, metavar="N",
                         help="Size of transformer hidden dim.")
-    parser.add_argument("--tran_mem_n", default=16, type=int, metavar="N",
+    parser.add_argument("--tran_mem_n", default=5, type=int, metavar="N",
                         help="Size of transformer memory.")
     parser.add_argument("--tran_layer_n", default=3, type=int, metavar="N",
                         help="Number of transformer layer.")
@@ -711,19 +737,24 @@ def define_parser():
                         help="Number of planning steps.")
     parser.add_argument("--aug_stat", action="store_true",
                         help="Whether to use augmented stat.")    
-
+    parser.add_argument("--no_mem", action="store_true",
+                        help="Whether to erase all memories after each real action.")   
+    
+    parser.add_argument("--model_type_nn", default=0,
+                        type=float, help="Model type.")      
+    
     # Loss settings.
-    parser.add_argument("--entropy_cost", default=0.01,
+    parser.add_argument("--entropy_cost", default=0.0001,
                         type=float, help="Entropy cost/multiplier.")
-    parser.add_argument("--im_entropy_cost", default=0.01,
+    parser.add_argument("--im_entropy_cost", default=0.000001,
                         type=float, help="Imagainary Entropy cost/multiplier.")    
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
-    parser.add_argument("--reg_cost", default=1,
+    parser.add_argument("--reg_cost", default=0.1,
                         type=float, help="Reg cost/multiplier.")
-    parser.add_argument("--discounting", default=0.97,
+    parser.add_argument("--discounting", default=0.99,
                         type=float, help="Discounting factor.")
-    parser.add_argument("--lamb", default=0.97,
+    parser.add_argument("--lamb", default=1.,
                         type=float, help="Lambda when computing trace.")
     parser.add_argument("--reward_clipping", default=10, type=int, 
                         metavar="N", help="Reward clipping.")
@@ -731,7 +762,7 @@ def define_parser():
                         help="Whether to add baseline as reward when truncated.")
 
     # Optimizer settings.
-    parser.add_argument("--learning_rate", default=0.0004,
+    parser.add_argument("--learning_rate", default=0.00005,
                         type=float, metavar="LR", help="Learning rate.")
     parser.add_argument("--disable_adam", action="store_true",
                         help="Use Aadm optimizer or not.")
@@ -758,7 +789,7 @@ checkpoint = torch.load("../models/model_1.tar")
 model.load_state_dict(checkpoint["model_state_dict"])    
 
 env = Environment(ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-     model=model, rec_t=flags.rec_t, discounting=flags.discounting, aug_stat=flags.aug_stat))
+     model=model, rec_t=flags.rec_t, discounting=flags.discounting, aug_stat=flags.aug_stat, no_mem=flags.no_mem))
 
 obs_shape = env.gym_env.observation_space.shape
 
@@ -920,7 +951,7 @@ try:
         print_str =  "Steps %i @ %.1f SPS. Eps %i. L400 Return %f. Loss %f" % (step, sps, tot_eps, 
             np.average(last_returns) if len(last_returns) > 0 else 0., total_loss)
 
-        for s in ["pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reg_loss"]:
+        for s in ["pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reg_loss", "total_norm"]:
             if s in stats:
                 print_str += " %s %f" % (s, stats[s])
 
@@ -940,4 +971,4 @@ finally:
         actor.join(timeout=1)
 
 checkpoint()
-plogger.close()        
+plogger.close()
