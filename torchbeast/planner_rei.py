@@ -625,7 +625,7 @@ class Actor_net(nn.Module):
         notdone = ~(done.bool())
         
         for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):                
-            if self.no_mem and obs["cur_t"][0, n] == 0:
+            if self.no_mem and obs["cur_t"][n, 0] == 0:
                 core_state = self.initial_state(B)
                 core_state = tuple(v.to(x.device) for v in core_state)
                 
