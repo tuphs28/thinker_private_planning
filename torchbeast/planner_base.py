@@ -518,9 +518,9 @@ def define_parser():
                         help="Whether to use ste backprop.")
     parser.add_argument("--gb_ste", action="store_true",
                         help="Whether to use gb-ste backprop.")
-    parser.add_argument("--gb_ste_temp_max", default=1, type=int, metavar="N",
+    parser.add_argument("--gb_ste_temp_max", default=1, type=float, metavar="N",
                         help="Beginning temp. for gb-ste.")
-    parser.add_argument("--gb_ste_temp_min", default=0.5, type=int, metavar="N",
+    parser.add_argument("--gb_ste_temp_min", default=0.5, type=float, metavar="N",
                         help="Ending temp. for gb-ste.")    
     
     parser.add_argument("--model_type_nn", default=0,
@@ -541,7 +541,7 @@ def define_parser():
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=0.97,
                         type=float, help="Lambda when computing trace.")
-    parser.add_argument("--reward_clipping", default=10, type=int, 
+    parser.add_argument("--reward_clipping", default=10, type=float, 
                         metavar="N", help="Reward clipping.")
     parser.add_argument("--trun_bs", action="store_true",
                         help="Whether to add baseline as reward when truncated.")
