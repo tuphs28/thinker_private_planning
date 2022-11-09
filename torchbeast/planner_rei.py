@@ -319,7 +319,8 @@ def learn(
 # Wrap the environment with a model
 
 def _format_frame(frame, bsz=None):
-    #frame = torch.from_numpy(frame)
+    if type(frame) == np.ndarray:
+        frame = torch.from_numpy(frame).float()
     if bsz is not None:
         return frame.view((1,) + frame.shape)
     else:
@@ -390,6 +391,78 @@ class Environment:
         self.episode_step = state[1].clone()
         self.gym_env.restore_state(state[2])
         
+class Vec_Environment:
+    def __init__(self, gym_env, bsz):
+        self.gym_env = gym_env
+        self.bsz = bsz
+        self.episode_return = torch.zeros(1, self.bsz)
+        self.episode_step = torch.zeros(1, self.bsz)        
+
+    def initial(self):
+        initial_reward = torch.zeros(1, self.bsz)
+        # This supports only single-tensor actions ATM.
+        initial_last_action = torch.zeros(1, self.bsz, dtype=torch.int64)
+        self.episode_return = torch.zeros(1, self.bsz)
+        self.episode_step = torch.zeros(1, self.bsz, dtype=torch.int32)
+        initial_done = torch.ones(1, self.bsz, dtype=torch.uint8)
+        initial_frame = _format_frame(self.gym_env.reset(), self.bsz)
+        cur_t = torch.zeros(1, self.bsz)
+        
+        return dict(
+            frame=initial_frame,
+            reward=initial_reward,
+            done=initial_done,
+            episode_return=self.episode_return,
+            episode_step=self.episode_step,
+            cur_t=cur_t,
+            last_action=initial_last_action,
+        )
+
+    def step(self, action):
+        frame, reward, done, unused_info = self.gym_env.step(action.detach().cpu().numpy())   
+        
+        self.episode_step += 1
+        self.episode_return += torch.Tensor(reward).unsqueeze(0)
+        
+        done = torch.tensor(done).view(1, self.bsz)
+        truncated_done = ['TimeLimit.truncated' in x and x['TimeLimit.truncated'] for x in unused_info]
+        truncated_done = torch.tensor(truncated_done).view(1, self.bsz)
+        
+        self.episode_return = (~done).float() * self.episode_return
+        self.episode_step = (~done).float() * self.episode_step
+        
+        frame = _format_frame(frame, self.bsz)
+        reward = torch.tensor(reward).view(1, self.bsz).float()
+        
+        cur_t = [x["cur_t"] for x in unused_info]  
+        cur_t = torch.tensor(cur_t).view(1, self.bsz)
+        
+        return dict(
+            frame=frame,
+            reward=reward,
+            done=done,
+            truncated_done=truncated_done,
+            episode_return=self.episode_return,
+            episode_step=self.episode_step,
+            cur_t=cur_t,
+            last_action=action.unsqueeze(0),
+        )
+    
+    def clone_state(self):
+        state = [self.episode_return.clone(), self.episode_step.clone()]
+        for k in self.gym_env.envs: 
+            state.append(k.clone_state())
+        return state
+        
+    def restore_state(self, state):
+        self.episode_return = state[0].clone()
+        self.episode_step = state[1].clone()
+        for n, k in enumerate(self.gym_env.envs): 
+            k.restore_state(state[2+n])
+
+    def close(self):
+        self.gym_env.close()        
+        
 class ModelWrapper(gym.Wrapper):
     def __init__(self, env, model, rec_t, discounting=0.99, aug_stat=True, no_mem=True):
         gym.Wrapper.__init__(self, env)
@@ -398,12 +471,11 @@ class ModelWrapper(gym.Wrapper):
         self.rec_t = rec_t
         self.num_actions = env.action_space.n
         obs_n = (7 + num_actions * 7 + self.rec_t if aug_stat else 
-            5 + num_actions * 3 + self.rec_t)
+            5 + num_actions * 4 + self.rec_t)
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
         self.discounting = discounting
         self.aug_stat = aug_stat
-        self.use_model = self.use_model_aug if aug_stat else self.use_model_base
         self.no_mem = no_mem
         self.model.train(False)
         
@@ -430,7 +502,7 @@ class ModelWrapper(gym.Wrapper):
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info
         
         
-    def use_model_aug(self, x, r, a, cur_t, reset):
+    def use_model(self, x, r, a, cur_t, reset):
         # input: 
         # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
         # cur_t: int; reset at cur_t == 0  
@@ -443,6 +515,7 @@ class ModelWrapper(gym.Wrapper):
                     self.re_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)                   
                 
                 x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                self.x = x
                 _, vs, logits, encodeds = self.model(x, self.re_action.unsqueeze(0), one_hot=True)                
                 self.encoded = encodeds[-1]    
                 self.encoded_reset = self.encoded.clone()
@@ -511,40 +584,15 @@ class ModelWrapper(gym.Wrapper):
                     "n_s_a": self.n_s_a,
                     "q_s_a": self.q_s_a,
                     "time": time,
-                    "depc": depc}
+                    "depc": depc}        
         self.ret_dict = ret_dict
-        out = torch.concat(list(ret_dict.values()), dim=-1)   
-        return out[0]        
-        
-    def use_model_base(self, x, r, a, cur_t, reset):
-        # input: 
-        # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
-        # cur_t: int; reset at cur_t == 0  
-        a = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)           
-        reset = torch.tensor([[reset]], dtype=torch.float32)
-        if cur_t == 0:
-          x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
-          r = torch.tensor(r, dtype=torch.float32).unsqueeze(0)    
-          with torch.no_grad():
-              rs, vs, logits, encodeds = self.model(x, a.unsqueeze(0), one_hot=True)
-          self.encoded_reset = encodeds[0].clone()
+        if self.aug_stat:
+            out = torch.concat(list(ret_dict.values()), dim=-1)   
         else:
-          with torch.no_grad():
-              rs, vs, logits, encodeds = self.model.forward_encoded(self.encoded, 
-                   a.unsqueeze(0), one_hot=True)
-          
-        self.encoded = encodeds[-1]        
-        r = (r if cur_t == 0 else rs[-1]).unsqueeze(-1)
-        v = vs[-1].unsqueeze(-1)
-        logit = logits[-1]    
-        
-        if cur_t == 0:
-          self.r0 = r.clone()
-          self.v0 = v.clone()
-          self.logit0 = logit.clone()        
-        time = F.one_hot(torch.tensor([cur_t], device=a.device).long(), self.rec_t)
-        out = torch.concat([reset, a, r, v, logit, self.r0, self.v0, self.logit0, time], dim=-1)   
-        return out[0]
+            core_inputs = ["re_action", "re_reward", "v0", "logit0", "im_action",
+                           "im_reset", "im_reward", "v", "logit", "time"]
+            out = torch.concat([ret_dict[v] for v in core_inputs], dim=-1)   
+        return out[0]      
         
 class Actor_net(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):
@@ -624,7 +672,7 @@ class Actor_net(nn.Module):
         core_output_list = []
         notdone = ~(done.bool())
         
-        for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):                
+        for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):       
             if self.no_mem and obs["cur_t"][n, 0] == 0:
                 core_state = self.initial_state(B)
                 core_state = tuple(v.to(x.device) for v in core_state)
