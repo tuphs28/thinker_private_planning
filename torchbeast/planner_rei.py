@@ -81,7 +81,7 @@ def act(
 
         gym_env = ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
                                model=model, rec_t=flags.rec_t, discounting=flags.discounting, 
-                               aug_stat=flags.aug_stat, no_mem=flags.no_mem)
+                               stat_type=flags.stat_type, no_mem=flags.no_mem)
         seed = actor_index ^ int.from_bytes(os.urandom(4), byteorder="little")
         gym_env.seed(seed)
         env = Environment(gym_env)
@@ -461,139 +461,8 @@ class Vec_Environment:
             k.restore_state(state[2+n])
 
     def close(self):
-        self.gym_env.close()        
-        
-class ModelWrapper(gym.Wrapper):
-    def __init__(self, env, model, rec_t, discounting=0.99, aug_stat=True, no_mem=True):
-        gym.Wrapper.__init__(self, env)
-        self.env = env
-        self.model = model                
-        self.rec_t = rec_t
-        self.num_actions = env.action_space.n
-        obs_n = (7 + num_actions * 7 + self.rec_t if aug_stat else 
-            5 + num_actions * 4 + self.rec_t)
-        self.observation_space = gym.spaces.Box(
-          low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
-        self.discounting = discounting
-        self.aug_stat = aug_stat
-        self.no_mem = no_mem
-        self.model.train(False)
-        
-    def reset(self, **kwargs):
-        x = self.env.reset()
-        self.cur_t = 0        
-        out = self.use_model(x, 0., 0, self.cur_t, 1.)        
-        return out.unsqueeze(-1).unsqueeze(-1)
-    
-    def step(self, action):  
-        re_action, im_action, reset = action
-        if self.cur_t < self.rec_t - 1:
-          self.cur_t += 1
-          out = self.use_model(None, None, im_action, self.cur_t, reset)          
-          r = 0.
-          done = False
-          info = {'cur_t': self.cur_t}  
-          self.encoded = reset * self.encoded_reset + (1 - reset) * self.encoded
-        else:
-          self.cur_t = 0
-          x, r, done, info = self.env.step(re_action)          
-          out = self.use_model(x, r, re_action, self.cur_t, 1.)          
-          info['cur_t'] = self.cur_t
-        return out.unsqueeze(-1).unsqueeze(-1), r, done, info
-        
-        
-    def use_model(self, x, r, a, cur_t, reset):
-        # input: 
-        # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
-        # cur_t: int; reset at cur_t == 0  
-        with torch.no_grad():
-            if cur_t == 0:
-                self.rollout_depth = 0.
-                if self.no_mem:
-                    self.re_action = F.one_hot(torch.zeros(1, dtype=torch.long), self.num_actions)   
-                else:
-                    self.re_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)                   
-                
-                x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
-                self.x = x
-                _, vs, logits, encodeds = self.model(x, self.re_action.unsqueeze(0), one_hot=True)                
-                self.encoded = encodeds[-1]    
-                self.encoded_reset = self.encoded.clone()
-                
-                if self.no_mem:
-                    self.re_reward = torch.tensor([[0.]], dtype=torch.float32)                
-                else:
-                    self.re_reward = torch.tensor([[r]], dtype=torch.float32)                
-                    
-                self.v0 = vs[-1].unsqueeze(-1).clone()
-                self.logit0 = logits[-1].clone()
-                
-                self.im_action = torch.zeros(1, self.num_actions, dtype=torch.float32)
-                self.im_reset = torch.tensor([[1.]], dtype=torch.float32)
-                self.im_reward = torch.zeros(1, 1, dtype=torch.float32)                                
-                self.v = vs[-1].unsqueeze(-1)
-                self.logit = logits[-1]
-                self.rollout_first_action = torch.zeros(1, self.num_actions, dtype=torch.float32)
-                self.rollout_return_wo_v = torch.zeros(1, 1, dtype=torch.float32)   
-                self.rollout_return = torch.zeros(1, 1, dtype=torch.float32)                
-                self.q_s_a = torch.zeros(1, self.num_actions, dtype=torch.float32)
-                self.n_s_a = torch.zeros(1, self.num_actions, dtype=torch.float32)                
-            else:
-                self.rollout_depth += 1                
-                
-                self.im_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)   
-                rs, vs, logits, encodeds = self.model.forward_encoded(self.encoded, 
-                   self.im_action.unsqueeze(0), one_hot=True)
-                self.encoded = encodeds[-1]        
-                
-                self.im_reward = rs[-1].unsqueeze(-1)
-                self.v = vs[-1].unsqueeze(-1)    
-                self.logit = logits[-1]     
-                
-                if self.im_reset: 
-                    # last action's reset is true; re-initialize everything                    
-                    self.rollout_first_action = self.im_action.clone()
-                    self.rollout_return_wo_v = torch.zeros(1, 1, dtype=torch.float32)   
-                    self.rollout_depth = 1                      
-                    
-                self.rollout_return_wo_v += (self.discounting ** (self.rollout_depth-1)) * self.im_reward
-                self.rollout_return = self.rollout_return_wo_v + (
-                    self.discounting ** (self.rollout_depth)) * self.v                    
-                    
-                self.im_reset = torch.tensor([[reset]], dtype=torch.float32)
-                if self.im_reset:                    
-                    rollout_first_action_label = torch.argmax(self.rollout_first_action, dim=1)                    
-                    q = self.q_s_a[:, rollout_first_action_label]
-                    n = self.n_s_a[:, rollout_first_action_label]                    
-                    ret = self.rollout_return[:, 0]
-                    self.n_s_a[:, rollout_first_action_label] += 1                    
-                    self.q_s_a[:, rollout_first_action_label] = (n * q) / (n + 1) + ret / (n + 1)
-        time = F.one_hot(torch.tensor([cur_t]).long(), self.rec_t)
-        depc = torch.tensor([[self.discounting ** (self.rollout_depth-1)]])
-        ret_dict = {"re_action": self.re_action,
-                    "re_reward": self.re_reward,
-                    "v0": self.v0,
-                    "logit0": self.logit0,
-                    "im_action": self.im_action,
-                    "im_reset": self.im_reset,
-                    "im_reward": self.im_reward,
-                    "v": self.v,
-                    "logit": self.logit,
-                    "rollout_first_action": self.rollout_first_action,
-                    "rollout_return": self.rollout_return,
-                    "n_s_a": self.n_s_a,
-                    "q_s_a": self.q_s_a,
-                    "time": time,
-                    "depc": depc}        
-        self.ret_dict = ret_dict
-        if self.aug_stat:
-            out = torch.concat(list(ret_dict.values()), dim=-1)   
-        else:
-            core_inputs = ["re_action", "re_reward", "v0", "logit0", "im_action",
-                           "im_reset", "im_reward", "v", "logit", "time"]
-            out = torch.concat([ret_dict[v] for v in core_inputs], dim=-1)   
-        return out[0]      
-        
+        self.gym_env.close()  
+
 class Actor_net(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):
 
@@ -723,7 +592,270 @@ class Actor_net(nn.Module):
                         baseline=baseline, 
                         reg_loss=reg_loss, )
         
-        return (ret_dict, core_state)      
+        return (ret_dict, core_state) 
+    
+        
+class ModelWrapper(gym.Wrapper):
+    def __init__(self, env, model, rec_t, discounting=0.99, stat_type=0, no_mem=True):
+        gym.Wrapper.__init__(self, env)
+        self.env = env
+        self.model = model                
+        self.rec_t = rec_t
+        self.num_actions = env.action_space.n
+        
+        # 0 for the most basic; 1 for augmented input in root stat; 2 for tree stat
+        if stat_type == 0:
+            self.use_model = self.use_model_raw
+            obs_n = 7 + num_actions * 7 + self.rec_t
+        elif stat_type == 1:
+            self.use_model = self.use_model_raw
+            obs_n = 5 + num_actions * 4 + self.rec_t
+        elif stat_type == 2:
+            self.use_model = self.use_model_tree    
+            obs_n = 6 + num_actions * 10 + self.rec_t
+        
+        self.observation_space = gym.spaces.Box(
+          low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
+        self.discounting = discounting
+        self.stat_type = stat_type 
+        
+        self.no_mem = no_mem
+        self.model.train(False)        
+        
+    def reset(self, **kwargs):
+        x = self.env.reset()
+        self.cur_t = 0        
+        out = self.use_model(x, 0., 0, self.cur_t, 1.)        
+        return out.unsqueeze(-1).unsqueeze(-1)
+    
+    def step(self, action):  
+        re_action, im_action, reset = action
+        if self.cur_t < self.rec_t - 1:
+          self.cur_t += 1
+          out = self.use_model(None, None, im_action, self.cur_t, reset)          
+          r = 0.
+          done = False
+          info = {'cur_t': self.cur_t}            
+        else:
+          self.cur_t = 0
+          x, r, done, info = self.env.step(re_action)          
+          out = self.use_model(x, r, re_action, self.cur_t, 1.)          
+          info['cur_t'] = self.cur_t
+        return out.unsqueeze(-1).unsqueeze(-1), r, done, info        
+        
+    def use_model_raw(self, x, r, a, cur_t, reset):
+        # input: 
+        # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
+        # cur_t: int; reset at cur_t == 0  
+        with torch.no_grad():
+            if cur_t == 0:
+                self.rollout_depth = 0.
+                if self.no_mem:
+                    self.re_action = F.one_hot(torch.zeros(1, dtype=torch.long), self.num_actions)   
+                else:
+                    self.re_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)                   
+                
+                x = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                self.x = x
+                _, vs, logits, encodeds = self.model(x, self.re_action.unsqueeze(0), one_hot=True)                
+                self.encoded = encodeds[-1]    
+                self.encoded_reset = self.encoded.clone()
+                
+                if self.no_mem:
+                    self.re_reward = torch.tensor([[0.]], dtype=torch.float32)                
+                else:
+                    self.re_reward = torch.tensor([[r]], dtype=torch.float32)                
+                    
+                self.v0 = vs[-1].unsqueeze(-1).clone()
+                self.logit0 = logits[-1].clone()
+                
+                self.im_action = torch.zeros(1, self.num_actions, dtype=torch.float32)
+                self.im_reset = torch.tensor([[1.]], dtype=torch.float32)
+                self.im_reward = torch.zeros(1, 1, dtype=torch.float32)                                
+                self.v = vs[-1].unsqueeze(-1)
+                self.logit = logits[-1]
+                self.rollout_first_action = torch.zeros(1, self.num_actions, dtype=torch.float32)
+                self.rollout_return_wo_v = torch.zeros(1, 1, dtype=torch.float32)   
+                self.rollout_return = torch.zeros(1, 1, dtype=torch.float32)                
+                self.q_s_a = torch.zeros(1, self.num_actions, dtype=torch.float32)
+                self.n_s_a = torch.zeros(1, self.num_actions, dtype=torch.float32)                
+            else:
+                self.rollout_depth += 1                
+                
+                self.im_action = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)   
+                rs, vs, logits, encodeds = self.model.forward_encoded(self.encoded, 
+                   self.im_action.unsqueeze(0), one_hot=True)
+                self.encoded = encodeds[-1]        
+                
+                self.im_reward = rs[-1].unsqueeze(-1)
+                self.v = vs[-1].unsqueeze(-1)    
+                self.logit = logits[-1]     
+                
+                if self.im_reset: 
+                    # last action's reset is true; re-initialize everything                    
+                    self.rollout_first_action = self.im_action.clone()
+                    self.rollout_return_wo_v = torch.zeros(1, 1, dtype=torch.float32)   
+                    self.rollout_depth = 1                      
+                    
+                self.rollout_return_wo_v += (self.discounting ** (self.rollout_depth-1)) * self.im_reward
+                self.rollout_return = self.rollout_return_wo_v + (
+                    self.discounting ** (self.rollout_depth)) * self.v                    
+                    
+                self.im_reset = torch.tensor([[reset]], dtype=torch.float32)
+                if self.im_reset:                    
+                    rollout_first_action_label = torch.argmax(self.rollout_first_action, dim=1)                    
+                    q = self.q_s_a[:, rollout_first_action_label]
+                    n = self.n_s_a[:, rollout_first_action_label]                    
+                    ret = self.rollout_return[:, 0]
+                    self.n_s_a[:, rollout_first_action_label] += 1                    
+                    self.q_s_a[:, rollout_first_action_label] = (n * q) / (n + 1) + ret / (n + 1)
+                    
+        time = F.one_hot(torch.tensor([cur_t]).long(), self.rec_t)
+        depc = torch.tensor([[self.discounting ** (self.rollout_depth-1)]])
+        ret_dict = {"re_action": self.re_action,
+                    "re_reward": self.re_reward,
+                    "v0": self.v0,
+                    "logit0": self.logit0,
+                    "im_action": self.im_action,
+                    "im_reset": self.im_reset,
+                    "im_reward": self.im_reward,
+                    "v": self.v,
+                    "logit": self.logit,
+                    "rollout_first_action": self.rollout_first_action,
+                    "rollout_return": self.rollout_return,
+                    "n_s_a": self.n_s_a,
+                    "q_s_a": self.q_s_a,
+                    "time": time,
+                    "depc": depc}        
+        self.ret_dict = ret_dict
+        if self.stat_type == 1:
+            out = torch.concat(list(ret_dict.values()), dim=-1)   
+        else:
+            core_inputs = ["re_action", "re_reward", "v0", "logit0", "im_action",
+                           "im_reset", "im_reward", "v", "logit", "time"]
+            out = torch.concat([ret_dict[v] for v in core_inputs], dim=-1)   
+        self.encoded = reset * self.encoded_reset + (1 - reset) * self.encoded
+        return out[0]      
+    
+    def use_model_tree(self, x, r, a, cur_t, reset):
+        with torch.no_grad():
+            if cur_t == 0:
+                self.rollout_depth = 0.
+                if self.no_mem:
+                    re_action = 0
+                    re_reward = torch.tensor([0.], dtype=torch.float32)                
+                else:
+                    re_action = a                
+                    re_reward = torch.tensor([r], dtype=torch.float32)                
+                
+                x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)
+                _, vs, logits, encodeds = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                
+                
+                self.root_node = Node(parent=None, action=re_action, logit=None, 
+                                 num_actions=self.num_actions,
+                                 discounting=self.discounting)
+                self.root_node.expand(r=re_reward, v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
+                                      encoded=encodeds[-1])
+                self.root_node.visit()
+                self.cur_node = self.root_node
+            else:
+                self.rollout_depth += 1     
+                next_node = self.cur_node.children[a]
+                if not next_node.expanded():
+                    a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
+                    rs, vs, logits, encodeds = self.model.forward_encoded(self.cur_node.encoded, 
+                        a_tensor.unsqueeze(0), one_hot=True)
+                    next_node.expand(r=rs[-1, 0].unsqueeze(-1), v=vs[-1, 0].unsqueeze(-1), 
+                                     logits=logits[-1, 0], encoded=encodeds[-1])
+                next_node.visit()
+                self.cur_node = next_node
+            
+            root_node_stat = self.root_node.stat()
+            cur_node_stat = self.cur_node.stat()                        
+            reset = torch.tensor([reset], dtype=torch.float32)
+            time = F.one_hot(torch.tensor(cur_t).long(), self.rec_t)
+            depc = torch.tensor([self.discounting ** (self.rollout_depth-1)])
+            out = torch.concat([root_node_stat, cur_node_stat, reset, time, depc], dim=-1)
+            
+            self.last_node = self.cur_node       
+            
+            if reset:
+                self.rollout_depth = 0
+                self.cur_node = self.root_node
+                
+            return out
+                
+class Node:
+    def __init__(self, parent, action, logit, num_actions, discounting):        
+        
+        self.action = F.one_hot(torch.tensor(action).long(), num_actions) # shape (1, num_actions)        
+        self.r = torch.tensor([0.], dtype=torch.float32)    
+        self.v = torch.tensor([0.], dtype=torch.float32)            
+        self.logit = logit # shape (1,)        
+        
+        self.rollout_qs = []  # list of tensors of shape (1,)
+        self.rollout_n = torch.tensor([0.], dtype=torch.float32)    
+        self.parent = parent
+        self.children = []
+        self.encoded = None 
+        
+        self.num_actions = num_actions
+        self.discounting = discounting
+
+    def expanded(self):
+        return len(self.children) > 0
+
+    def expand(self, r, v, logits, encoded):
+        """
+        First time arriving a node and so we expand it
+        r, v: tensor of shape (1,)
+        logits: tensor of shape (num_actions,)
+        """
+        assert not self.expanded()
+        self.r = r
+        self.v = v
+        self.encoded = encoded
+        for a in range(self.num_actions):
+            child = self.children.append(Node(self, a, logits[[a]], self.num_actions, self.discounting))
+            
+    def visit(self):               
+        self.rollout_n = self.rollout_n + 1
+        self.rollout_qs.append(None)
+        self.trail_r = torch.tensor([0.], dtype=torch.float32)    
+        self.trail_discount = 1.
+        self.propagate(self.r, self.v)
+        
+    def propagate(self, r, v):
+        self.trail_r = self.trail_r + self.trail_discount * r
+        self.trail_discount = self.trail_discount * self.discounting
+        self.rollout_qs[-1] = self.trail_r + self.trail_discount * v
+        if self.parent is not None: self.parent.propagate(r, v)
+            
+    def stat(self):
+        assert self.expanded
+
+        self.child_logits = torch.concat([x.logit for x in self.children])        
+        child_rollout_qs_mean = []
+        child_rollout_qs_max = []
+        for x in self.children:
+            if len(x.rollout_qs) > 0:                
+                q_mean = torch.mean(torch.cat(x.rollout_qs), dim=-1, keepdim=True)
+                q_max = torch.max(torch.cat(x.rollout_qs), dim=-1, keepdim=True)[0]
+            else:
+                q_mean = torch.tensor([0.], dtype=torch.float32)    
+                q_max = torch.tensor([0.], dtype=torch.float32)    
+            child_rollout_qs_mean.append(q_mean)
+            child_rollout_qs_max.append(q_max)
+        self.child_rollout_qs_mean = torch.concat(child_rollout_qs_mean)
+        self.child_rollout_qs_max = torch.concat(child_rollout_qs_max)
+        self.child_rollout_ns = torch.concat([x.rollout_n for x in self.children])        
+            
+        ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
+                    "child_rollout_qs_max", "child_rollout_ns"]
+        self.ret_dict = {x: getattr(self, x) for x in ret_list}
+        out = torch.concat(list(self.ret_dict.values()))        
+        return out        
 
 def define_parser():
 
@@ -783,8 +915,8 @@ def define_parser():
 
     parser.add_argument("--rec_t", default=5, type=int, metavar="N",
                         help="Number of planning steps.")
-    parser.add_argument("--aug_stat", action="store_true",
-                        help="Whether to use augmented stat.")    
+    parser.add_argument("--stat_type", default=1, type=int, metavar="N",
+                        help="Staistic type (0: raw; 1: root node stat; 2. root & current node stat).")    
     parser.add_argument("--no_mem", action="store_true",
                         help="Whether to erase all memories after each real action.")   
     
@@ -837,8 +969,7 @@ checkpoint = torch.load("../models/model_1.tar")
 model.load_state_dict(checkpoint["model_state_dict"])    
 
 env = Environment(ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-     model=model, rec_t=flags.rec_t, discounting=flags.discounting, aug_stat=flags.aug_stat, no_mem=flags.no_mem))
-
+     model=model, rec_t=flags.rec_t, discounting=flags.discounting, stat_type=flags.stat_type, no_mem=flags.no_mem))
 obs_shape = env.gym_env.observation_space.shape
 
 logging.basicConfig(format='%(message)s', level=logging.DEBUG)
