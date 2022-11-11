@@ -32,26 +32,26 @@ from matplotlib import pyplot as plt
 import logging
 from collections import deque
 
-logging.basicConfig(format='%(message)s', level=logging.DEBUG)
+#logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 logging.getLogger('matplotlib.font_manager').disabled = True
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 # Update to original core funct
 
-def create_buffers(flags, obs_shape, num_actions) -> Buffers:
+def create_buffers(flags, obs_shape, num_actions, num_rewards) -> Buffers:
     T = flags.unroll_length
     specs = dict(
         frame=dict(size=(T + 1, *obs_shape), dtype=torch.float32),
-        reward=dict(size=(T + 1,), dtype=torch.float32),
+        reward=dict(size=(T + 1, num_rewards), dtype=torch.float32),
         done=dict(size=(T + 1,), dtype=torch.bool),
         truncated_done=dict(size=(T + 1,), dtype=torch.bool),
-        episode_return=dict(size=(T + 1,), dtype=torch.float32),
+        episode_return=dict(size=(T + 1, num_rewards), dtype=torch.float32),
         episode_step=dict(size=(T + 1,), dtype=torch.int32),
         policy_logits=dict(size=(T + 1, num_actions), dtype=torch.float32),
         im_policy_logits=dict(size=(T + 1, num_actions), dtype=torch.float32),
         reset_policy_logits=dict(size=(T + 1, 2), dtype=torch.float32),
-        baseline=dict(size=(T + 1,), dtype=torch.float32),
+        baseline=dict(size=(T + 1, num_rewards), dtype=torch.float32),
         last_action=dict(size=(T + 1, 3), dtype=torch.int64),
         action=dict(size=(T + 1,), dtype=torch.int64),
         im_action=dict(size=(T + 1,), dtype=torch.int64),
@@ -80,8 +80,7 @@ def act(
         timings = prof.Timings()  # Keep track of how fast things are.
 
         gym_env = ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-                               model=model, rec_t=flags.rec_t, discounting=flags.discounting, 
-                               stat_type=flags.stat_type, no_mem=flags.no_mem)
+                               model=model, flags=flags)
         seed = actor_index ^ int.from_bytes(os.urandom(4), byteorder="little")
         gym_env.seed(seed)
         env = Environment(gym_env)
@@ -121,6 +120,7 @@ def act(
 
                 for key in env_output:
                     if key in buffers:
+                        #print(key, env_output[key].shape, env_output[key])
                         buffers[key][index][t + 1, ...] = env_output[key]
                 for key in agent_output:
                     if key in buffers:
@@ -140,24 +140,27 @@ def act(
         print()
         raise e
 
-def compute_policy_gradient_loss(logits, im_logits, reset_logits,
-    actions, im_actions, reset_actions, cur_t, advantages):
-    re_cross_entropy = F.nll_loss(
-        F.log_softmax(torch.flatten(logits, 0, 1), dim=-1),
-        target=torch.flatten(actions, 0, 1),
-        reduction="none",)
-    im_cross_entropy = F.nll_loss(
-        F.log_softmax(torch.flatten(im_logits, 0, 1), dim=-1),
-        target=torch.flatten(im_actions, 0, 1),
-        reduction="none",) 
-    reset_cross_entropy = F.nll_loss(
-        F.log_softmax(torch.flatten(reset_logits, 0, 1), dim=-1),
-        target=torch.flatten(reset_actions, 0, 1),
-        reduction="none",)    
-    re_mask = (cur_t == 0).view_as(re_cross_entropy)
-    cross_entropy = torch.where(re_mask, re_cross_entropy, im_cross_entropy+reset_cross_entropy)
-    cross_entropy = cross_entropy.view_as(advantages)
-    return torch.sum(cross_entropy * advantages.detach())  
+def compute_policy_gradient_loss(logits_ls, actions_ls, advantages_ls, masks_ls):
+    loss = 0.
+    for logits, actions, advantages, masks in zip(logits_ls, actions_ls, advantages_ls, masks_ls):
+        cross_entropy = F.nll_loss(
+            F.log_softmax(torch.flatten(logits, 0, 1), dim=-1),
+            target=torch.flatten(actions, 0, 1),
+            reduction="none",)
+        cross_entropy = cross_entropy.view_as(advantages)
+        adv_cross_entropy = cross_entropy * advantages.detach()
+        loss = loss + torch.sum(adv_cross_entropy * (1-masks))
+    return loss  
+
+def compute_entropy_loss(logits_ls, masks_ls, c_ls):
+    """Return the entropy loss, i.e., the negative entropy of the policy."""
+    loss = 0.
+    for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
+        policy = F.softmax(logits, dim=-1)
+        log_policy = F.log_softmax(logits, dim=-1)
+        ent = torch.sum(policy * log_policy, dim=-1) * masks * c
+        loss = loss + torch.sum(ent)        
+    return loss
 
 def action_log_probs(policy_logits, actions):
     return -F.nll_loss(
@@ -167,36 +170,19 @@ def action_log_probs(policy_logits, actions):
     ).view_as(actions) 
   
 def from_logits(
-    behavior_policy_logits,
-    behavior_im_policy_logits,
-    behavior_reset_policy_logits,
-    target_policy_logits,
-    target_im_policy_logits,
-    target_reset_policy_logits,            
-    actions,
-    im_actions,
-    reset_actions,
-    cur_t,     
-    discounts,
-    rewards,
-    values,
-    bootstrap_value,
-    clip_rho_threshold=1.0,
-    clip_pg_rho_threshold=1.0,
-    lamb=1.0,
-):
+    behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
+    discounts, rewards, values, bootstrap_value, clip_rho_threshold=1.0,
+    clip_pg_rho_threshold=1.0, lamb=1.0,):
     """V-trace for softmax policies."""
     
-    target_action_log_probs = action_log_probs(target_policy_logits, actions)
-    target_im_reset_action_log_probs = (action_log_probs(target_im_policy_logits, im_actions) +
-        action_log_probs(target_reset_policy_logits, reset_actions))
+    log_rhos = 0.
     
-    behavior_action_log_probs = action_log_probs(behavior_policy_logits, actions)
-    behavior_im_reset_action_log_probs = (action_log_probs(behavior_im_policy_logits, im_actions) +
-        action_log_probs(behavior_reset_policy_logits, reset_actions))    
-    
-    log_rhos = torch.where(cur_t==0, target_action_log_probs - behavior_action_log_probs,
-        target_im_reset_action_log_probs - behavior_im_reset_action_log_probs)    
+    for behavior_logits, target_logits, actions, masks in zip(behavior_logits_ls, 
+             target_logits_ls, actions_ls, masks_ls):
+        behavior_log_probs = action_log_probs(behavior_logits, actions)        
+        target_log_probs = action_log_probs(target_logits, actions)
+        log_rho = target_log_probs - behavior_log_probs
+        log_rhos = log_rhos + log_rho * masks
     
     vtrace_returns = vtrace.from_importance_weights(
         log_rhos=log_rhos,
@@ -210,8 +196,8 @@ def from_logits(
     )
     return vtrace.VTraceFromLogitsReturns(
         log_rhos=log_rhos,
-        behavior_action_log_probs=behavior_action_log_probs,
-        target_action_log_probs=target_action_log_probs,
+        behavior_action_log_probs=None,
+        target_action_log_probs=None,
         **vtrace_returns._asdict(),
     )  
   
@@ -228,9 +214,12 @@ def learn(
     """Performs a learning (optimization) step."""
     with lock:
         learner_outputs, unused_state = model(batch, initial_agent_state)
-
+        learner_outputs["im_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
+        learner_outputs["reset_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
+        learner_outputs["baseline"].register_hook(lambda grad: grad / (flags.rec_t - 1))
+        
         # Take final value function slice for bootstrapping.
-        bootstrap_value = learner_outputs["baseline"][-1]
+        bootstrap_value = learner_outputs["baseline"][-1][:, 0]
 
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         batch = {key: tensor[1:] for key, tensor in batch.items()}
@@ -241,49 +230,64 @@ def learn(
             clipped_rewards = torch.clamp(rewards, -flags.reward_clipping, flags.reward_clipping)
         else:
             clipped_rewards = rewards
-
-        discounts = (~batch["done"]).float() * flags.discounting
+        
+        # compute advantage w.r.t real rewards
+        
+        discounts = (~batch["done"]).float() * flags.discounting        
+        behavior_logits_ls = [batch["policy_logits"], batch["im_policy_logits"], batch["reset_policy_logits"]]
+        target_logits_ls = [learner_outputs["policy_logits"], learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
+        actions_ls = [batch["action"], batch["im_action"], batch["reset_action"]]        
+        im_mask = (batch["cur_t"] == 0).float()
+        real_mask = 1 - im_mask
+        masks_ls = [real_mask, im_mask, im_mask]        
 
         vtrace_returns = from_logits(
-            behavior_policy_logits=batch["policy_logits"],
-            behavior_im_policy_logits=batch["im_policy_logits"],
-            behavior_reset_policy_logits=batch["reset_policy_logits"],
-            target_policy_logits=learner_outputs["policy_logits"],
-            target_im_policy_logits=learner_outputs["im_policy_logits"],
-            target_reset_policy_logits=learner_outputs["reset_policy_logits"],            
-            actions=batch["action"],
-            im_actions=batch["im_action"],
-            reset_actions=batch["reset_action"],
-            cur_t=batch["cur_t"],          
+            behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
             discounts=discounts,
-            rewards=clipped_rewards,
-            values=learner_outputs["baseline"],
+            rewards=clipped_rewards[:, :, 0],
+            values=learner_outputs["baseline"][:, :, 0],
             bootstrap_value=bootstrap_value,
             lamb=flags.lamb
         )
-
-        pg_loss = compute_policy_gradient_loss(
-            learner_outputs["policy_logits"],
-            learner_outputs["im_policy_logits"],
-            learner_outputs["reset_policy_logits"],                
-            batch["action"],
-            batch["im_action"],
-            batch["reset_action"],
-            batch["cur_t"],      
-            vtrace_returns.pg_advantages,
-        )
+        
+        advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
+        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, advantages_ls, masks_ls)         
         baseline_loss = flags.baseline_cost * compute_baseline_loss(
-            vtrace_returns.vs - learner_outputs["baseline"]
-        )
-        re_entropy_loss = compute_entropy_loss(learner_outputs["policy_logits"])
-        im_entropy_loss = compute_entropy_loss(learner_outputs["im_policy_logits"])                                       
-        reset_entropy_loss = compute_entropy_loss(learner_outputs["reset_policy_logits"]) 
-        entropy_loss = flags.entropy_cost * (re_entropy_loss)
-        im_entropy_loss = flags.im_entropy_cost * (im_entropy_loss + reset_entropy_loss)
+            vtrace_returns.vs - learner_outputs["baseline"][:, :, 0])
+        
+        # compute advantage w.r.t imagainary rewards
+        
+        if flags.reward_type == 1:
+            discounts = (~(batch["cur_t"] == 0)).float() * flags.discounting        
+            behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
+            target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
+            actions_ls = [batch["im_action"], batch["reset_action"]] 
+            im_mask = (batch["cur_t"] == 0).float()
+            masks_ls = [im_mask, im_mask]  
+            
+            vtrace_returns = from_logits(
+                behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
+                discounts=discounts,
+                rewards=clipped_rewards[:, :, 1],
+                values=learner_outputs["baseline"][:, :, 1],
+                bootstrap_value=bootstrap_value,
+                lamb=flags.lamb
+            )
+            advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
+            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, advantages_ls, masks_ls)   
+            im_baseline_loss = flags.baseline_cost * compute_baseline_loss(
+                vtrace_returns.vs - learner_outputs["baseline"][:, :, 1])        
+        
+        cs_ls = [flags.entropy_cost, flags.im_entropy_cost, flags.reset_entropy_cost]
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)
+
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
-
-        episode_returns = batch["episode_return"][batch["done"]]
+        
+        if flags.reward_type == 1:
+            total_loss = total_loss + flags.im_cost * (im_pg_loss + im_baseline_loss)
+        
+        episode_returns = batch["episode_return"][batch["done"]][:, 0]        
         stats = {
             "episode_returns": tuple(episode_returns.cpu().numpy()),
             "mean_episode_return": torch.mean(episode_returns).item(),
@@ -291,9 +295,14 @@ def learn(
             "pg_loss": pg_loss.item(),
             "baseline_loss": baseline_loss.item(),
             "entropy_loss": entropy_loss.item(),
-            "im_entropy_loss": im_entropy_loss.item(),
             "reg_loss": reg_loss.item()
         }
+        
+        if flags.reward_type == 1:
+            im_episode_returns = batch["episode_return"][batch["cur_t"] == 0][:, 1]
+            stats["im_episode_returns"] = tuple(im_episode_returns.cpu().numpy())
+            stats["im_pg_loss"] = im_pg_loss.item()
+            stats["im_baseline_loss"] = im_baseline_loss.item()           
 
         optimizer.zero_grad()
         total_loss.backward()
@@ -336,7 +345,7 @@ class Environment:
         initial_reward = torch.zeros(1, 1)
         # This supports only single-tensor actions ATM.
         initial_last_action = torch.zeros(1, 1, dtype=torch.int64)
-        self.episode_return = torch.zeros(1, 1)
+        self.episode_return = torch.zeros(1, 1, 1)
         self.episode_step = torch.zeros(1, 1, dtype=torch.int32)
         initial_done = torch.ones(1, 1, dtype=torch.bool)
         initial_frame = _format_frame(self.gym_env.reset())
@@ -354,19 +363,22 @@ class Environment:
     def step(self, action):
         frame, reward, done, unused_info = self.gym_env.step(action[0,0].cpu().detach().numpy())     
         self.episode_step += 1
-        self.episode_return += reward
+        self.episode_return = self.episode_return + torch.tensor(reward).unsqueeze(0).unsqueeze(0)
         episode_step = self.episode_step
         episode_return = self.episode_return
         if done:
             frame = self.gym_env.reset()
-            self.episode_return = torch.zeros(1, 1)
-            self.episode_step = torch.zeros(1, 1, dtype=torch.int32)
+            self.episode_return = torch.zeros(1, 1, 1)
+            self.episode_step = torch.zeros(1, 1, dtype=torch.int32)        
         frame = _format_frame(frame)
-        reward = torch.tensor(reward).view(1, 1)
+        reward = torch.tensor(reward).view(1, 1, -1)
         done = torch.tensor(done).view(1, 1)
         truncated_done = 'TimeLimit.truncated' in unused_info and unused_info['TimeLimit.truncated']
         truncated_done = torch.tensor(truncated_done).view(1, 1)
         cur_t = torch.tensor(unused_info["cur_t"]).view(1, 1)
+        if cur_t == 0 and self.episode_return.shape[2] > 1:
+            self.episode_return[:, :, 1] = 0.
+        
         return dict(
             frame=frame,
             reward=reward,
@@ -399,7 +411,7 @@ class Vec_Environment:
         self.episode_step = torch.zeros(1, self.bsz)        
 
     def initial(self):
-        initial_reward = torch.zeros(1, self.bsz)
+        initial_reward = torch.zeros(1, self.bsz, 1)
         # This supports only single-tensor actions ATM.
         initial_last_action = torch.zeros(1, self.bsz, dtype=torch.int64)
         self.episode_return = torch.zeros(1, self.bsz)
@@ -428,7 +440,7 @@ class Vec_Environment:
         truncated_done = ['TimeLimit.truncated' in x and x['TimeLimit.truncated'] for x in unused_info]
         truncated_done = torch.tensor(truncated_done).view(1, self.bsz)
         
-        self.episode_return = (~done).float() * self.episode_return
+        self.episode_return = (~done).float().unsqueeze(-1) * self.episode_return
         self.episode_step = (~done).float() * self.episode_step
         
         frame = _format_frame(frame, self.bsz)
@@ -480,6 +492,7 @@ class Actor_net(nn.Module):
         self.tran_skip = flags.tran_skip             # whether to add skip connection
         self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim
         self.no_mem = flags.no_mem
+        self.num_rewards = flags.num_rewards
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -512,7 +525,7 @@ class Actor_net(nn.Module):
         
         self.im_policy = nn.Linear(256, self.num_actions)        
         self.policy = nn.Linear(256, self.num_actions)        
-        self.baseline = nn.Linear(256, 1)        
+        self.baseline = nn.Linear(256, self.num_rewards)        
         self.reset = nn.Linear(256, 2)        
         
         print("actor size: ", sum(p.numel() for p in self.parameters()))
@@ -581,7 +594,7 @@ class Actor_net(nn.Module):
         action = action.view(T, B)      
         im_action = im_action.view(T, B)      
         reset_action = reset_action.view(T, B)             
-        baseline = baseline.view(T, B)
+        baseline = baseline.view(T, B, self.num_rewards)
         
         ret_dict = dict(policy_logits=policy_logits,                         
                         im_policy_logits=im_policy_logits,                         
@@ -596,38 +609,40 @@ class Actor_net(nn.Module):
     
         
 class ModelWrapper(gym.Wrapper):
-    def __init__(self, env, model, rec_t, discounting=0.99, stat_type=0, no_mem=True):
+    def __init__(self, env, model, flags):
         gym.Wrapper.__init__(self, env)
         self.env = env
         self.model = model                
-        self.rec_t = rec_t
+        self.rec_t = flags.rec_t        
+        self.discounting = flags.discounting
+        self.stat_type = flags.stat_type    
+        self.reward_type = flags.reward_type    
+        self.no_mem = flags.no_mem
         self.num_actions = env.action_space.n
         
         # 0 for the most basic; 
         # 1 for augmented input in root stat; 
         # 2 for tree stat
-        if stat_type == 0:
+        if self.stat_type == 0:
             self.use_model = self.use_model_raw
             obs_n = 5 + num_actions * 4 + self.rec_t
-        elif stat_type == 1:            
+        elif self.stat_type == 1:            
             self.use_model = self.use_model_raw
             obs_n = 7 + num_actions * 7 + self.rec_t
-        elif stat_type == 2:
+        elif self.stat_type == 2:
             self.use_model = self.use_model_tree    
-            obs_n = 6 + num_actions * 10 + self.rec_t         
+            obs_n = 9 + num_actions * 10 + self.rec_t         
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
-        self.discounting = discounting
-        self.stat_type = stat_type 
-        
-        self.no_mem = no_mem
         self.model.train(False)        
         
     def reset(self, **kwargs):
         x = self.env.reset()
         self.cur_t = 0        
-        out = self.use_model(x, 0., 0, self.cur_t, 1.)        
+        out = self.use_model(x, 0., 0, self.cur_t, 1.)
+        if self.reward_type == 1:
+            self.last_root_max_q = self.root_max_q
         return out.unsqueeze(-1).unsqueeze(-1)
     
     def step(self, action):  
@@ -635,7 +650,10 @@ class ModelWrapper(gym.Wrapper):
         if self.cur_t < self.rec_t - 1:
           self.cur_t += 1
           out = self.use_model(None, None, im_action, self.cur_t, reset)          
-          r = 0.
+          if self.reward_type == 0:
+            r = np.array([0.])
+          else:
+            r = np.array([0., (self.root_max_q - self.last_root_max_q).item()], dtype=np.float32)
           done = False
           info = {'cur_t': self.cur_t}            
         else:
@@ -643,6 +661,11 @@ class ModelWrapper(gym.Wrapper):
           x, r, done, info = self.env.step(re_action)          
           out = self.use_model(x, r, re_action, self.cur_t, 1.)          
           info['cur_t'] = self.cur_t
+          if self.reward_type == 0:
+            r = np.array([r])
+          else:
+            r = np.array([r, 0.], dtype=np.float32)   
+        self.last_root_max_q = self.root_max_q
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info        
         
     def use_model_raw(self, x, r, a, cur_t, reset):
@@ -780,10 +803,17 @@ class ModelWrapper(gym.Wrapper):
             reset = torch.tensor([reset], dtype=torch.float32)
             time = F.one_hot(torch.tensor(cur_t).long(), self.rec_t)
             depc = torch.tensor([self.discounting ** (self.rollout_depth-1)])
-            out = torch.concat([root_node_stat, cur_node_stat, reset, time, depc], dim=-1)
+            
+            root_trail_r = self.root_node.trail_r / self.discounting
+            root_rollout_q = self.root_node.rollout_q / self.discounting
+            root_max_q = torch.max(torch.concat(self.root_node.rollout_qs)).unsqueeze(-1) / self.discounting
+            
+            out = torch.concat([root_node_stat, cur_node_stat, reset, time, depc,
+                                root_trail_r, root_rollout_q, root_max_q], dim=-1)
             
             self.last_node = self.cur_node     
             
+            self.root_max_q = root_max_q
             self.ret_dict = {"v0": self.root_node.ret_dict["v"].unsqueeze(0),
                              "q_s_a": self.root_node.ret_dict["child_rollout_qs_mean"].unsqueeze(0),
                              "n_s_a": self.root_node.ret_dict["child_rollout_ns"].unsqueeze(0),
@@ -842,8 +872,9 @@ class Node:
     def propagate(self, r, v, new_rollout):
         self.trail_r = self.trail_r + self.trail_discount * r
         self.trail_discount = self.trail_discount * self.discounting
+        self.rollout_q = self.trail_r + self.trail_discount * v
         if new_rollout:
-            self.rollout_qs.append(self.trail_r + self.trail_discount * v)
+            self.rollout_qs.append(self.rollout_q)
             self.rollout_n = self.rollout_n + 1
         if self.parent is not None: self.parent.propagate(r, v, new_rollout)
             
@@ -884,11 +915,14 @@ def define_parser():
     parser.add_argument("--xpid", default=None,
                         help="Experiment id (default: None).")
 
-    # Training settings.
     parser.add_argument("--disable_checkpoint", action="store_true",
                         help="Disable saving checkpoint.")
+    parser.add_argument("--load_checkpoint", default="",
+                        help="Load checkpoint directory.")    
     parser.add_argument("--savedir", default="~/RS/thinker/logs/torchbeast",
                         help="Root dir where experiment data will be saved.")
+
+    # Training settings.        
     parser.add_argument("--num_actors", default=48, type=int, metavar="N",
                         help="Number of actors (default: 48).")
     parser.add_argument("--total_steps", default=500000000, type=int, metavar="T",
@@ -941,12 +975,16 @@ def define_parser():
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.0001,
                         type=float, help="Entropy cost/multiplier.")
-    parser.add_argument("--im_entropy_cost", default=0.000001,
-                        type=float, help="Imagainary Entropy cost/multiplier.")    
+    parser.add_argument("--im_entropy_cost", default=0.0001,
+                        type=float, help="Imagainary Entropy cost/multiplier.")   
+    parser.add_argument("--reset_entropy_cost", default=0.0001,
+                        type=float, help="Reset Entropy cost/multiplier.")       
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=0.1,
                         type=float, help="Reg cost/multiplier.")
+    parser.add_argument("--im_cost", default=1,
+                        type=float, help="Imaginary reward cost/multiplier.")    
     parser.add_argument("--discounting", default=0.99,
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=1.,
@@ -955,6 +993,8 @@ def define_parser():
                         metavar="N", help="Reward clipping.")
     parser.add_argument("--trun_bs", action="store_true",
                         help="Whether to add baseline as reward when truncated.")
+    parser.add_argument("--reward_type", default=1, type=int, metavar="N",
+                        help="Reward type")    
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.00005,
@@ -974,7 +1014,12 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()              
+flags = parser.parse_args()        
+
+if flags.reward_type == 0:
+    flags.num_rewards = num_rewards = 1
+else:
+    flags.num_rewards = num_rewards = 2
 
 raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
@@ -984,15 +1029,19 @@ checkpoint = torch.load("../models/model_1.tar")
 model.load_state_dict(checkpoint["model_state_dict"])    
 
 env = Environment(ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
-     model=model, rec_t=flags.rec_t, discounting=flags.discounting, stat_type=flags.stat_type, no_mem=flags.no_mem))
+     model=model, flags=flags))
 obs_shape = env.gym_env.observation_space.shape
 
 logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
 mp.set_sharing_strategy('file_system')
 
-if flags.xpid is None:
-    flags.xpid = "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
+if flags.load_checkpoint:
+    flags.savedir = os.path.split(os.path.split(flags.load_checkpoint)[0])[0]
+    flags.xpid = os.path.split(os.path.split(flags.load_checkpoint)[0])[-1]    
+else:
+    if flags.xpid is None:
+        flags.xpid = "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
 plogger = file_writer.FileWriter(
     xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir
 )
@@ -1020,7 +1069,11 @@ T = flags.unroll_length
 B = flags.batch_size
 
 actor_net = Actor_net(obs_shape, num_actions, flags)
-buffers = create_buffers(flags, obs_shape, num_actions)
+buffers = create_buffers(flags, obs_shape, num_actions, num_rewards)
+
+if flags.load_checkpoint:
+    train_checkpoint = torch.load(flags.load_checkpoint)
+    actor_net.load_state_dict(train_checkpoint["model_state_dict"])  
 
 actor_net.share_memory()
 
@@ -1043,7 +1096,10 @@ for i in range(flags.num_actors):
     actor.start()
     actor_processes.append(actor)
 
-learner_net = Actor_net(obs_shape, num_actions, flags).to(device=flags.device)
+learner_net = Actor_net(obs_shape, num_actions, flags)
+if flags.load_checkpoint:
+    learner_net.load_state_dict(train_checkpoint["model_state_dict"])
+learner_net = learner_net.to(device=flags.device)  
 
 if not flags.disable_adam:
     print("Using Adam...")        
@@ -1056,6 +1112,10 @@ else:
         momentum=flags.momentum,
         eps=flags.epsilon,
         alpha=flags.alpha,)
+    
+if flags.load_checkpoint:
+    optimizer.load_state_dict(train_checkpoint["optimizer_state_dict"])    
+    
 print("All parameters: ")
 for k, v in learner_net.named_parameters(): print(k, v.numel())    
 
@@ -1063,18 +1123,25 @@ def lr_lambda(epoch):
     return 1 - min(epoch * T * B, flags.total_steps) / flags.total_steps
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-
+if flags.load_checkpoint:
+    scheduler.load_state_dict(train_checkpoint["scheduler_state_dict"])
+    
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
-    "pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss"]
+    "pg_loss", "baseline_loss", "entropy_loss"]
+if flags.reward_type == 1:
+    stat_keys.extend(["im_pg_loss", "im_baseline_loss"])
+
 logger.info("# Step\t%s", "\t".join(stat_keys))
 
-step, stats, last_returns, tot_eps = 0, {}, deque(maxlen=400), 0
-
+step, stats, last_returns, last_im_returns, tot_eps = 0, {}, deque(maxlen=400), deque(maxlen=40000), 0
+if flags.load_checkpoint:
+    step = train_checkpoint["scheduler_state_dict"]["_step_count"] * T * B
+    
 def batch_and_learn(i, lock=threading.Lock()):
     """Thread target for the learning process."""
     #nonlocal step, stats, last_returns, tot_eps
-    global step, stats, last_returns, tot_eps
+    global step, stats, last_returns, last_im_returns, tot_eps
     timings = prof.Timings()
     while step < flags.total_steps:
         timings.reset()
@@ -1083,12 +1150,15 @@ def batch_and_learn(i, lock=threading.Lock()):
         stats = learn(flags, actor_net, learner_net, batch, agent_state, optimizer, 
             scheduler)
         last_returns.extend(stats["episode_returns"])
+        if "im_episode_returns" in stats:
+            last_im_returns.extend(stats["im_episode_returns"])
         tot_eps = tot_eps + len(stats["episode_returns"])
         timings.time("learn")
         with lock:
             to_log = dict(step=step)
             to_log.update({k: stats[k] for k in stat_keys})
-            to_log.update({"trail_mean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
+            to_log.update({"trail_mean_im_episode_return": np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
+                           "trail_mean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
                            "episode": tot_eps})
             plogger.log(to_log)
             step += T * B
@@ -1142,12 +1212,14 @@ try:
             mean_return = ""
         total_loss = stats.get("total_loss", float("inf"))
 
-        print_str =  "Steps %i @ %.1f SPS. Eps %i. L400 Return %f. Loss %f" % (step, sps, tot_eps, 
-            np.average(last_returns) if len(last_returns) > 0 else 0., total_loss)
+        print_str =  "Steps %i @ %.1f SPS. Eps %i. L400 Return %f (%f). Loss %.2f" % (step, sps, tot_eps, 
+            np.average(last_returns) if len(last_returns) > 0 else 0.,
+            np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
+            total_loss)
 
-        for s in ["pg_loss", "baseline_loss", "entropy_loss", "im_entropy_loss", "reg_loss", "total_norm"]:
-            if s in stats:
-                print_str += " %s %f" % (s, stats[s])
+        for s in ["pg_loss", "baseline_loss", "im_pg_loss", "im_baseline_loss",
+                  "entropy_loss", "reg_loss", "total_norm"]:
+            if s in stats: print_str += " %s %.2f" % (s, stats[s])
 
         logging.info(print_str)
 except KeyboardInterrupt:
