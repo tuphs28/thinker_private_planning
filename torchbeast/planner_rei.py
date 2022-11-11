@@ -257,6 +257,9 @@ def learn(
         
         # compute advantage w.r.t imagainary rewards
         
+        cs_ls = [flags.entropy_cost, flags.im_entropy_cost, flags.reset_entropy_cost]
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)        
+
         if flags.reward_type == 1:
             discounts = (~(batch["cur_t"] == 0)).float() * flags.discounting        
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
@@ -276,10 +279,7 @@ def learn(
             advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
             im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, advantages_ls, masks_ls)   
             im_baseline_loss = flags.baseline_cost * compute_baseline_loss(
-                vtrace_returns.vs - learner_outputs["baseline"][:, :, 1])        
-        
-        cs_ls = [flags.entropy_cost, flags.im_entropy_cost, flags.reset_entropy_cost]
-        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)
+                vtrace_returns.vs - learner_outputs["baseline"][:, :, 1])     
 
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
