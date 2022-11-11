@@ -603,16 +603,18 @@ class ModelWrapper(gym.Wrapper):
         self.rec_t = rec_t
         self.num_actions = env.action_space.n
         
-        # 0 for the most basic; 1 for augmented input in root stat; 2 for tree stat
+        # 0 for the most basic; 
+        # 1 for augmented input in root stat; 
+        # 2 for tree stat
         if stat_type == 0:
             self.use_model = self.use_model_raw
-            obs_n = 7 + num_actions * 7 + self.rec_t
-        elif stat_type == 1:
-            self.use_model = self.use_model_raw
             obs_n = 5 + num_actions * 4 + self.rec_t
+        elif stat_type == 1:            
+            self.use_model = self.use_model_raw
+            obs_n = 7 + num_actions * 7 + self.rec_t
         elif stat_type == 2:
             self.use_model = self.use_model_tree    
-            obs_n = 6 + num_actions * 10 + self.rec_t
+            obs_n = 6 + num_actions * 10 + self.rec_t         
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
@@ -749,12 +751,14 @@ class ModelWrapper(gym.Wrapper):
                     re_reward = torch.tensor([r], dtype=torch.float32)                
                 
                 x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                self.x = x_tensor
                 a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)
                 _, vs, logits, encodeds = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                
                 
                 self.root_node = Node(parent=None, action=re_action, logit=None, 
-                                 num_actions=self.num_actions,
-                                 discounting=self.discounting)
+                                      num_actions=self.num_actions,
+                                      discounting=self.discounting,
+                                      rec_t=self.rec_t)
                 self.root_node.expand(r=re_reward, v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
                                       encoded=encodeds[-1])
                 self.root_node.visit()
@@ -778,16 +782,22 @@ class ModelWrapper(gym.Wrapper):
             depc = torch.tensor([self.discounting ** (self.rollout_depth-1)])
             out = torch.concat([root_node_stat, cur_node_stat, reset, time, depc], dim=-1)
             
-            self.last_node = self.cur_node       
+            self.last_node = self.cur_node     
+            
+            self.ret_dict = {"v0": self.root_node.ret_dict["v"].unsqueeze(0),
+                             "q_s_a": self.root_node.ret_dict["child_rollout_qs_mean"].unsqueeze(0),
+                             "n_s_a": self.root_node.ret_dict["child_rollout_ns"].unsqueeze(0),
+                             "logit0": self.root_node.ret_dict["child_logits"].unsqueeze(0),}
             
             if reset:
                 self.rollout_depth = 0
                 self.cur_node = self.root_node
+                self.cur_node.visit()
                 
             return out
                 
 class Node:
-    def __init__(self, parent, action, logit, num_actions, discounting):        
+    def __init__(self, parent, action, logit, num_actions, discounting, rec_t):        
         
         self.action = F.one_hot(torch.tensor(action).long(), num_actions) # shape (1, num_actions)        
         self.r = torch.tensor([0.], dtype=torch.float32)    
@@ -802,6 +812,9 @@ class Node:
         
         self.num_actions = num_actions
         self.discounting = discounting
+        self.rec_t = rec_t
+        
+        self.visited = False
 
     def expanded(self):
         return len(self.children) > 0
@@ -817,20 +830,22 @@ class Node:
         self.v = v
         self.encoded = encoded
         for a in range(self.num_actions):
-            child = self.children.append(Node(self, a, logits[[a]], self.num_actions, self.discounting))
+            child = self.children.append(Node(self, a, logits[[a]], 
+               self.num_actions, self.discounting, self.rec_t))
             
-    def visit(self):               
-        self.rollout_n = self.rollout_n + 1
-        self.rollout_qs.append(None)
+    def visit(self):
         self.trail_r = torch.tensor([0.], dtype=torch.float32)    
         self.trail_discount = 1.
-        self.propagate(self.r, self.v)
+        self.propagate(self.r, self.v, not self.visited)        
+        self.visited = True
         
-    def propagate(self, r, v):
+    def propagate(self, r, v, new_rollout):
         self.trail_r = self.trail_r + self.trail_discount * r
         self.trail_discount = self.trail_discount * self.discounting
-        self.rollout_qs[-1] = self.trail_r + self.trail_discount * v
-        if self.parent is not None: self.parent.propagate(r, v)
+        if new_rollout:
+            self.rollout_qs.append(self.trail_r + self.trail_discount * v)
+            self.rollout_n = self.rollout_n + 1
+        if self.parent is not None: self.parent.propagate(r, v, new_rollout)
             
     def stat(self):
         assert self.expanded
@@ -849,7 +864,7 @@ class Node:
             child_rollout_qs_max.append(q_max)
         self.child_rollout_qs_mean = torch.concat(child_rollout_qs_mean)
         self.child_rollout_qs_max = torch.concat(child_rollout_qs_max)
-        self.child_rollout_ns = torch.concat([x.rollout_n for x in self.children])        
+        self.child_rollout_ns = torch.concat([x.rollout_n for x in self.children]) / self.rec_t       
             
         ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
                     "child_rollout_qs_max", "child_rollout_ns"]
@@ -959,7 +974,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args()              
 
 raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
