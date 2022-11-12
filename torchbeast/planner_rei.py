@@ -158,8 +158,8 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         policy = F.softmax(logits, dim=-1)
         log_policy = F.log_softmax(logits, dim=-1)
-        ent = torch.sum(policy * log_policy, dim=-1) * masks * c
-        loss = loss + torch.sum(ent)        
+        ent = torch.sum(policy * log_policy, dim=-1) * masks 
+        loss = loss + torch.sum(ent) * c 
     return loss
 
 def action_log_probs(policy_logits, actions):
