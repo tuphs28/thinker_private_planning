@@ -219,7 +219,7 @@ def learn(
         learner_outputs["baseline"].register_hook(lambda grad: grad / (flags.rec_t - 1))
         
         # Take final value function slice for bootstrapping.
-        bootstrap_value = learner_outputs["baseline"][-1][:, 0]
+        bootstrap_value = learner_outputs["baseline"][-1]
 
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         batch = {key: tensor[1:] for key, tensor in batch.items()}
@@ -246,7 +246,7 @@ def learn(
             discounts=discounts,
             rewards=clipped_rewards[:, :, 0],
             values=learner_outputs["baseline"][:, :, 0],
-            bootstrap_value=bootstrap_value,
+            bootstrap_value=bootstrap_value[:, 0],
             lamb=flags.lamb
         )
         
@@ -273,7 +273,7 @@ def learn(
                 discounts=discounts,
                 rewards=clipped_rewards[:, :, 1],
                 values=learner_outputs["baseline"][:, :, 1],
-                bootstrap_value=bootstrap_value,
+                bootstrap_value=bootstrap_value[:, 1],
                 lamb=flags.lamb
             )
             advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
