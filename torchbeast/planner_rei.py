@@ -158,7 +158,7 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         policy = F.softmax(logits, dim=-1)
         log_policy = F.log_softmax(logits, dim=-1)
-        ent = torch.sum(policy * log_policy, dim=-1) * masks 
+        ent = torch.sum(policy * log_policy, dim=-1) * (1-masks)
         loss = loss + torch.sum(ent) * c 
     return loss
 
@@ -182,7 +182,7 @@ def from_logits(
         behavior_log_probs = action_log_probs(behavior_logits, actions)        
         target_log_probs = action_log_probs(target_logits, actions)
         log_rho = target_log_probs - behavior_log_probs
-        log_rhos = log_rhos + log_rho * masks
+        log_rhos = log_rhos + log_rho * (1-masks)
     
     vtrace_returns = vtrace.from_importance_weights(
         log_rhos=log_rhos,
