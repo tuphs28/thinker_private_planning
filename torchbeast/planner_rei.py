@@ -1,3 +1,7 @@
+import logging
+logging.basicConfig(format='%(message)s', level=logging.INFO)
+logging.getLogger('matplotlib.font_manager').disabled = True
+
 import argparse
 import logging
 import os
@@ -19,7 +23,6 @@ from torch.nn import functional as F
 from torchbeast.core import file_writer
 from torchbeast.core import prof
 from torchbeast.core import vtrace
-from torchbeast.core.environment import Environment, Vec_Environment
 from torchbeast.atari_wrappers import *
 from torchbeast.transformer_rnn import *
 from torchbeast.train import *
@@ -31,9 +34,6 @@ import numpy as np
 from matplotlib import pyplot as plt
 import logging
 from collections import deque
-
-#logging.basicConfig(format='%(message)s', level=logging.DEBUG)
-logging.getLogger('matplotlib.font_manager').disabled = True
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -55,9 +55,10 @@ def create_buffers(flags, obs_shape, num_actions, num_rewards) -> Buffers:
         last_action=dict(size=(T + 1, 3), dtype=torch.int64),
         action=dict(size=(T + 1,), dtype=torch.int64),
         im_action=dict(size=(T + 1,), dtype=torch.int64),
-        reset_action=dict(size=(T + 1,), dtype=torch.int64),
-        cur_t=dict(size=(T + 1,), dtype=torch.int64),
-        reg_loss=dict(size=(T + 1,), dtype=torch.float32),        
+        reset_action=dict(size=(T + 1,), dtype=torch.int64),        
+        reg_loss=dict(size=(T + 1,), dtype=torch.float32),  
+        cur_t=dict(size=(T + 1,), dtype=torch.int64),             
+        max_rollout_depth=dict(size=(T + 1,), dtype=torch.float32),  
     )
     buffers: Buffers = {key: [] for key in specs}
     for _ in range(flags.num_buffers):
@@ -114,7 +115,7 @@ def act(
 
                 if flags.trun_bs:
                     if env_output['truncated_done']: 
-                        env_output['reward'] = env_output['reward'] + flags.discounting * agent_output['baseline']
+                        env_output['reward'] = env_output['reward'] + flags.im_discounting * agent_output['baseline']
 
                 timings.time("step")
 
@@ -233,7 +234,7 @@ def learn(
         
         # compute advantage w.r.t real rewards
         
-        discounts = (~batch["done"]).float() * flags.discounting        
+        discounts = (~batch["done"]).float() * flags.im_discounting        
         behavior_logits_ls = [batch["policy_logits"], batch["im_policy_logits"], batch["reset_policy_logits"]]
         target_logits_ls = [learner_outputs["policy_logits"], learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
         actions_ls = [batch["action"], batch["im_action"], batch["reset_action"]]        
@@ -261,7 +262,7 @@ def learn(
         entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)        
 
         if flags.reward_type == 1:
-            discounts = (~(batch["cur_t"] == 0)).float() * flags.discounting        
+            discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
             target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
             actions_ls = [batch["im_action"], batch["reset_action"]] 
@@ -287,23 +288,25 @@ def learn(
         if flags.reward_type == 1:
             total_loss = total_loss + flags.im_cost * (im_pg_loss + im_baseline_loss)
         
-        episode_returns = batch["episode_return"][batch["done"]][:, 0]        
+        episode_returns = batch["episode_return"][batch["done"]][:, 0]  
+        max_rollout_depth = (batch["max_rollout_depth"][batch["cur_t"] == 0]).detach().cpu().numpy()
+        max_rollout_depth = np.average(max_rollout_depth) if len (max_rollout_depth) > 0 else 0.        
         stats = {
-            "episode_returns": tuple(episode_returns.cpu().numpy()),
+            "episode_returns": tuple(episode_returns.detach().cpu().numpy()),
             "mean_episode_return": torch.mean(episode_returns).item(),
             "total_loss": total_loss.item(),
             "pg_loss": pg_loss.item(),
             "baseline_loss": baseline_loss.item(),
             "entropy_loss": entropy_loss.item(),
-            "reg_loss": reg_loss.item()
+            "reg_loss": reg_loss.item(),
+            "max_rollout_depth": max_rollout_depth
         }
         
-        if flags.reward_type == 1:
-            
+        if flags.reward_type == 1:            
             im_episode_returns = batch["episode_return"][batch["cur_t"] == 0][:, 1]
-            stats["im_episode_returns"] = tuple(im_episode_returns.cpu().numpy())
+            stats["im_episode_returns"] = tuple(im_episode_returns.detach().cpu().numpy())
             stats["im_pg_loss"] = im_pg_loss.item()
-            stats["im_baseline_loss"] = im_baseline_loss.item()           
+            stats["im_baseline_loss"] = im_baseline_loss.item()   
 
         optimizer.zero_grad()
         total_loss.backward()
@@ -379,6 +382,10 @@ class Environment:
         cur_t = torch.tensor(unused_info["cur_t"]).view(1, 1)
         if cur_t == 0 and self.episode_return.shape[2] > 1:
             self.episode_return[:, :, 1] = 0.
+        if 'max_rollout_depth' in unused_info:
+            max_rollout_depth = torch.tensor(unused_info["max_rollout_depth"]).view(1, 1)
+        else:
+            max_rollout_depth = torch.tensor(0.).view(1, 1)
         
         return dict(
             frame=frame,
@@ -389,6 +396,7 @@ class Environment:
             episode_step=episode_step,
             cur_t=cur_t,
             last_action=action,
+            max_rollout_depth=max_rollout_depth
         )
 
     def close(self):
@@ -405,6 +413,7 @@ class Environment:
         self.gym_env.restore_state(state[2])
         
 class Vec_Environment:
+    # deprecated
     def __init__(self, gym_env, bsz):
         self.gym_env = gym_env
         self.bsz = bsz
@@ -644,10 +653,13 @@ class ModelWrapper(gym.Wrapper):
         out = self.use_model(x, 0., 0, self.cur_t, 1.)
         if self.reward_type == 1:
             self.last_root_max_q = self.root_max_q
+        self.max_rollout_depth = 0.
         return out.unsqueeze(-1).unsqueeze(-1)
     
     def step(self, action):  
         re_action, im_action, reset = action
+        info = {}
+        info["max_rollout_depth"] = self.max_rollout_depth
         if self.cur_t < self.rec_t - 1:
           self.cur_t += 1
           out = self.use_model(None, None, im_action, self.cur_t, reset)          
@@ -656,17 +668,18 @@ class ModelWrapper(gym.Wrapper):
           else:
             r = np.array([0., (self.root_max_q - self.last_root_max_q).item()], dtype=np.float32)
           done = False
-          info = {'cur_t': self.cur_t}    
+          info['cur_t'] = self.cur_t   
         else:
           self.cur_t = 0
-          x, r, done, info = self.env.step(re_action)          
-          out = self.use_model(x, r, re_action, self.cur_t, 1.)          
+          x, r, done, info_ = self.env.step(re_action)                    
+          out = self.use_model(x, r, re_action, self.cur_t, 1.) 
+          info.update(info_)
           info['cur_t'] = self.cur_t
           if self.reward_type == 0:
             r = np.array([r])
           else:
             r = np.array([r, 0.], dtype=np.float32)   
-        self.last_root_max_q = self.root_max_q
+        self.last_root_max_q = self.root_max_q        
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info        
         
     def use_model_raw(self, x, r, a, cur_t, reset):
@@ -767,6 +780,8 @@ class ModelWrapper(gym.Wrapper):
         with torch.no_grad():
             if cur_t == 0:
                 self.rollout_depth = 0.
+                self.max_rollout_depth = 0.
+                
                 if self.no_mem:
                     re_action = 0
                     re_reward = torch.tensor([0.], dtype=torch.float32)                
@@ -788,7 +803,8 @@ class ModelWrapper(gym.Wrapper):
                 self.root_node.visit()
                 self.cur_node = self.root_node
             else:
-                self.rollout_depth += 1     
+                self.rollout_depth += 1    
+                self.max_rollout_depth = max(self.max_rollout_depth, self.rollout_depth)
                 next_node = self.cur_node.children[a]
                 if not next_node.expanded():
                     a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
@@ -844,7 +860,7 @@ class Node:
         
         self.num_actions = num_actions
         self.discounting = discounting
-        self.rec_t = rec_t
+        self.rec_t = rec_t        
         
         self.visited = False
 
@@ -1016,13 +1032,14 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()                
+flags = parser.parse_args()        
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
 else:
     flags.num_rewards = num_rewards = 2
-
+flags.im_discounting = flags.discounting ** (1/flags.rec_t)    
+    
 raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
 
@@ -1033,8 +1050,6 @@ model.load_state_dict(checkpoint["model_state_dict"])
 env = Environment(ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
      model=model, flags=flags))
 obs_shape = env.gym_env.observation_space.shape
-
-logging.basicConfig(format='%(message)s', level=logging.DEBUG)
 
 mp.set_sharing_strategy('file_system')
 
@@ -1130,7 +1145,7 @@ if flags.load_checkpoint:
     
 logger = logging.getLogger("logfile")
 stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
-    "pg_loss", "baseline_loss", "entropy_loss"]
+    "pg_loss", "baseline_loss", "entropy_loss", "max_rollout_depth"]
 if flags.reward_type == 1:
     stat_keys.extend(["im_pg_loss", "im_baseline_loss"])
 
@@ -1159,8 +1174,8 @@ def batch_and_learn(i, lock=threading.Lock()):
         with lock:
             to_log = dict(step=step)
             to_log.update({k: stats[k] for k in stat_keys})            
-            to_log.update({"trail_mean_im_episode_return": np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
-                           "trail_mean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
+            to_log.update({"rmean_im_episode_return": np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
+                           "rmean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
                            "episode": tot_eps})
             plogger.log(to_log)
             step += T * B
@@ -1219,8 +1234,8 @@ try:
             np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
             total_loss)
 
-        for s in ["pg_loss", "baseline_loss", "im_pg_loss", "im_baseline_loss",
-                  "entropy_loss", "reg_loss", "total_norm"]:
+        for s in ["max_rollout_depth", "pg_loss", "baseline_loss", "im_pg_loss", 
+                  "im_baseline_loss", "entropy_loss", "reg_loss", "total_norm"]:
             if s in stats: print_str += " %s %.2f" % (s, stats[s])
 
         logging.info(print_str)
