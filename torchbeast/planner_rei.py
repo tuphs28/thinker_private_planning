@@ -1021,7 +1021,9 @@ def define_parser():
                         help="Whether to erase all memories after each real action.")   
     
     parser.add_argument("--model_type_nn", default=0,
-                        type=float, help="Model type.")      
+                        type=float, help="Model type.")     
+    parser.add_argument("--perfect_model", action="store_true",
+                        help="Whether to use perfect model.")  
     
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.0001,
