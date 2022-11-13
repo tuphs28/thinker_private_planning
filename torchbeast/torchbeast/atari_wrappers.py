@@ -42,7 +42,7 @@ class NoopResetEnv(gym.Wrapper):
         self.noop_max = noop_max
         self.override_num_noops = None
         self.noop_action = 0
-        assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
+        assert self.env.get_action_meanings()[0] == 'NOOP'
 
     def reset(self, **kwargs):
         """ Do no-op action for a number of steps in [1, noop_max]."""
@@ -50,7 +50,8 @@ class NoopResetEnv(gym.Wrapper):
         if self.override_num_noops is not None:
             noops = self.override_num_noops
         else:
-            noops = self.unwrapped.np_random.integers(1, self.noop_max + 1) #pylint: disable=E1101
+            #noops = self.unwrapped.np_random.randint(1, self.noop_max + 1) #pylint: disable=E1101
+            noops = np.random.randint(1, self.noop_max + 1) #pylint: disable=E1101
         assert noops > 0
         obs = None
         for _ in range(noops):
@@ -61,6 +62,13 @@ class NoopResetEnv(gym.Wrapper):
 
     def step(self, ac):
         return self.env.step(ac)
+
+    def clone_state(self):
+        return self.env.clone_state()
+
+    def restore_state(self, state):
+        self.env.restore_state(state)
+        return         
 
 class FireResetEnv(gym.Wrapper):
     def __init__(self, env):
@@ -410,7 +418,8 @@ class TimeLimit_(gym.Wrapper):
         self.env.restore_state(state[1:])
         return 
 
-
 def SokobanWrapper(env, noop):
     if noop: env = NoopWrapper(env, cost=-0.01)
-    return wrap_pytorch(TimeLimit_(WarpFrame(env, width=80, height=80, grayscale=False), max_episode_steps=120))
+    env = wrap_pytorch(TimeLimit_(WarpFrame(env, width=80, height=80, grayscale=False), max_episode_steps=120))
+    if noop: env = NoopResetEnv(env, noop_max=5) # to prevent the done step is always truncated in learn funct.
+    return env
