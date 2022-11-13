@@ -110,8 +110,10 @@ class Vec_Environment:
     def step(self, action):
         frame, reward, done, unused_info = self.gym_env.step(action.detach().cpu().numpy())   
         
-        self.episode_step += 1
-        self.episode_return += torch.Tensor(reward).unsqueeze(0)
+        self.episode_step = self.episode_step + 1
+        self.episode_return = self.episode_return + torch.Tensor(reward).unsqueeze(0)
+        episode_step = self.episode_step
+        episode_return = self.episode_return
         
         done = torch.tensor(done).view(1, self.bsz)
         truncated_done = ['TimeLimit.truncated' in x and x['TimeLimit.truncated'] for x in unused_info]
@@ -128,8 +130,8 @@ class Vec_Environment:
             reward=reward,
             done=done,
             truncated_done=truncated_done,
-            episode_return=self.episode_return,
-            episode_step=self.episode_step,
+            episode_return=episode_return,
+            episode_step=episode_step,
             last_action=action.unsqueeze(0),
         )
     
