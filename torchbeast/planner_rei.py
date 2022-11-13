@@ -158,7 +158,7 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         policy = F.softmax(logits, dim=-1)
         log_policy = F.log_softmax(logits, dim=-1)
-        ent = torch.sum(policy * log_policy, dim=-1) * (1-masks)
+        ent = torch.sum(policy * log_policy, dim=-1) #* (1-masks)
         loss = loss + torch.sum(ent) * c 
     return loss
 
@@ -214,9 +214,9 @@ def learn(
     """Performs a learning (optimization) step."""
     with lock:
         learner_outputs, unused_state = model(batch, initial_agent_state)
-        learner_outputs["im_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
-        learner_outputs["reset_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
-        learner_outputs["baseline"].register_hook(lambda grad: grad / (flags.rec_t - 1))
+        #learner_outputs["im_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
+        #learner_outputs["reset_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
+        #learner_outputs["baseline"].register_hook(lambda grad: grad / (flags.rec_t - 1))
         
         # Take final value function slice for bootstrapping.
         bootstrap_value = learner_outputs["baseline"][-1]
@@ -299,6 +299,7 @@ def learn(
         }
         
         if flags.reward_type == 1:
+            
             im_episode_returns = batch["episode_return"][batch["cur_t"] == 0][:, 1]
             stats["im_episode_returns"] = tuple(im_episode_returns.cpu().numpy())
             stats["im_pg_loss"] = im_pg_loss.item()
@@ -365,7 +366,7 @@ class Environment:
         self.episode_step += 1
         self.episode_return = self.episode_return + torch.tensor(reward).unsqueeze(0).unsqueeze(0)
         episode_step = self.episode_step
-        episode_return = self.episode_return
+        episode_return = self.episode_return.clone()
         if done:
             frame = self.gym_env.reset()
             self.episode_return = torch.zeros(1, 1, 1)
@@ -655,7 +656,7 @@ class ModelWrapper(gym.Wrapper):
           else:
             r = np.array([0., (self.root_max_q - self.last_root_max_q).item()], dtype=np.float32)
           done = False
-          info = {'cur_t': self.cur_t}            
+          info = {'cur_t': self.cur_t}    
         else:
           self.cur_t = 0
           x, r, done, info = self.env.step(re_action)          
@@ -816,6 +817,7 @@ class ModelWrapper(gym.Wrapper):
             self.root_max_q = root_max_q
             self.ret_dict = {"v0": self.root_node.ret_dict["v"].unsqueeze(0),
                              "q_s_a": self.root_node.ret_dict["child_rollout_qs_mean"].unsqueeze(0),
+                             "max_q_s_a": self.root_node.ret_dict["child_rollout_qs_max"].unsqueeze(0),
                              "n_s_a": self.root_node.ret_dict["child_rollout_ns"].unsqueeze(0),
                              "logit0": self.root_node.ret_dict["child_logits"].unsqueeze(0),}
             
@@ -1014,7 +1016,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args()                
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
@@ -1156,7 +1158,7 @@ def batch_and_learn(i, lock=threading.Lock()):
         timings.time("learn")
         with lock:
             to_log = dict(step=step)
-            to_log.update({k: stats[k] for k in stat_keys})
+            to_log.update({k: stats[k] for k in stat_keys})            
             to_log.update({"trail_mean_im_episode_return": np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
                            "trail_mean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
                            "episode": tot_eps})
