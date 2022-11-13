@@ -74,14 +74,15 @@ class Environment:
         self.gym_env.close()
 
     def clone_state(self):
-        state = [self.episode_return.clone(), self.episode_step.clone()]
-        state.append(self.gym_env.clone_state())
+        state = self.gym_env.clone_state()
+        state["env_episode_return"] = self.episode_return.clone()
+        state["env_episode_step"] = self.episode_step.clone()
         return state
         
     def restore_state(self, state):
-        self.episode_return = state[0].clone()
-        self.episode_step = state[1].clone()
-        self.gym_env.restore_state(state[2])
+        self.episode_return = state["env_episode_return"].clone()
+        self.episode_step = state["env_episode_step"].clone()
+        self.gym_env.restore_state(state)
 
 class Vec_Environment:
     def __init__(self, gym_env, bsz):
@@ -135,17 +136,19 @@ class Vec_Environment:
             last_action=action.unsqueeze(0),
         )
     
-    def clone_state(self):
-        state = [self.episode_return.clone(), self.episode_step.clone()]
-        for k in self.gym_env.envs: 
-            state.append(k.clone_state())
+    def clone_state(self):        
+        state = {}
+        state["env_episode_return"] = self.episode_return.clone()
+        state["env_episode_step"] = self.episode_step.clone()
+        for n, k in enumerate(self.gym_env.envs): 
+            state["env_%d"%n] = k.clone_state()
         return state
         
     def restore_state(self, state):
-        self.episode_return = state[0].clone()
-        self.episode_step = state[1].clone()
+        self.episode_return = state["env_episode_return"].clone()
+        self.episode_step = state["env_episode_step"].clone()
         for n, k in enumerate(self.gym_env.envs): 
-            k.restore_state(state[2+n])
+            k.restore_state(state["env_%d"%n])
 
     def close(self):
         self.gym_env.close()

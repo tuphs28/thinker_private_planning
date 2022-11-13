@@ -280,23 +280,21 @@ class SokobanEnv(gym.Env):
         return ACTION_LOOKUP
 
     def clone_state(self):
-        player_position_ref = np.copy(self.player_position)
-        room_state_ref = np.copy(self.room_state) 
-        room_fixed_ref = np.copy(self.room_fixed) 
-        num_env_steps_ref = self.num_env_steps
-        reward_last_ref = self.reward_last
-        boxes_on_target_ref = self.boxes_on_target        
 
-        return (player_position_ref, room_state_ref, room_fixed_ref, num_env_steps_ref,
-                 reward_last_ref, boxes_on_target_ref)
+        return {"sokoban_player_position": np.copy(self.player_position),
+               "sokoban_room_state": np.copy(self.room_state),
+               "sokoban_room_fixed": np.copy(self.room_fixed),
+               "sokoban_num_env_steps": self.num_env_steps,
+               "sokoban_reward_last": self.reward_last,
+               "sokoban_boxes_on_target": self.boxes_on_target}  
 
     def restore_state(self, state):
-        self.player_position = np.copy(state[0])
-        self.room_state = np.copy(state[1])
-        self.room_fixed = np.copy(state[2])
-        self.num_env_steps = state[3]
-        self.reward_last = state[4]
-        self.boxes_on_target = state[5]
+        self.player_position = np.copy(state["sokoban_player_position"])
+        self.room_state = np.copy(state["sokoban_room_state"])
+        self.room_fixed = np.copy(state["sokoban_room_fixed"])
+        self.num_env_steps = state["sokoban_num_env_steps"]
+        self.reward_last = state["sokoban_reward_last"]
+        self.boxes_on_target = state["sokoban_boxes_on_target"]
 
 ACTION_LOOKUP = [
     'PUSH UP',

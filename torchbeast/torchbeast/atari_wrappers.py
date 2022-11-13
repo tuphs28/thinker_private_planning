@@ -63,13 +63,6 @@ class NoopResetEnv(gym.Wrapper):
     def step(self, ac):
         return self.env.step(ac)
 
-    def clone_state(self):
-        return self.env.clone_state()
-
-    def restore_state(self, state):
-        self.env.restore_state(state)
-        return         
-
 class FireResetEnv(gym.Wrapper):
     def __init__(self, env):
         """Take action on reset for environments that are fixed until firing."""
@@ -411,11 +404,13 @@ class TimeLimit_(gym.Wrapper):
         return self.env.reset(**kwargs)
 
     def clone_state(self):
-        return (self._elapsed_steps,) + self.env.clone_state()
+        state = self.env.clone_state()
+        state["timeLimit_elapsed_steps"] = self._elapsed_steps
+        return state
 
     def restore_state(self, state):
-        self._elapsed_steps = state[0]
-        self.env.restore_state(state[1:])
+        self._elapsed_steps = state["timeLimit_elapsed_steps"] 
+        self.env.restore_state(state)
         return 
 
 def SokobanWrapper(env, noop):

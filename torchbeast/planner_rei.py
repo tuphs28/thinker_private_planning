@@ -213,14 +213,14 @@ def learn(
     lock=threading.Lock(),  # noqa: B008
 ):
     """Performs a learning (optimization) step."""
-    with lock:
+    with lock:        
         learner_outputs, unused_state = model(batch, initial_agent_state)
         #learner_outputs["im_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
         #learner_outputs["reset_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
         #learner_outputs["baseline"].register_hook(lambda grad: grad / (flags.rec_t - 1))
         
         # Take final value function slice for bootstrapping.
-        bootstrap_value = learner_outputs["baseline"][-1]
+        bootstrap_value = learner_outputs["baseline"][-1]        
 
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         batch = {key: tensor[1:] for key, tensor in batch.items()}
@@ -254,8 +254,8 @@ def learn(
         advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
         pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, advantages_ls, masks_ls)         
         baseline_loss = flags.baseline_cost * compute_baseline_loss(
-            vtrace_returns.vs - learner_outputs["baseline"][:, :, 0])
-        
+            vtrace_returns.vs - learner_outputs["baseline"][:, :, 0])        
+       
         # compute advantage w.r.t imagainary rewards
         
         cs_ls = [flags.entropy_cost, flags.im_entropy_cost, flags.reset_entropy_cost]
@@ -403,14 +403,15 @@ class Environment:
         self.gym_env.close()
 
     def clone_state(self):
-        state = [self.episode_return.clone(), self.episode_step.clone()]
-        state.append(self.gym_env.clone_state())
+        state = self.gym_env.clone_state()
+        state["env_episode_return"] = self.episode_return.clone()
+        state["env_episode_step"] = self.episode_step.clone()
         return state
         
     def restore_state(self, state):
-        self.episode_return = state[0].clone()
-        self.episode_step = state[1].clone()
-        self.gym_env.restore_state(state[2])
+        self.episode_return = state["env_episode_return"].clone()
+        self.episode_step = state["env_episode_step"].clone()
+        self.gym_env.restore_state(state)
         
 class Vec_Environment:
     # deprecated
@@ -470,17 +471,19 @@ class Vec_Environment:
             last_action=action.unsqueeze(0),
         )
     
-    def clone_state(self):
-        state = [self.episode_return.clone(), self.episode_step.clone()]
-        for k in self.gym_env.envs: 
-            state.append(k.clone_state())
+    def clone_state(self):        
+        state = {}
+        state["env_episode_return"] = self.episode_return.clone()
+        state["env_episode_step"] = self.episode_step.clone()
+        for n, k in enumerate(self.gym_env.envs): 
+            state["env_%d"%n] = k.clone_state()
         return state
         
     def restore_state(self, state):
-        self.episode_return = state[0].clone()
-        self.episode_step = state[1].clone()
+        self.episode_return = state["env_episode_return"].clone()
+        self.episode_step = state["env_episode_step"].clone()
         for n, k in enumerate(self.gym_env.envs): 
-            k.restore_state(state[2+n])
+            k.restore_state(state["env_%d"%n])
 
     def close(self):
         self.gym_env.close()  
@@ -618,6 +621,7 @@ class Actor_net(nn.Module):
         return (ret_dict, core_state) 
     
         
+        
 class ModelWrapper(gym.Wrapper):
     def __init__(self, env, model, flags):
         gym.Wrapper.__init__(self, env)
@@ -628,6 +632,8 @@ class ModelWrapper(gym.Wrapper):
         self.stat_type = flags.stat_type    
         self.reward_type = flags.reward_type    
         self.no_mem = flags.no_mem
+        self.perfect_model = flags.perfect_model
+        
         self.num_actions = env.action_space.n
         
         # 0 for the most basic; 
@@ -639,6 +645,9 @@ class ModelWrapper(gym.Wrapper):
         elif self.stat_type == 1:            
             self.use_model = self.use_model_raw
             obs_n = 7 + num_actions * 7 + self.rec_t
+        elif self.stat_type == 1.5:
+            self.use_model = self.use_model_tree    
+            obs_n = 6 + num_actions * 10 + self.rec_t             
         elif self.stat_type == 2:
             self.use_model = self.use_model_tree    
             obs_n = 9 + num_actions * 10 + self.rec_t         
@@ -671,6 +680,8 @@ class ModelWrapper(gym.Wrapper):
           info['cur_t'] = self.cur_t   
         else:
           self.cur_t = 0
+          if self.perfect_model:
+                self.env.restore_state(self.root_node.encoded)
           x, r, done, info_ = self.env.step(re_action)                    
           out = self.use_model(x, r, re_action, self.cur_t, 1.) 
           info.update(info_)
@@ -679,7 +690,8 @@ class ModelWrapper(gym.Wrapper):
             r = np.array([r])
           else:
             r = np.array([r, 0.], dtype=np.float32)   
-        self.last_root_max_q = self.root_max_q        
+        if self.reward_type == 1:
+            self.last_root_max_q = self.root_max_q        
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info        
         
     def use_model_raw(self, x, r, a, cur_t, reset):
@@ -790,16 +802,21 @@ class ModelWrapper(gym.Wrapper):
                     re_reward = torch.tensor([r], dtype=torch.float32)                
                 
                 x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
-                self.x = x_tensor
-                a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)
-                _, vs, logits, encodeds = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                
+                self.x = self.x_ = x_tensor
+                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions)                
+                _, vs, logits, encodeds = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True) 
+                
+                if self.perfect_model: 
+                    encoded = self.clone_state()
+                else:
+                    encoded=encodeds[-1]
                 
                 self.root_node = Node(parent=None, action=re_action, logit=None, 
                                       num_actions=self.num_actions,
                                       discounting=self.discounting,
                                       rec_t=self.rec_t)
                 self.root_node.expand(r=re_reward, v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
-                                      encoded=encodeds[-1])
+                                      encoded=encoded)
                 self.root_node.visit()
                 self.cur_node = self.root_node
             else:
@@ -808,10 +825,26 @@ class ModelWrapper(gym.Wrapper):
                 next_node = self.cur_node.children[a]
                 if not next_node.expanded():
                     a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
-                    rs, vs, logits, encodeds = self.model.forward_encoded(self.cur_node.encoded, 
-                        a_tensor.unsqueeze(0), one_hot=True)
-                    next_node.expand(r=rs[-1, 0].unsqueeze(-1), v=vs[-1, 0].unsqueeze(-1), 
+                    if not self.perfect_model:
+                        rs, vs, logits, encodeds = self.model.forward_encoded(self.cur_node.encoded, 
+                            a_tensor.unsqueeze(0), one_hot=True)
+                        next_node.expand(r=rs[-1, 0].unsqueeze(-1), v=vs[-1, 0].unsqueeze(-1), 
                                      logits=logits[-1, 0], encoded=encodeds[-1])
+                    else:
+                        self.env.restore_state(self.cur_node.encoded)
+                        x, r, done, info = self.env.step(a)
+                        if done: 
+                            encoded = self.cur_node.encoded
+                        else:
+                            encoded = self.env.clone_state()
+                        x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                        self.x_ = x_tensor
+                        a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
+                        _, vs, logits, _ = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                        
+                        next_node.expand(r=torch.tensor([r], dtype=torch.float32), 
+                                         v=vs[-1, 0].unsqueeze(-1), 
+                                         logits=logits[-1, 0], 
+                                         encoded=encoded)
                 next_node.visit()
                 self.cur_node = next_node
             
@@ -825,9 +858,9 @@ class ModelWrapper(gym.Wrapper):
             root_rollout_q = self.root_node.rollout_q / self.discounting
             root_max_q = torch.max(torch.concat(self.root_node.rollout_qs)).unsqueeze(-1) / self.discounting
             
-            out = torch.concat([root_node_stat, cur_node_stat, reset, time, depc,
-                                root_trail_r, root_rollout_q, root_max_q], dim=-1)
-            
+            ret_list = [root_node_stat, cur_node_stat, reset, time, depc,]
+            if self.stat_type >= 2: ret_list.extend([root_trail_r, root_rollout_q, root_max_q])            
+            out = torch.concat(ret_list, dim=-1)            
             self.last_node = self.cur_node     
             
             self.root_max_q = root_max_q
