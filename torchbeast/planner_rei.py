@@ -830,21 +830,34 @@ class ModelWrapper(gym.Wrapper):
                             a_tensor.unsqueeze(0), one_hot=True)
                         next_node.expand(r=rs[-1, 0].unsqueeze(-1), v=vs[-1, 0].unsqueeze(-1), 
                                      logits=logits[-1, 0], encoded=encodeds[-1])
-                    else:
-                        self.env.restore_state(self.cur_node.encoded)
-                        x, r, done, info = self.env.step(a)
-                        if done: 
-                            encoded = self.cur_node.encoded
-                        else:
+                    else:                        
+                        if "done" not in self.cur_node.encoded:
+                        
+                            self.env.restore_state(self.cur_node.encoded)                        
+                            x, r, done, info = self.env.step(a)                        
                             encoded = self.env.clone_state()
-                        x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
-                        self.x_ = x_tensor
-                        a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
-                        _, vs, logits, _ = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                        
-                        next_node.expand(r=torch.tensor([r], dtype=torch.float32), 
-                                         v=vs[-1, 0].unsqueeze(-1), 
-                                         logits=logits[-1, 0], 
-                                         encoded=encoded)
+                            if done: encoded["done"] = True                        
+                            x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                            self.x_ = x_tensor
+                            a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
+                            _, vs, logits, _ = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                        
+
+                            if done:
+                                v = torch.tensor([0.], dtype=torch.float32)
+                            else:
+                                v = vs[-1, 0].unsqueeze(-1)
+
+                            next_node.expand(r=torch.tensor([r], dtype=torch.float32), 
+                                             v=v, 
+                                             logits=logits[-1, 0], 
+                                             encoded=encoded)
+                        else:
+                            logits = torch.concat([x.logit for x in self.cur_node.children])  
+                            next_node.expand(r=torch.tensor([0.], dtype=torch.float32), 
+                                             v=torch.tensor([0.], dtype=torch.float32),
+                                             logits=logits, 
+                                             encoded=self.cur_node.encoded)                            
+                            
                 next_node.visit()
                 self.cur_node = next_node
             
@@ -1023,7 +1036,7 @@ def define_parser():
     parser.add_argument("--model_type_nn", default=0,
                         type=float, help="Model type.")     
     parser.add_argument("--perfect_model", action="store_true",
-                        help="Whether to use perfect model.")  
+                        help="Whether to use perfect model.")       
     
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.0001,

@@ -338,27 +338,6 @@ def wrap_pytorch(env):
     return ImageToPyTorch(env)
 
 class NoopWrapper(gym.Wrapper):
-    def __init__(self, env):
-        gym.Wrapper.__init__(self, env)
-        env.action_space.n += 1
-        
-    def reset(self, **kwargs):
-        obs = self.env.reset(**kwargs)
-        self.last_obs = obs
-        return obs
-    
-    def step(self, action):     
-        if action == 0:
-            return self.last_obs, 0., False, {}
-        else:            
-            obs, reward, done, info = self.env.step(action)
-            self.last_obs = obs
-            return obs, reward, done, info 
-            
-    def get_action_meanings(self):
-        return ["NOOP",] + self.env.get_action_meanings()
-
-class NoopWrapper(gym.Wrapper):
     def __init__(self, env, cost=0.):
         gym.Wrapper.__init__(self, env)
         env.action_space.n += 1    
@@ -381,6 +360,16 @@ class NoopWrapper(gym.Wrapper):
             
     def get_action_meanings(self):
         return ["NOOP",] + self.env.get_action_meanings()
+
+    def clone_state(self):
+        state = self.env.clone_state()
+        state["noop_last_obs"] = np.copy(self.last_obs)
+        return state
+
+    def restore_state(self, state):
+        self.last_obs = np.copy(state["noop_last_obs"])
+        self.env.restore_state(state)
+        return         
 
 class TimeLimit_(gym.Wrapper):
     def __init__(self, env, max_episode_steps=None):
