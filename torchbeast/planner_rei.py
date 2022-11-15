@@ -633,6 +633,7 @@ class ModelWrapper(gym.Wrapper):
         self.reward_type = flags.reward_type    
         self.no_mem = flags.no_mem
         self.perfect_model = flags.perfect_model
+        self.reset_m = flags.reset_m
         
         self.num_actions = env.action_space.n
         
@@ -656,13 +657,14 @@ class ModelWrapper(gym.Wrapper):
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
         self.model.train(False)        
         
+        self.max_rollout_depth = 0.
+        
     def reset(self, **kwargs):
         x = self.env.reset()
         self.cur_t = 0        
         out = self.use_model(x, 0., 0, self.cur_t, 1.)
         if self.reward_type == 1:
             self.last_root_max_q = self.root_max_q
-        self.max_rollout_depth = 0.
         return out.unsqueeze(-1).unsqueeze(-1)
     
     def step(self, action):  
@@ -792,6 +794,8 @@ class ModelWrapper(gym.Wrapper):
         with torch.no_grad():
             if cur_t == 0:
                 self.rollout_depth = 0.
+                self.unexpand_rollout_depth = 0.
+                self.pass_unexpand = False
                 self.max_rollout_depth = 0.
                 
                 if self.no_mem:
@@ -820,10 +824,11 @@ class ModelWrapper(gym.Wrapper):
                 self.root_node.visit()
                 self.cur_node = self.root_node
             else:
-                self.rollout_depth += 1    
+                self.rollout_depth += 1                    
                 self.max_rollout_depth = max(self.max_rollout_depth, self.rollout_depth)
                 next_node = self.cur_node.children[a]
                 if not next_node.expanded():
+                    self.pass_unexpand = True
                     a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
                     if not self.perfect_model:
                         rs, vs, logits, encodeds = self.model.forward_encoded(self.cur_node.encoded, 
@@ -831,8 +836,7 @@ class ModelWrapper(gym.Wrapper):
                         next_node.expand(r=rs[-1, 0].unsqueeze(-1), v=vs[-1, 0].unsqueeze(-1), 
                                      logits=logits[-1, 0], encoded=encodeds[-1])
                     else:                        
-                        if "done" not in self.cur_node.encoded:
-                        
+                        if "done" not in self.cur_node.encoded:                            
                             self.env.restore_state(self.cur_node.encoded)                        
                             x, r, done, info = self.env.step(a)                        
                             encoded = self.env.clone_state()
@@ -861,6 +865,11 @@ class ModelWrapper(gym.Wrapper):
                 next_node.visit()
                 self.cur_node = next_node
             
+            if self.pass_unexpand:                 
+                self.unexpand_rollout_depth += 1    
+                if self.reset_m >= 0 and self.unexpand_rollout_depth > self.reset_m:
+                    reset = True
+            
             root_node_stat = self.root_node.stat()
             cur_node_stat = self.cur_node.stat()                        
             reset = torch.tensor([reset], dtype=torch.float32)
@@ -885,8 +894,10 @@ class ModelWrapper(gym.Wrapper):
             
             if reset:
                 self.rollout_depth = 0
+                self.unexpand_rollout_depth = 0.
                 self.cur_node = self.root_node
                 self.cur_node.visit()
+                self.pass_unexpand = False
                 
             return out
                 
@@ -1060,7 +1071,10 @@ def define_parser():
     parser.add_argument("--trun_bs", action="store_true",
                         help="Whether to add baseline as reward when truncated.")
     parser.add_argument("--reward_type", default=1, type=int, metavar="N",
-                        help="Reward type")    
+                        help="Reward type")   
+    parser.add_argument("--reset_m", default=-1, type=int, metavar="N",
+                        help="Auto reset after passing m node since an unexpanded noded")    
+    
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.00005,
