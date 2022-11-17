@@ -262,7 +262,10 @@ def learn(
         entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)        
 
         if flags.reward_type == 1:
-            discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
+            if flags.reward_carry:                
+                discounts = (~batch["done"]).float() * flags.im_discounting 
+            else:
+                discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
             target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
             actions_ls = [batch["im_action"], batch["reset_action"]] 
@@ -989,7 +992,6 @@ class Node:
             
     def stat(self):
         assert self.expanded()
-
         self.child_logits = torch.concat([x.logit for x in self.children])        
         child_rollout_qs_mean = []
         child_rollout_qs_max = []
@@ -1134,7 +1136,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()             
+flags = parser.parse_args()        
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
