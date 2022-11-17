@@ -1114,6 +1114,8 @@ def define_parser():
                         help="Whether to carry over the tree.")   
     parser.add_argument("--thres_carry", action="store_true",
                         help="Whether to carry threshold over.")   
+    parser.add_argument("--reward_carry", action="store_true",
+                        help="Whether to carry planning reward over.")       
     parser.add_argument("--thres_discounting", default=0.99,
                         type=float, help="Threshold discounting factor.")    
     
