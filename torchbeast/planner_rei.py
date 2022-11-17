@@ -954,9 +954,11 @@ class Node:
         self.v = v
         self.encoded = encoded
         for a in range(self.num_actions):
-            child = self.children.append(Node(self, a, logits[[a]], 
-               self.num_actions, self.discounting, self.rec_t))
-        
+            if not override:
+                child = self.children.append(Node(self, a, logits[[a]], 
+                   self.num_actions, self.discounting, self.rec_t))
+            else:
+                self.children[a].logit = logits[[a]]        
             
     def visit(self):
         self.trail_r = torch.tensor([0.], dtype=torch.float32)    
@@ -1117,6 +1119,9 @@ def define_parser():
 
 parser = define_parser()
 flags = parser.parse_args()        
+
+flags.xpid = None
+flags.load_checkpoint = ""
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
