@@ -633,7 +633,9 @@ class ModelWrapper(gym.Wrapper):
         self.no_mem = flags.no_mem
         self.perfect_model = flags.perfect_model
         self.reset_m = flags.reset_m
-        self.tree_carry = flags.tree_carry        
+        self.tree_carry = flags.tree_carry
+        self.thres_carry = flags.thres_carry
+        self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space.n
         self.root_node = None
         
@@ -651,13 +653,15 @@ class ModelWrapper(gym.Wrapper):
             obs_n = 6 + num_actions * 10 + self.rec_t             
         elif self.stat_type == 2:
             self.use_model = self.use_model_tree    
-            obs_n = 9 + num_actions * 10 + self.rec_t         
+            obs_n = 9 + num_actions * 10 + self.rec_t   
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
         self.model.train(False)        
         
         self.max_rollout_depth = 0.
+        self.thres = None
+        self.root_max_q = None
         
     def reset(self, **kwargs):
         x = self.env.reset()
@@ -800,6 +804,12 @@ class ModelWrapper(gym.Wrapper):
                 self.pass_unexpand = False
                 self.max_rollout_depth = 0.
                 
+                if self.root_max_q is not None:
+                    self.thres = (self.root_max_q - r) / self.discounting
+                    self.thres *= self.thres_discounting
+                if done:
+                    self.thres = None
+                
                 if self.no_mem:
                     re_action = 0
                     re_reward = torch.tensor([0.], dtype=torch.float32)                
@@ -894,8 +904,10 @@ class ModelWrapper(gym.Wrapper):
             root_trail_r = self.root_node.trail_r / self.discounting
             root_rollout_q = self.root_node.rollout_q / self.discounting
             root_max_q = torch.max(torch.concat(self.root_node.rollout_qs)).unsqueeze(-1) / self.discounting
+            if self.thres_carry and self.thres is not None:
+                root_max_q = torch.max(root_max_q, self.thres)                
             
-            ret_list = [root_node_stat, cur_node_stat, reset, time, depc,]
+            ret_list = [root_node_stat, cur_node_stat, reset, time, depc]
             if self.stat_type >= 2: ret_list.extend([root_trail_r, root_rollout_q, root_max_q])            
             out = torch.concat(ret_list, dim=-1)            
             self.last_node = self.cur_node     
@@ -1098,6 +1110,10 @@ def define_parser():
                         help="Whether to erase all memories after each real action.")   
     parser.add_argument("--tree_carry", action="store_true",
                         help="Whether to carry over the tree.")   
+    parser.add_argument("--thres_carry", action="store_true",
+                        help="Whether to carry threshold over.")   
+    parser.add_argument("--thres_discounting", default=0.99,
+                        type=float, help="Threshold discounting factor.")    
     
 
     # Optimizer settings.
@@ -1118,10 +1134,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
-
-flags.xpid = None
-flags.load_checkpoint = ""
+flags = parser.parse_args()             
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
