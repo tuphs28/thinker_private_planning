@@ -1082,7 +1082,7 @@ class ConvLSTM(nn.Module):
 
 class ConvAttnLSTMCell(nn.Module):
 
-    def __init__(self, input_dims, embed_dim, kernel_size=3, num_heads=8, mem_n=8, attn=True):
+    def __init__(self, input_dims, embed_dim, kernel_size=3, num_heads=8, mem_n=8, attn=True, attn_mask_b=5):
 
         super(ConvAttnLSTMCell, self).__init__()
         c, h, w = input_dims
@@ -1103,6 +1103,7 @@ class ConvAttnLSTMCell(nn.Module):
         self.mem_n = mem_n
         self.head_dim = embed_dim // num_heads
         self.attn = attn
+        self.attn_mask_b = attn_mask_b
         
         if self.attn:
 
@@ -1135,6 +1136,7 @@ class ConvAttnLSTMCell(nn.Module):
             a = torch.sigmoid(cc_a)
             attn_out, concat_k, concat_v = self.attn_output(input, attn_mask, concat_k, concat_v)
             c_next = c_next + a * torch.tanh(attn_out)
+            self.a = a
         else:
             concat_k, concat_v = None, None
 
@@ -1169,7 +1171,7 @@ class ConvAttnLSTMCell(nn.Module):
         new_attn_mask = torch.zeros_like(attn_mask, dtype=q.dtype)
         new_attn_mask.masked_fill_(attn_mask, float("-inf"))
         attn_mask = new_attn_mask            
-        attn_mask[:, :, -1] = +5
+        attn_mask[:, :, -1] = self.attn_mask_b
         self.attn_mask = attn_mask
         attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))         
         attn_output_weights = attn_output_weights + pos_b.unsqueeze(1)        
@@ -1190,7 +1192,9 @@ class ConvAttnLSTMCell(nn.Module):
 
 class ConvAttnLSTM(nn.Module):
 
-    def __init__(self, h, w, input_dim, hidden_dim, kernel_size, num_layers, num_heads, mem_n, attn):
+    def __init__(self, h, w, input_dim, hidden_dim, kernel_size, 
+            num_layers, num_heads, mem_n, attn, attn_mask_b):
+    
         super(ConvAttnLSTM, self).__init__()
         
         self.h = h
@@ -1213,7 +1217,8 @@ class ConvAttnLSTM(nn.Module):
                                            kernel_size=self.kernel_size,
                                            num_heads=num_heads,
                                            mem_n=mem_n,
-                                           attn=attn))
+                                           attn=attn,
+                                           attn_mask_b=attn_mask_b))
             proj_list.append(torch.nn.Conv2d(hidden_dim, hidden_dim, (2,1), groups=hidden_dim))
 
         self.layers = nn.ModuleList(layers)

@@ -503,10 +503,11 @@ class Actor_net(nn.Module):
         self.tran_layer_n = flags.tran_layer_n       # number of layers
         self.tran_lstm = flags.tran_lstm             # to use lstm or not
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
+        self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.tran_norm_first = flags.tran_norm_first # to use norm first in transformer (not on LSTM)
         self.tran_ff_n = flags.tran_ff_n             # number of dim of ff in transformer (not on LSTM)        
         self.tran_skip = flags.tran_skip             # whether to add skip connection
-        self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim
+        self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim        
         self.no_mem = flags.no_mem
         self.num_rewards = flags.num_rewards
         
@@ -523,7 +524,8 @@ class Actor_net(nn.Module):
             self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
                                  input_dim=d_in-self.d_model, hidden_dim=self.d_model,
                                  kernel_size=1, num_layers=self.tran_layer_n,
-                                 num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn)
+                                 num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
+                                 attn_mask_b=self.attn_mask_b)
         else:            
             self.core = ConvTransformerRNN(d_in=d_in,
                                        h=self.conv_out_hw, w=self.conv_out_hw, d_model=self.d_model, 
@@ -921,7 +923,10 @@ class ModelWrapper(gym.Wrapper):
                              "max_q_s_a": self.root_node.ret_dict["child_rollout_qs_max"].unsqueeze(0),
                              "n_s_a": self.root_node.ret_dict["child_rollout_ns"].unsqueeze(0),
                              "logit0": self.root_node.ret_dict["child_logits"].unsqueeze(0),
+                             "logit": self.cur_node.ret_dict["child_logits"].unsqueeze(0),
                              "reset": reset}
+            if self.thres is not None:
+                self.ret_dict["thres"] = self.thres
             
             if reset:
                 self.rollout_depth = 0
@@ -1070,6 +1075,8 @@ def define_parser():
                         help="Whether to use LSTM-transformer.")
     parser.add_argument("--tran_lstm_no_attn", action="store_true",
                         help="Whether to disable attention in LSTM-transformer.")
+    parser.add_argument("--tran_attn_b", default=5.,
+                        type=float, help="Bias attention for current position.")    
     parser.add_argument("--tran_erasep", action="store_true",
                         help="Whether to erase past memories if not planning.")
     
@@ -1115,7 +1122,7 @@ def define_parser():
     parser.add_argument("--thres_carry", action="store_true",
                         help="Whether to carry threshold over.")   
     parser.add_argument("--reward_carry", action="store_true",
-                        help="Whether to carry planning reward over.")       
+                        help="Whether to carry planning reward over.")      
     parser.add_argument("--thres_discounting", default=0.99,
                         type=float, help="Threshold discounting factor.")    
     
@@ -1138,7 +1145,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args()           
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
