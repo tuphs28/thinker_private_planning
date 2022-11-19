@@ -639,7 +639,8 @@ class ModelWrapper(gym.Wrapper):
         self.perfect_model = flags.perfect_model
         self.reset_m = flags.reset_m
         self.tree_carry = flags.tree_carry
-        self.thres_carry = flags.thres_carry
+        self.tree_vb = flags.tree_vb
+        self.thres_carry = flags.thres_carry        
         self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space.n
         self.root_node = None
@@ -908,7 +909,11 @@ class ModelWrapper(gym.Wrapper):
             
             root_trail_r = self.root_node.trail_r / self.discounting
             root_rollout_q = self.root_node.rollout_q / self.discounting
-            root_max_q = torch.max(torch.concat(self.root_node.rollout_qs)).unsqueeze(-1) / self.discounting
+            if self.tree_vb != 0:
+                rollout_qs = [x + (self.tree_vb if n == 0 else 0.) for n, x in enumerate(self.root_node.rollout_qs)]
+            else:
+                rollout_qs = self.root_node.rollout_qs
+            root_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
             if self.thres_carry and self.thres is not None:
                 root_max_q = torch.max(root_max_q, self.thres)                
             
@@ -1119,6 +1124,8 @@ def define_parser():
                         help="Whether to erase all memories after each real action.")   
     parser.add_argument("--tree_carry", action="store_true",
                         help="Whether to carry over the tree.")   
+    parser.add_argument("--tree_vb", default=0., type=float,
+                        help="Adjustment to initial max-Q.")    
     parser.add_argument("--thres_carry", action="store_true",
                         help="Whether to carry threshold over.")   
     parser.add_argument("--reward_carry", action="store_true",
@@ -1145,7 +1152,10 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()           
+flags = parser.parse_args()        
+
+flags.xpid = None
+flags.load_checkpoint = ""
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
