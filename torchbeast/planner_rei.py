@@ -262,7 +262,10 @@ def learn(
         entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)        
 
         if flags.reward_type == 1:
-            discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
+            if flags.reward_carry:                
+                discounts = (~batch["done"]).float() * flags.im_discounting 
+            else:
+                discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
             target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
             actions_ls = [batch["im_action"], batch["reset_action"]] 
@@ -500,10 +503,11 @@ class Actor_net(nn.Module):
         self.tran_layer_n = flags.tran_layer_n       # number of layers
         self.tran_lstm = flags.tran_lstm             # to use lstm or not
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
+        self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.tran_norm_first = flags.tran_norm_first # to use norm first in transformer (not on LSTM)
         self.tran_ff_n = flags.tran_ff_n             # number of dim of ff in transformer (not on LSTM)        
         self.tran_skip = flags.tran_skip             # whether to add skip connection
-        self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim
+        self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim        
         self.no_mem = flags.no_mem
         self.num_rewards = flags.num_rewards
         
@@ -520,7 +524,8 @@ class Actor_net(nn.Module):
             self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
                                  input_dim=d_in-self.d_model, hidden_dim=self.d_model,
                                  kernel_size=1, num_layers=self.tran_layer_n,
-                                 num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn)
+                                 num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
+                                 attn_mask_b=self.attn_mask_b)
         else:            
             self.core = ConvTransformerRNN(d_in=d_in,
                                        h=self.conv_out_hw, w=self.conv_out_hw, d_model=self.d_model, 
@@ -621,7 +626,6 @@ class Actor_net(nn.Module):
         return (ret_dict, core_state) 
     
         
-        
 class ModelWrapper(gym.Wrapper):
     def __init__(self, env, model, flags):
         gym.Wrapper.__init__(self, env)
@@ -634,8 +638,12 @@ class ModelWrapper(gym.Wrapper):
         self.no_mem = flags.no_mem
         self.perfect_model = flags.perfect_model
         self.reset_m = flags.reset_m
-        
+        self.tree_carry = flags.tree_carry
+        self.tree_vb = flags.tree_vb
+        self.thres_carry = flags.thres_carry        
+        self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space.n
+        self.root_node = None
         
         # 0 for the most basic; 
         # 1 for augmented input in root stat; 
@@ -651,13 +659,15 @@ class ModelWrapper(gym.Wrapper):
             obs_n = 6 + num_actions * 10 + self.rec_t             
         elif self.stat_type == 2:
             self.use_model = self.use_model_tree    
-            obs_n = 9 + num_actions * 10 + self.rec_t         
+            obs_n = 9 + num_actions * 10 + self.rec_t   
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
         self.model.train(False)        
         
         self.max_rollout_depth = 0.
+        self.thres = None
+        self.root_max_q = None
         
     def reset(self, **kwargs):
         x = self.env.reset()
@@ -685,7 +695,7 @@ class ModelWrapper(gym.Wrapper):
           if self.perfect_model:
                 self.env.restore_state(self.root_node.encoded)
           x, r, done, info_ = self.env.step(re_action)                    
-          out = self.use_model(x, r, re_action, self.cur_t, 1.) 
+          out = self.use_model(x, r, re_action, self.cur_t, 1., done) 
           info.update(info_)
           info['cur_t'] = self.cur_t
           if self.reward_type == 0:
@@ -693,10 +703,12 @@ class ModelWrapper(gym.Wrapper):
           else:
             r = np.array([r, 0.], dtype=np.float32)   
         if self.reward_type == 1:
-            self.last_root_max_q = self.root_max_q        
+            self.last_root_max_q = self.root_max_q   
+        
         return out.unsqueeze(-1).unsqueeze(-1), r, done, info        
         
-    def use_model_raw(self, x, r, a, cur_t, reset):
+    def use_model_raw(self, x, r, a, cur_t, reset, done):
+        # mostly deprecated
         # input: 
         # r: reward - [,]; x: frame - [C, H, W]; a: action - [,]
         # cur_t: int; reset at cur_t == 0  
@@ -790,13 +802,18 @@ class ModelWrapper(gym.Wrapper):
         self.encoded = reset * self.encoded_reset + (1 - reset) * self.encoded
         return out[0]      
     
-    def use_model_tree(self, x, r, a, cur_t, reset):
+    def use_model_tree(self, x, r, a, cur_t, reset, done=False):
         with torch.no_grad():
             if cur_t == 0:
                 self.rollout_depth = 0.
                 self.unexpand_rollout_depth = 0.
                 self.pass_unexpand = False
                 self.max_rollout_depth = 0.
+                
+                if self.root_max_q is not None:
+                    self.thres = (self.root_max_q - r) / self.discounting
+                if done:
+                    self.thres = None
                 
                 if self.no_mem:
                     re_action = 0
@@ -807,7 +824,7 @@ class ModelWrapper(gym.Wrapper):
                 
                 x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
                 self.x = self.x_ = x_tensor
-                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions)                
+                a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)                
                 _, vs, logits, encodeds = self.model(x_tensor, a_tensor.unsqueeze(0), one_hot=True) 
                 
                 if self.perfect_model: 
@@ -815,18 +832,34 @@ class ModelWrapper(gym.Wrapper):
                 else:
                     encoded=encodeds[-1]
                 
-                self.root_node = Node(parent=None, action=re_action, logit=None, 
-                                      num_actions=self.num_actions,
-                                      discounting=self.discounting,
-                                      rec_t=self.rec_t)
-                self.root_node.expand(r=re_reward, v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
-                                      encoded=encoded)
+                if (not self.tree_carry or self.root_node is None or 
+                    not self.root_node.children[a].expanded() or done):
+                
+                    self.root_node = Node(parent=None, action=re_action, logit=None, 
+                                          num_actions=self.num_actions,
+                                          discounting=self.discounting,
+                                          rec_t=self.rec_t)
+                    self.root_node.expand(r=torch.tensor([0.], dtype=torch.float32), 
+                                          v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
+                                          encoded=encoded)
+                else:
+                    self.root_node = self.root_node.children[a]
+                    self.root_node.expand(r=torch.tensor([0.], dtype=torch.float32), 
+                                          v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
+                                          encoded=encoded, override=True)
+                    self.parent = None
+                
+                if self.thres is not None:
+                    self.thres = self.thres_discounting * self.thres + (1 - self.thres_discounting) * vs[-1, 0].item()
+                
                 self.root_node.visit()
                 self.cur_node = self.root_node
+                
             else:
                 self.rollout_depth += 1                    
                 self.max_rollout_depth = max(self.max_rollout_depth, self.rollout_depth)
                 next_node = self.cur_node.children[a]
+                
                 if not next_node.expanded():
                     self.pass_unexpand = True
                     a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
@@ -878,9 +911,15 @@ class ModelWrapper(gym.Wrapper):
             
             root_trail_r = self.root_node.trail_r / self.discounting
             root_rollout_q = self.root_node.rollout_q / self.discounting
-            root_max_q = torch.max(torch.concat(self.root_node.rollout_qs)).unsqueeze(-1) / self.discounting
+            if self.tree_vb != 0:
+                rollout_qs = [x + (self.tree_vb if n == 0 else 0.) for n, x in enumerate(self.root_node.rollout_qs)]
+            else:
+                rollout_qs = self.root_node.rollout_qs
+            root_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+            if self.thres_carry and self.thres is not None:
+                root_max_q = torch.max(root_max_q, self.thres)                
             
-            ret_list = [root_node_stat, cur_node_stat, reset, time, depc,]
+            ret_list = [root_node_stat, cur_node_stat, reset, time, depc]
             if self.stat_type >= 2: ret_list.extend([root_trail_r, root_rollout_q, root_max_q])            
             out = torch.concat(ret_list, dim=-1)            
             self.last_node = self.cur_node     
@@ -890,7 +929,11 @@ class ModelWrapper(gym.Wrapper):
                              "q_s_a": self.root_node.ret_dict["child_rollout_qs_mean"].unsqueeze(0),
                              "max_q_s_a": self.root_node.ret_dict["child_rollout_qs_max"].unsqueeze(0),
                              "n_s_a": self.root_node.ret_dict["child_rollout_ns"].unsqueeze(0),
-                             "logit0": self.root_node.ret_dict["child_logits"].unsqueeze(0),}
+                             "logit0": self.root_node.ret_dict["child_logits"].unsqueeze(0),
+                             "logit": self.cur_node.ret_dict["child_logits"].unsqueeze(0),
+                             "reset": reset}
+            if self.thres is not None:
+                self.ret_dict["thres"] = self.thres
             
             if reset:
                 self.rollout_depth = 0
@@ -924,19 +967,25 @@ class Node:
     def expanded(self):
         return len(self.children) > 0
 
-    def expand(self, r, v, logits, encoded):
+    def expand(self, r, v, logits, encoded, override=False):
         """
         First time arriving a node and so we expand it
         r, v: tensor of shape (1,)
         logits: tensor of shape (num_actions,)
         """
-        assert not self.expanded()
+        if not override: assert not self.expanded()
+        if override:
+            self.rollout_qs = [x - self.r + r for x in self.rollout_qs]
+            self.rollout_qs[0] = v * self.discounting
         self.r = r
         self.v = v
         self.encoded = encoded
         for a in range(self.num_actions):
-            child = self.children.append(Node(self, a, logits[[a]], 
-               self.num_actions, self.discounting, self.rec_t))
+            if not override:
+                child = self.children.append(Node(self, a, logits[[a]], 
+                   self.num_actions, self.discounting, self.rec_t))
+            else:
+                self.children[a].logit = logits[[a]]        
             
     def visit(self):
         self.trail_r = torch.tensor([0.], dtype=torch.float32)    
@@ -954,8 +1003,7 @@ class Node:
         if self.parent is not None: self.parent.propagate(r, v, new_rollout)
             
     def stat(self):
-        assert self.expanded
-
+        assert self.expanded()
         self.child_logits = torch.concat([x.logit for x in self.children])        
         child_rollout_qs_mean = []
         child_rollout_qs_max = []
@@ -1034,20 +1082,10 @@ def define_parser():
                         help="Whether to use LSTM-transformer.")
     parser.add_argument("--tran_lstm_no_attn", action="store_true",
                         help="Whether to disable attention in LSTM-transformer.")
+    parser.add_argument("--tran_attn_b", default=5.,
+                        type=float, help="Bias attention for current position.")    
     parser.add_argument("--tran_erasep", action="store_true",
                         help="Whether to erase past memories if not planning.")
-
-    parser.add_argument("--rec_t", default=5, type=int, metavar="N",
-                        help="Number of planning steps.")
-    parser.add_argument("--stat_type", default=1, type=int, metavar="N",
-                        help="Staistic type (0: raw; 1: root node stat; 2. root & current node stat).")    
-    parser.add_argument("--no_mem", action="store_true",
-                        help="Whether to erase all memories after each real action.")   
-    
-    parser.add_argument("--model_type_nn", default=0,
-                        type=float, help="Model type.")     
-    parser.add_argument("--perfect_model", action="store_true",
-                        help="Whether to use perfect model.")       
     
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.0001,
@@ -1070,10 +1108,32 @@ def define_parser():
                         metavar="N", help="Reward clipping.")
     parser.add_argument("--trun_bs", action="store_true",
                         help="Whether to add baseline as reward when truncated.")
+    
+    # Model settings
     parser.add_argument("--reward_type", default=1, type=int, metavar="N",
                         help="Reward type")   
     parser.add_argument("--reset_m", default=-1, type=int, metavar="N",
                         help="Auto reset after passing m node since an unexpanded noded")    
+    parser.add_argument("--model_type_nn", default=0,
+                        type=float, help="Model type.")     
+    parser.add_argument("--perfect_model", action="store_true",
+                        help="Whether to use perfect model.")    
+    parser.add_argument("--rec_t", default=5, type=int, metavar="N",
+                        help="Number of planning steps.")
+    parser.add_argument("--stat_type", default=1, type=int, metavar="N",
+                        help="Staistic type (0: raw; 1: root node stat; 2. root & current node stat).")    
+    parser.add_argument("--no_mem", action="store_true",
+                        help="Whether to erase all memories after each real action.")   
+    parser.add_argument("--tree_carry", action="store_true",
+                        help="Whether to carry over the tree.")   
+    parser.add_argument("--tree_vb", default=0., type=float,
+                        help="Adjustment to initial max-Q.")    
+    parser.add_argument("--thres_carry", action="store_true",
+                        help="Whether to carry threshold over.")   
+    parser.add_argument("--reward_carry", action="store_true",
+                        help="Whether to carry planning reward over.")      
+    parser.add_argument("--thres_discounting", default=0.99,
+                        type=float, help="Threshold discounting factor.")    
     
 
     # Optimizer settings.
@@ -1094,7 +1154,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
+flags = parser.parse_args()               
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
