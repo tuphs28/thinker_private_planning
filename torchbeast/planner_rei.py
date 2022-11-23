@@ -812,7 +812,6 @@ class ModelWrapper(gym.Wrapper):
                 
                 if self.root_max_q is not None:
                     self.thres = (self.root_max_q - r) / self.discounting
-                    self.thres *= self.thres_discounting
                 if done:
                     self.thres = None
                 
@@ -849,6 +848,9 @@ class ModelWrapper(gym.Wrapper):
                                           v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
                                           encoded=encoded, override=True)
                     self.parent = None
+                
+                if self.thres is not None:
+                    self.thres = self.thres_discounting * self.thres + (1 - self.thres_discounting) * vs[-1, 0].item()
                 
                 self.root_node.visit()
                 self.cur_node = self.root_node
@@ -1152,10 +1154,7 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args()        
-
-flags.xpid = None
-flags.load_checkpoint = ""
+flags = parser.parse_args()               
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
