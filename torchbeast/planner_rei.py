@@ -243,7 +243,10 @@ def learn(
         
         # compute advantage w.r.t real rewards
         
-        discounts = (~batch["done"]).float() * flags.im_discounting        
+        #discounts = (~batch["done"]).float() * flags.im_discounting        
+        discounts = (~batch["done"]).float()
+        discounts[batch["cur_t"] == 0] = flags.discounting
+        
         behavior_logits_ls = [batch["policy_logits"], batch["im_policy_logits"], batch["reset_policy_logits"]]
         target_logits_ls = [learner_outputs["policy_logits"], learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
         actions_ls = [batch["action"], batch["im_action"], batch["reset_action"]]        
@@ -278,9 +281,9 @@ def learn(
 
         if flags.reward_type == 1:
             if flags.reward_carry:                
-                discounts = (~batch["done"]).float() * flags.im_discounting 
+                discounts = (~batch["done"]).float() #* flags.im_discounting 
             else:
-                discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
+                discounts = (~(batch["cur_t"] == 0)).float() #* flags.im_discounting        
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
             target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
             actions_ls = [batch["im_action"], batch["reset_action"]] 
