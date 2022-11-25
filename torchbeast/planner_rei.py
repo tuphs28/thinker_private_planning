@@ -1046,13 +1046,15 @@ def define_parser():
     parser.add_argument("--im_entropy_cost", default=0.0001,
                         type=float, help="Imagainary Entropy cost/multiplier.")   
     parser.add_argument("--reset_entropy_cost", default=0.0001,
-                        type=float, help="Reset Entropy cost/multiplier.")       
+                        type=float, help="Reset Entropy cost/multiplier.")      
+    parser.add_argument("--term_entropy_cost", default=1e-7,
+                        type=float, help="Term Entropy cost/multiplier.")          
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=0.1,
                         type=float, help="Reg cost/multiplier.")
     parser.add_argument("--im_cost", default=1,
-                        type=float, help="Imaginary reward cost/multiplier.")    
+                        type=float, help="Imaginary reward cost/multiplier.")   
     parser.add_argument("--discounting", default=0.99,
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=1.,
@@ -1075,8 +1077,10 @@ def define_parser():
                         help="Number of planning steps.")
     parser.add_argument("--flex_t", action="store_true",
                         help="Whether to enable flexible planning steps.") 
-    parser.add_argument("--flex_t_cost", default=-1e-6,
+    parser.add_argument("--flex_t_cost", default=-1e-5,
                         type=float, help="Cost of planning step (only enabled when flex_t == True).")
+    parser.add_argument("--flex_t_term_b", default=-5,
+                        type=float, help="Bias added to the logit of term action.")    
     parser.add_argument("--stat_type", default=1, type=int, metavar="N",
                         help="Staistic type (0: raw; 1: root node stat; 2. root & current node stat).")    
     parser.add_argument("--no_mem", action="store_true",
@@ -1112,7 +1116,6 @@ def define_parser():
 
 parser = define_parser()
 flags = parser.parse_args()        
-
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
