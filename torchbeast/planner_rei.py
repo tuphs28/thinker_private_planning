@@ -1248,7 +1248,7 @@ def batch_and_learn(i, lock=threading.Lock()):
         tot_eps = tot_eps + len(stats["episode_returns"])
         timings.time("learn")
         with lock:
-            to_log = dict(step=step)
+            to_log = dict(step=step, real_step=real_step)
             to_log.update({k: stats[k] for k in stat_keys})            
             to_log.update({"rmean_im_episode_return": np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
                            "rmean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
