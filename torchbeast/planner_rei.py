@@ -979,7 +979,7 @@ class Node:
         out = torch.concat(list(self.ret_dict.values()))        
         return out        
     
-    def define_parser():
+def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
 
@@ -1112,6 +1112,7 @@ class Node:
 
 parser = define_parser()
 flags = parser.parse_args()        
+
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
