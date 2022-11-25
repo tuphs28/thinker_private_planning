@@ -728,7 +728,7 @@ class ModelWrapper(gym.Wrapper):
             r = np.array([0.])
           else:
             flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
-            r = np.array([0., (self.root_max_q - self.last_root_max_q + flex_t_cost).item()], dtype=np.float32)
+            r = np.array([0., (self.root_max_q - self.last_root_max_q - flex_t_cost).item()], dtype=np.float32)
           done = False
           info['cur_t'] = self.cur_t   
         else:
