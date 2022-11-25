@@ -19,7 +19,6 @@ from torch import multiprocessing as mp
 from torch.multiprocessing import Process, Manager
 from torch import nn
 from torch.nn import functional as F
-
 from torchbeast.core import file_writer
 from torchbeast.core import prof
 from torchbeast.core import vtrace
@@ -217,6 +216,7 @@ def learn(
     initial_agent_state,
     optimizer,
     scheduler,
+    real_step,
     lock=threading.Lock(),  # noqa: B008
 ):
     """Performs a learning (optimization) step."""
@@ -350,7 +350,11 @@ def learn(
         stats["total_norm"] = total_norm
         
         optimizer.step()
-        scheduler.step()
+        if not flags.flex_t:
+            scheduler.step()
+        else:
+            scheduler.last_epoch = real_step - 1  # scheduler does not support setting epoch directly
+            scheduler.step() 
 
         actor_model.load_state_dict(model.state_dict())
         return stats  
@@ -534,6 +538,7 @@ class Actor_net(nn.Module):
         self.no_mem = flags.no_mem                   # whether to earse real memory at the end of planning stage
         self.num_rewards = flags.num_rewards         # dim of rewards (1 for vanilla; 2 for planning rewards)
         self.flex_t = flags.flex_t                   # whether to output the terminate action
+        self.flex_t_term_b = flags.flex_t_term_b     # bias added to the logit of terminating
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -620,7 +625,9 @@ class Actor_net(nn.Module):
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)
         reset_policy_logits = self.reset(core_output)
-        if self.flex_t: term_policy_logits = self.term(core_output)
+        if self.flex_t: 
+            term_policy_logits = self.term(core_output)            
+            term_policy_logits[:, 1] += self.flex_t_term_b
         
         action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
@@ -637,6 +644,7 @@ class Actor_net(nn.Module):
         im_policy_logits = im_policy_logits.view(T, B, self.num_actions)
         reset_policy_logits = reset_policy_logits.view(T, B, 2)
         if self.flex_t: term_policy_logits = term_policy_logits.view(T, B, 2)
+            
         
         action = action.view(T, B)      
         im_action = im_action.view(T, B)      
@@ -1207,8 +1215,10 @@ if flags.load_checkpoint:
 print("All parameters: ")
 for k, v in learner_net.named_parameters(): print(k, v.numel())    
 
-def lr_lambda(epoch):
-    return 1 - min(epoch * T * B, flags.total_steps) / flags.total_steps
+if not flags.flex_t:
+    lr_lambda = lambda epoch: 1 - min(epoch * T * B, flags.total_steps) / flags.total_steps
+else:
+    lr_lambda = lambda epoch: 1 - min(epoch, flags.total_steps) / flags.total_steps
 
 scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 if flags.load_checkpoint:
@@ -1240,8 +1250,8 @@ def batch_and_learn(i, lock=threading.Lock()):
         timings.reset()
         batch, agent_state = get_batch(flags, free_queue, full_queue, buffers,
             initial_agent_state_buffers, timings,)
-        stats = learn(flags, actor_net, learner_net, batch, agent_state, optimizer, 
-            scheduler)
+        stats = learn(flags, actor_net, learner_net, batch, 
+                      agent_state, optimizer, scheduler, real_step)
         last_returns.extend(stats["episode_returns"])
         if "im_episode_returns" in stats:
             last_im_returns.extend(stats["im_episode_returns"])
@@ -1290,7 +1300,7 @@ def checkpoint():
 timer = timeit.default_timer
 try:
     last_checkpoint_time = timer()
-    while step < flags.total_steps:
+    while real_step < flags.total_steps:
         start_step = step
         start_time = timer()
         time.sleep(5)
@@ -1308,7 +1318,7 @@ try:
             mean_return = ""
         total_loss = stats.get("total_loss", float("inf"))
 
-        print_str =  "Steps %i (%i) @ %.1f SPS. Eps %i. L400 Return %f (%f). Loss %.2f" % (real_step, step, sps, tot_eps, 
+        print_str =  "Steps %i (%i) @ %.1f SPS. Eps %i. Return %f (%f). Loss %.2f" % (real_step, step, sps, tot_eps, 
             np.average(last_returns) if len(last_returns) > 0 else 0.,
             np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
             total_loss)
@@ -1318,6 +1328,7 @@ try:
             if s in stats: print_str += " %s %.2f" % (s, stats[s])
 
         logging.info(print_str)
+        
 except KeyboardInterrupt:
     for thread in threads:
         thread.join()        
