@@ -1253,7 +1253,8 @@ def batch_and_learn(i, lock=threading.Lock()):
     #nonlocal step, stats, last_returns, tot_eps
     global step, real_step, stats, last_returns, last_im_returns, tot_eps
     timings = prof.Timings()
-    while step < flags.total_steps:
+    #while step < flags.total_steps:
+    while real_step < flags.total_steps:    
         timings.reset()
         batch, agent_state = get_batch(flags, free_queue, full_queue, buffers,
             initial_agent_state_buffers, timings,)
