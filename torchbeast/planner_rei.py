@@ -258,7 +258,7 @@ def learn(
             behavior_logits_ls.append(batch["term_policy_logits"])
             target_logits_ls.append(learner_outputs["term_policy_logits"])
             actions_ls.append(batch["term_action"])
-            masks_ls.append(im_mask)
+            masks_ls.append(torch.zeros_like(im_mask))
 
         vtrace_returns = from_logits(
             behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
@@ -294,7 +294,7 @@ def learn(
                 behavior_logits_ls.append(batch["term_policy_logits"])
                 target_logits_ls.append(learner_outputs["term_policy_logits"])
                 actions_ls.append(batch["term_action"])
-                masks_ls.append(im_mask)
+                masks_ls.append(torch.zeros_like(im_mask))
             
             vtrace_returns = from_logits(
                 behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
@@ -866,14 +866,13 @@ class ModelWrapper(gym.Wrapper):
             if self.thres_carry and self.thres is not None:
                 root_max_q = torch.max(root_max_q, self.thres)
                 
-            ret_list = [root_node_stat, cur_node_stat, root_trail_r, root_rollout_q, root_max_q, reset, depc]
             if not self.flex_t:
                 time = F.one_hot(torch.tensor(cur_t).long(), self.rec_t)
-                ret_list.extend([time])            
+                ret_list = [root_node_stat, cur_node_stat, reset, time, depc, root_trail_r, root_rollout_q, root_max_q]
             else:
                 time = torch.tensor([self.discounting ** (self.cur_t)])
-                term = torch.tensor([term], dtype=torch.float32)            
-                ret_list.extend([term, time])    
+                term = torch.tensor([term], dtype=torch.float32)                            
+                ret_list = [root_node_stat, cur_node_stat, root_trail_r, root_rollout_q, root_max_q, reset, depc, term, time]
                 
             out = torch.concat(ret_list, dim=-1)            
             self.last_node = self.cur_node     
@@ -982,7 +981,7 @@ class Node:
         out = torch.concat(list(self.ret_dict.values()))        
         return out        
     
-def define_parser():
+    def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
 
@@ -1254,7 +1253,7 @@ def batch_and_learn(i, lock=threading.Lock()):
     global step, real_step, stats, last_returns, last_im_returns, tot_eps
     timings = prof.Timings()
     #while step < flags.total_steps:
-    while real_step < flags.total_steps:    
+    while real_step < flags.total_steps:
         timings.reset()
         batch, agent_state = get_batch(flags, free_queue, full_queue, buffers,
             initial_agent_state_buffers, timings,)
