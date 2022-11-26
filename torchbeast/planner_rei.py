@@ -147,9 +147,10 @@ def act(
         print()
         raise e
 
-def compute_policy_gradient_loss(logits_ls, actions_ls, advantages_ls, masks_ls):
-    loss = 0.
-    for logits, actions, advantages, masks in zip(logits_ls, actions_ls, advantages_ls, masks_ls):
+def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, advantages):
+    assert len(logits_ls) == len(actions_ls) == len(masks_ls)
+    loss = 0.    
+    for logits, actions, masks in zip(logits_ls, actions_ls, masks_ls):
         cross_entropy = F.nll_loss(
             F.log_softmax(torch.flatten(logits, 0, 1), dim=-1),
             target=torch.flatten(actions, 0, 1),
@@ -162,6 +163,7 @@ def compute_policy_gradient_loss(logits_ls, actions_ls, advantages_ls, masks_ls)
 def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     """Return the entropy loss, i.e., the negative entropy of the policy."""
     loss = 0.
+    assert(len(logits_ls) == len(masks_ls) == len(c_ls))
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         policy = F.softmax(logits, dim=-1)
         log_policy = F.log_softmax(logits, dim=-1)
@@ -181,9 +183,8 @@ def from_logits(
     discounts, rewards, values, bootstrap_value, clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0, lamb=1.0,):
     """V-trace for softmax policies."""
-    
-    log_rhos = 0.
-    
+    assert(len(behavior_logits_ls) == len(target_logits_ls) == len(actions_ls) == len(masks_ls))
+    log_rhos = 0.       
     for behavior_logits, target_logits, actions, masks in zip(behavior_logits_ls, 
              target_logits_ls, actions_ls, masks_ls):
         behavior_log_probs = action_log_probs(behavior_logits, actions)        
@@ -208,6 +209,8 @@ def from_logits(
         **vtrace_returns._asdict(),
     )  
   
+
+
 def learn(
     flags,
     actor_model,
@@ -269,8 +272,7 @@ def learn(
             lamb=flags.lamb
         )
         
-        advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
-        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, advantages_ls, masks_ls)         
+        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, vtrace_returns.pg_advantages, )         
         baseline_loss = flags.baseline_cost * compute_baseline_loss(
             vtrace_returns.vs - learner_outputs["baseline"][:, :, 0])        
        
@@ -304,8 +306,7 @@ def learn(
                 bootstrap_value=bootstrap_value[:, 1],
                 lamb=flags.lamb
             )
-            advantages_ls = [vtrace_returns.pg_advantages, vtrace_returns.pg_advantages]
-            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, advantages_ls, masks_ls)   
+            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, vtrace_returns.pg_advantages, )   
             im_baseline_loss = flags.baseline_cost * compute_baseline_loss(
                 vtrace_returns.vs - learner_outputs["baseline"][:, :, 1])     
 
@@ -318,6 +319,7 @@ def learn(
         episode_returns = batch["episode_return"][batch["done"]][:, 0]  
         max_rollout_depth = (batch["max_rollout_depth"][batch["cur_t"] == 0]).detach().cpu().numpy()
         max_rollout_depth = np.average(max_rollout_depth) if len (max_rollout_depth) > 0 else 0.        
+        real_step = torch.sum(batch["cur_t"]==0).item()
         stats = {
             "episode_returns": tuple(episode_returns.detach().cpu().numpy()),
             "mean_episode_return": torch.mean(episode_returns).item(),
@@ -327,8 +329,8 @@ def learn(
             "entropy_loss": entropy_loss.item(),
             "reg_loss": reg_loss.item(),
             "max_rollout_depth": max_rollout_depth,
-            "real_step": torch.sum(batch["cur_t"]==0).item(),
-            "mean_plan_step": T * B / torch.sum(batch["cur_t"]==0).item(),
+            "real_step": real_step,
+            "mean_plan_step": T * B / max(real_step, 1),
         }
         
         if flags.reward_type == 1:            
