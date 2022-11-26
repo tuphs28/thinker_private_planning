@@ -981,7 +981,7 @@ class Node:
         out = torch.concat(list(self.ret_dict.values()))        
         return out        
     
-    def define_parser():
+def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
 
