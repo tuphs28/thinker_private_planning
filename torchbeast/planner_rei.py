@@ -693,6 +693,8 @@ class ModelWrapper(gym.Wrapper):
         self.rec_t = flags.rec_t        
         self.flex_t = flags.flex_t 
         self.flex_t_cost = flags.flex_t_cost         
+        self.flex_t_cost_m = flags.flex_t_cost_m
+        self.flex_t_cost_type = flags.flex_t_cost_type        
         self.discounting = flags.discounting
         self.stat_type = flags.stat_type    
         self.reward_type = flags.reward_type    
