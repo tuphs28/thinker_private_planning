@@ -36,6 +36,17 @@ from collections import deque
 
 torch.multiprocessing.set_sharing_strategy('file_system')
 
+# util functions
+
+def get_git_revision_hash():
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+
+def exp_scale(x, start, end, n, m):
+    a = (end - start) / (np.exp(m * n) - 1)
+    c = start - a
+    x = np.clip(x, 0, n)    
+    return a * np.exp(m * x) + c
+                
 # Update to original core funct
 
 def create_buffers(flags, obs_shape, num_actions, num_rewards) -> Buffers:
@@ -630,6 +641,7 @@ class Actor_net(nn.Module):
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)
         reset_policy_logits = self.reset(core_output)
+        
         if self.flex_t: 
             term_policy_logits = self.term(core_output)            
             term_policy_logits[:, 1] += self.flex_t_term_b
@@ -732,7 +744,13 @@ class ModelWrapper(gym.Wrapper):
           if self.reward_type == 0:
             r = np.array([0.])
           else:
-            flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
+            if self.flex_t:
+                if self.flex_t_cost_type == 0:
+                    flex_t_cost = self.flex_t_cost
+                elif self.flex_t_cost_type == 1:
+                    flex_t_cost = exp_scale(self.cur_t, 1e-7, self.flex_t_cost, self.rec_t, self.flex_t_cost_m)
+            else:                
+                flex_t_cost = 0.
             r = np.array([0., (self.root_max_q - self.last_root_max_q - flex_t_cost).item()], dtype=np.float32)
           done = False
           info['cur_t'] = self.cur_t   
@@ -1083,6 +1101,10 @@ def define_parser():
                         help="Whether to enable flexible planning steps.") 
     parser.add_argument("--flex_t_cost", default=-1e-5,
                         type=float, help="Cost of planning step (only enabled when flex_t == True).")
+    parser.add_argument("--flex_t_cost_m", default=-1e-2,
+                        type=float, help="Multipler to exp. of planning cost (only enabled when flex_t_cost_type == 1).")    
+    parser.add_argument("--flex_t_cost_type", default=0,
+                        type=int, help="Type of planning cost; 0 for constant, 1 for exp. decay")                    
     parser.add_argument("--flex_t_term_b", default=-5,
                         type=float, help="Bias added to the logit of term action.")    
     parser.add_argument("--stat_type", default=1, type=int, metavar="N",
@@ -1146,6 +1168,8 @@ if flags.load_checkpoint:
 else:
     if flags.xpid is None:
         flags.xpid = "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
+flags.git_revision = get_git_revision_hash()
+
 plogger = file_writer.FileWriter(
     xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir
 )
@@ -1354,3 +1378,4 @@ finally:
 
 checkpoint()
 plogger.close()
+    
