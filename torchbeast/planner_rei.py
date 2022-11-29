@@ -159,17 +159,24 @@ def act(
         print()
         raise e
 
-def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, advantages):
-    assert len(logits_ls) == len(actions_ls) == len(masks_ls)
+def compute_baseline_loss(advantages, masks_ls, c_ls):
+    assert len(masks_ls) == len(c_ls)
+    loss = 0.  
+    for mask, c in zip(masks_ls, c_ls):
+        loss = loss + 0.5 * torch.sum((advantages * (1 - mask)) ** 2) * c        
+    return loss
+        
+def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
+    assert len(logits_ls) == len(actions_ls) == len(masks_ls) == len(c_ls)
     loss = 0.    
-    for logits, actions, masks in zip(logits_ls, actions_ls, masks_ls):
+    for logits, actions, masks, c in zip(logits_ls, actions_ls, masks_ls, c_ls):
         cross_entropy = F.nll_loss(
             F.log_softmax(torch.flatten(logits, 0, 1), dim=-1),
             target=torch.flatten(actions, 0, 1),
             reduction="none",)
         cross_entropy = cross_entropy.view_as(advantages)
         adv_cross_entropy = cross_entropy * advantages.detach()
-        loss = loss + torch.sum(adv_cross_entropy * (1-masks))
+        loss = loss + torch.sum(adv_cross_entropy * (1-masks)) * c
     return loss  
 
 def compute_entropy_loss(logits_ls, masks_ls, c_ls):
@@ -179,7 +186,7 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         policy = F.softmax(logits, dim=-1)
         log_policy = F.log_softmax(logits, dim=-1)
-        ent = torch.sum(policy * log_policy, dim=-1) #* (1-masks)
+        ent = torch.sum(policy * log_policy, dim=-1) * (1-masks)
         loss = loss + torch.sum(ent) * c 
     return loss
 
@@ -267,13 +274,16 @@ def learn(
         actions_ls = [batch["action"], batch["im_action"], batch["reset_action"]]        
         im_mask = (batch["cur_t"] == 0).float()
         real_mask = 1 - im_mask
+        zero_mask = torch.zeros_like(im_mask)
         masks_ls = [real_mask, im_mask, im_mask]                
+        c_ls = [flags.real_cost, flags.real_im_cost, flags.real_im_cost]
            
         if flags.flex_t:
             behavior_logits_ls.append(batch["term_policy_logits"])
             target_logits_ls.append(learner_outputs["term_policy_logits"])
             actions_ls.append(batch["term_action"])
-            masks_ls.append(torch.zeros_like(im_mask))
+            masks_ls.append(zero_mask)
+            c_ls.append(flags.real_im_cost)
 
         vtrace_returns = from_logits(
             behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
@@ -282,16 +292,14 @@ def learn(
             values=learner_outputs["baseline"][:, :, 0],
             bootstrap_value=bootstrap_value[:, 0],
             lamb=flags.lamb
-        )
+        )        
         
-        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, vtrace_returns.pg_advantages, )         
+        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )         
         baseline_loss = flags.baseline_cost * compute_baseline_loss(
-            vtrace_returns.vs - learner_outputs["baseline"][:, :, 0])        
+            vtrace_returns.vs - learner_outputs["baseline"][:, :, 0], 
+            masks_ls = [real_mask, im_mask], c_ls = [flags.real_cost, flags.real_im_cost])        
        
         # compute advantage w.r.t imagainary rewards
-        
-        cs_ls = [flags.entropy_cost, flags.im_entropy_cost, flags.reset_entropy_cost, flags.term_entropy_cost]
-        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, cs_ls)        
 
         if flags.reward_type == 1:
             if flags.reward_carry:                
@@ -301,14 +309,15 @@ def learn(
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
             target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
             actions_ls = [batch["im_action"], batch["reset_action"]] 
-            im_mask = (batch["cur_t"] == 0).float()
             masks_ls = [im_mask, im_mask]  
+            c_ls = [flags.im_cost, flags.im_cost]
             
             if flags.flex_t:
                 behavior_logits_ls.append(batch["term_policy_logits"])
                 target_logits_ls.append(learner_outputs["term_policy_logits"])
                 actions_ls.append(batch["term_action"])
-                masks_ls.append(torch.zeros_like(im_mask))
+                masks_ls.append(zero_mask)
+                c_ls.append(flags.im_cost)
             
             vtrace_returns = from_logits(
                 behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
@@ -318,15 +327,26 @@ def learn(
                 bootstrap_value=bootstrap_value[:, 1],
                 lamb=flags.lamb
             )
-            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, vtrace_returns.pg_advantages, )   
+            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )   
             im_baseline_loss = flags.baseline_cost * compute_baseline_loss(
-                vtrace_returns.vs - learner_outputs["baseline"][:, :, 1])     
+                vtrace_returns.vs - learner_outputs["baseline"][:, :, 1], masks_ls = [zero_mask], c_ls = [flags.im_cost])     
+            
+        target_logits_ls = [learner_outputs["policy_logits"], learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
+        masks_ls = [real_mask, im_mask, im_mask]    
+        im_ent_c = flags.im_entropy_cost * (flags.real_im_cost + (flags.im_cost if flags.reward_type == 1 else 0))
+        c_ls = [flags.entropy_cost * flags.real_cost, im_ent_c, im_ent_c]
+        if flags.flex_t:
+            target_logits_ls.append(learner_outputs["term_policy_logits"])
+            masks_ls.append(zero_mask)
+            c_ls.append(im_ent_c)        
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)       
+            
 
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
         
         if flags.reward_type == 1:
-            total_loss = total_loss + flags.im_cost * (im_pg_loss + im_baseline_loss)
+            total_loss = total_loss + im_pg_loss + im_baseline_loss
         
         episode_returns = batch["episode_return"][batch["done"]][:, 0]  
         max_rollout_depth = (batch["max_rollout_depth"][batch["cur_t"] == 0]).detach().cpu().numpy()
@@ -683,6 +703,22 @@ class Actor_net(nn.Module):
                                              term_action=term_action))
         return (ret_dict, core_state) 
     
+class PositionalEncoding(nn.Module):
+    def __init__(self, dim, max_len=200):
+        super().__init__()
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, dim, 2) * (-math.log(10000.0) / dim))
+        pe = torch.zeros(max_len, dim)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+        self.max_len = max_len
+
+    def forward(self, step) :
+        # step: int Tensor, shape [batch_size]
+        step = torch.clamp(step, 0, self.max_len-1)
+        return self.pe[step, :]    
         
 class ModelWrapper(gym.Wrapper):
     def __init__(self, env, model, flags):
@@ -694,9 +730,10 @@ class ModelWrapper(gym.Wrapper):
         self.flex_t = flags.flex_t 
         self.flex_t_cost = flags.flex_t_cost         
         self.flex_t_cost_m = flags.flex_t_cost_m
-        self.flex_t_cost_type = flags.flex_t_cost_type        
+        self.flex_t_cost_type = flags.flex_t_cost_type
         self.discounting = flags.discounting
-        self.stat_type = flags.stat_type    
+        self.stat_pos_encode = flags.stat_pos_encode
+        self.stat_pos_encode_dim = flags.stat_pos_encode_dim
         self.reward_type = flags.reward_type    
         self.no_mem = flags.no_mem
         self.perfect_model = flags.perfect_model
@@ -707,14 +744,13 @@ class ModelWrapper(gym.Wrapper):
         self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space.n
         self.root_node = None
-        
-        # 2 for tree stat
-        assert self.stat_type in [2]         
-        if self.stat_type == 2:
-            if not self.flex_t:
-                obs_n = 9 + num_actions * 10 + self.rec_t   
-            else:
-                obs_n = 11 + num_actions * 10                
+            
+        if not self.flex_t:
+            obs_n = 9 + num_actions * 10 + (self.rec_t if not self.stat_pos_encode else 2 * self.stat_pos_encode_dim)
+        else:
+            obs_n = 10 + num_actions * 10  + (1 if not self.stat_pos_encode else 2 * self.stat_pos_encode_dim)          
+        if self.stat_pos_encode:
+            obs_n = obs_n - num_actions * 2 + self.stat_pos_encode_dim * num_actions * 2
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
@@ -723,6 +759,11 @@ class ModelWrapper(gym.Wrapper):
         self.max_rollout_depth = 0.
         self.thres = None
         self.root_max_q = None
+        
+        if self.stat_pos_encode:
+            self.pos = PositionalEncoding(dim=self.stat_pos_encode_dim, max_len=self.rec_t)
+        else:
+            self.pos = None
         
     def reset(self, **kwargs):
         x = self.env.reset()
@@ -874,8 +915,8 @@ class ModelWrapper(gym.Wrapper):
                 if self.reset_m >= 0 and self.unexpand_rollout_depth > self.reset_m:
                     reset = True
             
-            root_node_stat = self.root_node.stat()
-            cur_node_stat = self.cur_node.stat()                        
+            root_node_stat = self.root_node.stat(pos=self.pos)
+            cur_node_stat = self.cur_node.stat(pos=self.pos)                        
             reset = torch.tensor([reset], dtype=torch.float32)            
             depc = torch.tensor([self.discounting ** (self.rollout_depth-1)])
             
@@ -889,11 +930,18 @@ class ModelWrapper(gym.Wrapper):
             if self.thres_carry and self.thres is not None:
                 root_max_q = torch.max(root_max_q, self.thres)
                 
+            if self.stat_pos_encode_dim:
+                time = torch.concat([self.pos(torch.tensor([cur_t]).long()), self.pos(torch.tensor([self.rollout_depth]).long())], dim=-1)
+                time = time[0]
+            else:
+                if self.flex_t:
+                    time = F.one_hot(torch.tensor(cur_t).long(), self.rec_t)
+                else:
+                    time = torch.tensor([self.discounting ** (self.cur_t)])                    
+                
             if not self.flex_t:
-                time = F.one_hot(torch.tensor(cur_t).long(), self.rec_t)
                 ret_list = [root_node_stat, cur_node_stat, reset, time, depc, root_trail_r, root_rollout_q, root_max_q]
             else:
-                time = torch.tensor([self.discounting ** (self.cur_t)])
                 term = torch.tensor([term], dtype=torch.float32)                            
                 ret_list = [root_node_stat, cur_node_stat, root_trail_r, root_rollout_q, root_max_q, reset, depc, term, time]
                 
@@ -904,7 +952,7 @@ class ModelWrapper(gym.Wrapper):
             self.ret_dict = {"v0": self.root_node.ret_dict["v"].unsqueeze(0),
                              "q_s_a": self.root_node.ret_dict["child_rollout_qs_mean"].unsqueeze(0),
                              "max_q_s_a": self.root_node.ret_dict["child_rollout_qs_max"].unsqueeze(0),
-                             "n_s_a": self.root_node.ret_dict["child_rollout_ns"].unsqueeze(0),
+                             "n_s_a": self.root_node.child_rollout_ns.unsqueeze(0),
                              "logit0": self.root_node.ret_dict["child_logits"].unsqueeze(0),
                              "logit": self.cur_node.ret_dict["child_logits"].unsqueeze(0),
                              "reset": reset,
@@ -980,7 +1028,7 @@ class Node:
             self.rollout_n = self.rollout_n + 1
         if self.parent is not None: self.parent.propagate(r, v, new_rollout)
             
-    def stat(self):
+    def stat(self, pos=None):
         assert self.expanded()
         self.child_logits = torch.concat([x.logit for x in self.children])        
         child_rollout_qs_mean = []
@@ -996,10 +1044,15 @@ class Node:
             child_rollout_qs_max.append(q_max)
         self.child_rollout_qs_mean = torch.concat(child_rollout_qs_mean)
         self.child_rollout_qs_max = torch.concat(child_rollout_qs_max)
-        self.child_rollout_ns = torch.concat([x.rollout_n for x in self.children]) / self.rec_t       
+        
+        self.child_rollout_ns = torch.tensor([x.rollout_n for x in self.children]).long()
+        if pos is None:
+            self.child_rollout_ns_enc = self.child_rollout_ns / self.rec_t       
+        else:
+            self.child_rollout_ns_enc = torch.flatten(pos(self.child_rollout_ns))
             
         ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
-                    "child_rollout_qs_max", "child_rollout_ns"]
+                    "child_rollout_qs_max", "child_rollout_ns_enc"]
         self.ret_dict = {x: getattr(self, x) for x in ret_list}
         out = torch.concat(list(self.ret_dict.values()))        
         return out        
@@ -1069,15 +1122,15 @@ def define_parser():
     parser.add_argument("--entropy_cost", default=0.0001,
                         type=float, help="Entropy cost/multiplier.")
     parser.add_argument("--im_entropy_cost", default=0.0001,
-                        type=float, help="Imagainary Entropy cost/multiplier.")   
-    parser.add_argument("--reset_entropy_cost", default=0.0001,
-                        type=float, help="Reset Entropy cost/multiplier.")      
-    parser.add_argument("--term_entropy_cost", default=1e-7,
-                        type=float, help="Term Entropy cost/multiplier.")          
+                        type=float, help="Imagainary Entropy cost/multiplier.")         
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=0.1,
                         type=float, help="Reg cost/multiplier.")
+    parser.add_argument("--real_cost", default=1,
+                        type=float, help="Real reward - real action cost/multiplier.")      
+    parser.add_argument("--real_im_cost", default=1,
+                        type=float, help="Real reward - imagainary action cost/multiplier.")          
     parser.add_argument("--im_cost", default=1,
                         type=float, help="Imaginary reward cost/multiplier.")   
     parser.add_argument("--discounting", default=0.99,
@@ -1098,6 +1151,10 @@ def define_parser():
                         type=float, help="Model type.")     
     parser.add_argument("--perfect_model", action="store_true",
                         help="Whether to use perfect model.")    
+    parser.add_argument("--stat_pos_encode", action="store_true",
+                        help="Whether to use positional encoding for integers")       
+    parser.add_argument("--stat_pos_encode_dim", default=32, type=int, metavar="N",
+                        help="Dimension of positional encoding (only enabled when stat_pos_encode == True).")        
     parser.add_argument("--rec_t", default=5, type=int, metavar="N",
                         help="Number of planning steps.")
     parser.add_argument("--flex_t", action="store_true",
@@ -1109,9 +1166,7 @@ def define_parser():
     parser.add_argument("--flex_t_cost_type", default=0,
                         type=int, help="Type of planning cost; 0 for constant, 1 for exp. decay")                    
     parser.add_argument("--flex_t_term_b", default=-5,
-                        type=float, help="Bias added to the logit of term action.")    
-    parser.add_argument("--stat_type", default=1, type=int, metavar="N",
-                        help="Staistic type (0: raw; 1: root node stat; 2. root & current node stat).")    
+                        type=float, help="Bias added to the logit of term action.")      
     parser.add_argument("--no_mem", action="store_true",
                         help="Whether to erase all memories after each real action.")   
     parser.add_argument("--tree_carry", action="store_true",
@@ -1381,4 +1436,3 @@ finally:
 
 checkpoint()
 plogger.close()
-    
