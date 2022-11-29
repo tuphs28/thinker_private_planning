@@ -47,7 +47,17 @@ def exp_scale(x, start, end, n, m):
     c = start - a
     x = np.clip(x, 0, n)    
     return a * np.exp(m * x) + c
-                
+
+class DataParallelWrapper(object):
+    def __init__(self, module):
+        self.module = module
+              
+    def __getattr__(self, name):        
+        if name in self.module.__dict__.keys(): 
+            return getattr(self.module, name)
+        else:
+            return getattr(self.module.module, name)
+    
 # Update to original core funct
 
 def create_buffers(flags, obs_shape, num_actions, num_rewards) -> Buffers:
@@ -1201,6 +1211,7 @@ def define_parser():
 parser = define_parser()
 flags = parser.parse_args()        
 
+
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
 else:
@@ -1285,6 +1296,7 @@ for i in range(flags.num_actors):
 learner_net = Actor_net(obs_shape, num_actions, flags)
 if flags.load_checkpoint:
     learner_net.load_state_dict(train_checkpoint["model_state_dict"])
+learner_net= DataParallelWrapper(nn.DataParallel(learner_net))   # commented out if no need multi-gpu
 learner_net = learner_net.to(device=flags.device)  
 
 if not flags.disable_adam:
@@ -1391,6 +1403,7 @@ def checkpoint():
 timer = timeit.default_timer
 try:
     last_checkpoint_time = timer()
+    train_start_time = timer()
     while real_step < flags.total_steps:
         start_step = step
         start_time = timer()
@@ -1427,7 +1440,7 @@ except KeyboardInterrupt:
 else:
     for thread in threads:
         thread.join()
-    logging.info("Learning finished after %d steps.", step)
+    logging.info("Learning finished after %d steps. (%f s)" % (step, timer() - train_start_time))
 finally:
     for _ in range(flags.num_actors):
         free_queue.put(None)
