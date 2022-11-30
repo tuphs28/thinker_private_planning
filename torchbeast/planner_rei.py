@@ -577,6 +577,7 @@ class Actor_net(nn.Module):
         self.tran_layer_n = flags.tran_layer_n       # number of layers
         self.tran_lstm = flags.tran_lstm             # to use lstm or not
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
+        self.tran_lstm_new = flags.tran_lstm_new
         self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.tran_norm_first = flags.tran_norm_first # to use norm first in transformer (not on LSTM)
         self.tran_ff_n = flags.tran_ff_n             # number of dim of ff in transformer (not on LSTM)        
@@ -601,7 +602,7 @@ class Actor_net(nn.Module):
                                  input_dim=d_in-self.d_model, hidden_dim=self.d_model,
                                  kernel_size=1, num_layers=self.tran_layer_n,
                                  num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
-                                 attn_mask_b=self.attn_mask_b)
+                                 attn_mask_b=self.attn_mask_b, legacy= not self.tran_lstm_new)
         else:            
             self.core = ConvTransformerRNN(d_in=d_in,
                                        h=self.conv_out_hw, w=self.conv_out_hw, d_model=self.d_model, 
@@ -1121,12 +1122,15 @@ def define_parser():
                         help="Whether to use relative position in transformer.")
     parser.add_argument("--tran_lstm", action="store_true",
                         help="Whether to use LSTM-transformer.")
+    parser.add_argument("--tran_lstm_new", action="store_true",
+                        help="Whether to use a speed-up version of LSTM-transformer.")    
     parser.add_argument("--tran_lstm_no_attn", action="store_true",
                         help="Whether to disable attention in LSTM-transformer.")
     parser.add_argument("--tran_attn_b", default=5.,
                         type=float, help="Bias attention for current position.")    
     parser.add_argument("--tran_erasep", action="store_true",
                         help="Whether to erase past memories if not planning.")
+    
     
     # Loss settings.
     parser.add_argument("--entropy_cost", default=0.0001,
@@ -1210,7 +1214,6 @@ def define_parser():
 
 parser = define_parser()
 flags = parser.parse_args()        
-
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
@@ -1296,7 +1299,7 @@ for i in range(flags.num_actors):
 learner_net = Actor_net(obs_shape, num_actions, flags)
 if flags.load_checkpoint:
     learner_net.load_state_dict(train_checkpoint["model_state_dict"])
-learner_net= DataParallelWrapper(nn.DataParallel(learner_net))   # commented out if no need multi-gpu
+#learner_net= DataParallelWrapper(nn.DataParallel(learner_net))   # commented out if no need multi-gpu
 learner_net = learner_net.to(device=flags.device)  
 
 if not flags.disable_adam:
