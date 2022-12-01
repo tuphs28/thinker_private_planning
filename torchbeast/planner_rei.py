@@ -757,9 +757,9 @@ class ModelWrapper(gym.Wrapper):
         self.root_node = None
             
         if not self.flex_t:
-            obs_n = 9 + num_actions * 10 + (self.rec_t if not self.stat_pos_encode else 2 * self.stat_pos_encode_dim)
+            obs_n = 9 + num_actions * 10 + (self.rec_t if not self.stat_pos_encode else (2 * self.stat_pos_encode_dim))
         else:
-            obs_n = 10 + num_actions * 10  + (1 if not self.stat_pos_encode else 2 * self.stat_pos_encode_dim)          
+            obs_n = 10 + num_actions * 10  + (1 if not self.stat_pos_encode else (2 * self.stat_pos_encode_dim))          
         if self.stat_pos_encode:
             obs_n = obs_n - num_actions * 2 + self.stat_pos_encode_dim * num_actions * 2
         
@@ -945,7 +945,7 @@ class ModelWrapper(gym.Wrapper):
                 time = torch.concat([self.pos(torch.tensor([cur_t]).long()), self.pos(torch.tensor([self.rollout_depth]).long())], dim=-1)
                 time = time[0]
             else:
-                if self.flex_t:
+                if not self.flex_t:
                     time = F.one_hot(torch.tensor(cur_t).long(), self.rec_t)
                 else:
                     time = torch.tensor([self.discounting ** (self.cur_t)])                    
@@ -956,7 +956,7 @@ class ModelWrapper(gym.Wrapper):
                 term = torch.tensor([term], dtype=torch.float32)                            
                 ret_list = [root_node_stat, cur_node_stat, root_trail_r, root_rollout_q, root_max_q, reset, depc, term, time]
                 
-            out = torch.concat(ret_list, dim=-1)            
+            out = torch.concat(ret_list, dim=-1)  
             self.last_node = self.cur_node     
             
             self.root_max_q = root_max_q
@@ -1214,7 +1214,6 @@ def define_parser():
 
 parser = define_parser()
 flags = parser.parse_args()        
-
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
