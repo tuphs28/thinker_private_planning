@@ -175,7 +175,7 @@ def compute_baseline_loss(advantages, masks_ls, c_ls):
     for mask, c in zip(masks_ls, c_ls):
         loss = loss + 0.5 * torch.sum((advantages * (1 - mask)) ** 2) * c        
     return loss
-        
+    
 def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
     assert len(logits_ls) == len(actions_ls) == len(masks_ls) == len(c_ls)
     loss = 0.    
@@ -196,7 +196,7 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         policy = F.softmax(logits, dim=-1)
         log_policy = F.log_softmax(logits, dim=-1)
-        ent = torch.sum(policy * log_policy, dim=-1) * (1-masks)
+        ent = torch.sum(policy * log_policy, dim=-1) #* (1-masks)
         loss = loss + torch.sum(ent) * c 
     return loss
 
@@ -275,9 +275,9 @@ def learn(
         
         # compute advantage w.r.t real rewards
         
-        #discounts = (~batch["done"]).float() * flags.im_discounting        
-        discounts = (~batch["done"]).float()
-        discounts[batch["cur_t"] == 0] = flags.discounting
+        discounts = (~batch["done"]).float() * flags.im_discounting        
+        #discounts = (~batch["done"]).float()
+        #discounts[batch["cur_t"] == 0] = flags.discounting
         
         behavior_logits_ls = [batch["policy_logits"], batch["im_policy_logits"], batch["reset_policy_logits"]]
         target_logits_ls = [learner_outputs["policy_logits"], learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
@@ -307,15 +307,15 @@ def learn(
         pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )         
         baseline_loss = flags.baseline_cost * compute_baseline_loss(
             vtrace_returns.vs - learner_outputs["baseline"][:, :, 0], 
-            masks_ls = [real_mask, im_mask], c_ls = [flags.real_cost, flags.real_im_cost])        
+            masks_ls = [real_mask, im_mask], c_ls = [flags.real_cost, flags.real_im_cost])
        
         # compute advantage w.r.t imagainary rewards
 
         if flags.reward_type == 1:
             if flags.reward_carry:                
-                discounts = (~batch["done"]).float() #* flags.im_discounting 
+                discounts = (~batch["done"]).float() * flags.im_discounting 
             else:
-                discounts = (~(batch["cur_t"] == 0)).float() #* flags.im_discounting        
+                discounts = (~(batch["cur_t"] == 0)).float() * flags.im_discounting        
             behavior_logits_ls = [batch["im_policy_logits"], batch["reset_policy_logits"]]
             target_logits_ls = [learner_outputs["im_policy_logits"], learner_outputs["reset_policy_logits"]]
             actions_ls = [batch["im_action"], batch["reset_action"]] 
@@ -941,7 +941,7 @@ class ModelWrapper(gym.Wrapper):
             if self.thres_carry and self.thres is not None:
                 root_max_q = torch.max(root_max_q, self.thres)
                 
-            if self.stat_pos_encode_dim:
+            if self.stat_pos_encode:
                 time = torch.concat([self.pos(torch.tensor([cur_t]).long()), self.pos(torch.tensor([self.rollout_depth]).long())], dim=-1)
                 time = time[0]
             else:
@@ -1214,6 +1214,7 @@ def define_parser():
 
 parser = define_parser()
 flags = parser.parse_args()        
+
 
 if flags.reward_type == 0:
     flags.num_rewards = num_rewards = 1
