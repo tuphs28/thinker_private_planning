@@ -237,8 +237,6 @@ def from_logits(
         target_action_log_probs=None,
         **vtrace_returns._asdict(),
     )  
-  
-
 
 def learn(
     flags,
@@ -252,6 +250,8 @@ def learn(
     lock=threading.Lock(),  # noqa: B008
 ):
     """Performs a learning (optimization) step."""
+    learn_(flags, actor_model, model, batch, initial_agent_state, optimizer, scheduler, lock=threading.Lock()),  # noqa: B008)
+    
     with lock:                
         learner_outputs, unused_state = model(batch, initial_agent_state)
         #learner_outputs["im_policy_logits"].register_hook(lambda grad: grad / (flags.rec_t - 1))
@@ -304,7 +304,8 @@ def learn(
             lamb=flags.lamb
         )        
         
-        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )         
+        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )  
+        
         baseline_loss = flags.baseline_cost * compute_baseline_loss(
             vtrace_returns.vs - learner_outputs["baseline"][:, :, 0], 
             masks_ls = [real_mask, im_mask], c_ls = [flags.real_cost, flags.real_im_cost])
@@ -355,6 +356,8 @@ def learn(
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
         
+        print("1 pg_loss:%f im_pg_loss %f baseline_loss %f im_baseline_loss %f entropy_loss %f" % (pg_loss, im_pg_loss, baseline_loss, im_baseline_loss, entropy_loss))              
+              
         if flags.reward_type == 1:
             total_loss = total_loss + im_pg_loss + im_baseline_loss
         
@@ -1321,7 +1324,7 @@ print("All parameters: ")
 for k, v in learner_net.named_parameters(): print(k, v.numel())    
 
 if not flags.flex_t:
-    lr_lambda = lambda epoch: 1 - min(epoch * T * B, flags.total_steps) / flags.total_steps
+    lr_lambda = lambda epoch: 1 - min(epoch * T * B, flags.total_steps * flags.rec_t) / (flags.total_steps * flags.rec_t)
 else:
     lr_lambda = lambda epoch: 1 - min(epoch, flags.total_steps) / flags.total_steps
 
