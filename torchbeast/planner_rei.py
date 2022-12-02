@@ -250,7 +250,6 @@ def learn(
     lock=threading.Lock(),  # noqa: B008
 ):
     """Performs a learning (optimization) step."""
-    learn_(flags, actor_model, model, batch, initial_agent_state, optimizer, scheduler, lock=threading.Lock()),  # noqa: B008)
     
     with lock:                
         learner_outputs, unused_state = model(batch, initial_agent_state)
