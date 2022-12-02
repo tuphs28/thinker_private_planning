@@ -349,13 +349,10 @@ def learn(
             target_logits_ls.append(learner_outputs["term_policy_logits"])
             masks_ls.append(zero_mask)
             c_ls.append(im_ent_c)        
-        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)       
-            
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)      
 
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
-        total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss
-        
-        print("1 pg_loss:%f im_pg_loss %f baseline_loss %f im_baseline_loss %f entropy_loss %f" % (pg_loss, im_pg_loss, baseline_loss, im_baseline_loss, entropy_loss))              
+        total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss           
               
         if flags.reward_type == 1:
             total_loss = total_loss + im_pg_loss + im_baseline_loss
