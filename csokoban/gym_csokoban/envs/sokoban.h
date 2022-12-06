@@ -1,23 +1,19 @@
 #pragma once
 #include <vector>
 #include <string>
-
+#include <iostream>
 using namespace std;
 
 enum class roomStatus : unsigned char { wall, empty, box_not_on_tar, box_on_tar, player_not_on_tar, player_on_tar, tar };
 enum class action : unsigned char { noop, up, down, left, right };
-
-constexpr char default_level_dir[] = "//home//sc//RS//thinker//csokoban//gym_csokoban//envs//boxoban-levels//unfiltered//train";
-constexpr char default_img_dir[] = "//home//sc//RS//thinker//csokoban//gym_csokoban//envs//surface";
 
 void read_bmp(const string &img_dir, const string &img_name, vector<unsigned char> &data);
 char roomStatus_to_char(const roomStatus r);
 
 class Sokoban {
 public:
-	Sokoban() : Sokoban(false) {};
-	Sokoban(bool s) : Sokoban(false, default_level_dir, default_img_dir) {};
-	Sokoban(bool s, string level_dir, string img_dir) :
+	Sokoban() = default;
+	Sokoban(bool s, string l, string i) :
 		player_pos_x(0),
 		player_pos_y(0),
 		box_left(0),
@@ -27,8 +23,8 @@ public:
 		obs_x((s ? small_img_x : large_img_x)* room_x),
 		obs_y((s ? small_img_x : large_img_x)* room_y),
 		obs_n((s ? small_img_x * small_img_x : large_img_x * large_img_x)* room_x* room_y * 3),
-		level_dir(level_dir),
-		img_dir(img_dir),
+		level_dir(l),
+		img_dir(i),
 		done(false),
 		small(s),
 		room_status(),

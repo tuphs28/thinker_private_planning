@@ -9,7 +9,6 @@ cdef extern from "sokoban.h":
 
     cdef cppclass Sokoban:
         Sokoban() except +
-        Sokoban(bool s) except +
         Sokoban(bool s, string level_dir, string img_dir) except +
         void reset(unsigned char* obs)
         void step(const int a, unsigned char* obs, float& reward, bool& done)

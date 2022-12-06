@@ -15,11 +15,8 @@ cdef class cSokoban:
 	cdef Sokoban c_sokoban
 	cdef int obs_x, obs_y, obs_n
 
-	def __init__(self, bool small=False, string level_dir="".encode('UTF-8'), string img_dir="".encode('UTF-8')):
-		if not level_dir.empty():
-			self.c_sokoban = Sokoban(small, level_dir, img_dir)		
-		else:
-			self.c_sokoban = Sokoban(small)		
+	def __init__(self, bool small, string level_dir, string img_dir):
+		self.c_sokoban = Sokoban(small, level_dir, img_dir)	
 		self.obs_x = self.c_sokoban.obs_x
 		self.obs_y = self.c_sokoban.obs_y
 		self.obs_n = self.c_sokoban.obs_n

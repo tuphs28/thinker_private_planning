@@ -2,10 +2,14 @@
 #include <iostream>
 using namespace std;
 
+
+string level_dir = "//home//sc//RS//thinker//csokoban//gym_csokoban//envs//boxoban-levels//unfiltered//train";
+string img_dir = "//home//sc//RS//thinker//csokoban//gym_csokoban//envs//surface";
+
 int main()
 {
 	cout << "size of sokoban: " << sizeof(Sokoban) << endl;
-	Sokoban sokoban;
+	Sokoban sokoban(false, level_dir, img_dir);
 	unsigned char* obs = new unsigned char[sokoban.obs_n];
 	float reward = 0.;
 	bool done = false;
