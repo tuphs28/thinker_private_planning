@@ -1,10 +1,13 @@
 # distutils: language = c++
 
+from libcpp cimport bool
+from libcpp.string cimport string
 from cython.view cimport array as cvarray
 import numpy as np
 cimport numpy as np
 np.import_array()
-from .csokoban cimport Sokoban
+from .sokoban cimport Sokoban
+#from sokoban cimport Sokoban // use this for non-package version
 
 #import matplotlib.pyplot as plt
 
@@ -70,16 +73,14 @@ cdef class cSokoban:
 	@property
 	def obs_y(self):
 		return self.c_sokoban.obs_y
-
 """
 def main():
 	env = cSokoban()
 	obs = env.reset()
 	plt.imshow(obs)
 	plt.show()
-	obs, reward, done = env.step(2)
+	obs, reward, done, _ = env.step(2)
 	plt.imshow(obs)
 	plt.show()
 	print(reward, done)
-"""
-	
+"""	

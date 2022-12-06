@@ -5,10 +5,10 @@
 using namespace std;
 
 enum class roomStatus : unsigned char { wall, empty, box_not_on_tar, box_on_tar, player_not_on_tar, player_on_tar, tar };
-enum class action : unsigned char { up, down, left, right };
+enum class action : unsigned char { noop, up, down, left, right };
 
-constexpr char default_level_dir[] = "C://Users//chung//Personal//RS//thinker//sokoban//gym_sokoban//envs//boxoban-levels//unfiltered//train";
-constexpr char default_img_dir[] = "C://Users//chung//Personal//RS//thinker//sokoban//gym_sokoban//envs//surface";
+constexpr char default_level_dir[] = "//home//sc//RS//thinker//csokoban//gym_csokoban//envs//boxoban-levels//unfiltered//train";
+constexpr char default_img_dir[] = "//home//sc//RS//thinker//csokoban//gym_csokoban//envs//surface";
 
 void read_bmp(const string &img_dir, const string &img_name, vector<unsigned char> &data);
 char roomStatus_to_char(const roomStatus r);

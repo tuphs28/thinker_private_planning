@@ -111,6 +111,8 @@ void Sokoban::move_pos(const action a, int& x, int& y) {
 	case action::right:
 		x++;
 		return;
+	case action::noop:
+		return;
 	}
 }
 
@@ -157,6 +159,7 @@ float Sokoban::move(const action a) {
 		done = true;
 		return reward_step;
 	}
+	if (a == action::noop) return reward_step;	
 	roomStatus& old_r = room_status[player_pos_y][player_pos_x];
 	int new_pos_x = player_pos_x, new_pos_y = player_pos_y;
 	move_pos(a, new_pos_x, new_pos_y);
@@ -280,7 +283,7 @@ void Sokoban::step(const action a, unsigned char* obs, float& reward, bool& done
 }
 
 void Sokoban::step(const int a, unsigned char* obs, float& reward, bool& done) {
-	if (a >= a && a <= 3) step(action(a), obs, reward, done);
+	if (a >= 0 && a <= 4) step(action(a), obs, reward, done);
 	else throw invalid_argument("invalid action");
 }
 

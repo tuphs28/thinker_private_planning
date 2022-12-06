@@ -402,8 +402,14 @@ class TimeLimit_(gym.Wrapper):
         self.env.restore_state(state)
         return 
 
-def SokobanWrapper(env, noop):
-    if noop: env = NoopWrapper(env, cost=-0.01)
-    env = wrap_pytorch(TimeLimit_(WarpFrame(env, width=80, height=80, grayscale=False), max_episode_steps=120))
-    if noop: env = NoopResetEnv(env, noop_max=5) # to prevent the done step is always truncated in learn funct.
+def EnvWrapper(env, noop, name):        
+    if name == "Sokoban-v0":
+        if noop: env = NoopWrapper(env, cost=-0.01)
+        env = wrap_pytorch(TimeLimit_(WarpFrame(env, width=80, height=80, grayscale=False), max_episode_steps=120))
+        if noop: env = NoopResetEnv(env, noop_max=5) # to prevent the done step is always truncated in learn funct.
+    elif name == "cSokoban-v0":
+        env = wrap_pytorch(env)
+    else:
+        raise ValueError("Environment not supported")
+
     return env

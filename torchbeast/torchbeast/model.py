@@ -17,7 +17,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from torchbeast.core.environment import Environment, Vec_Environment
-from torchbeast.atari_wrappers import SokobanWrapper
+from torchbeast.atari_wrappers import EnvWrapper
 from torchbeast.base import BaseNet
 from torchbeast.train import create_env
 
@@ -430,7 +430,7 @@ def test_n_step_model(n, model, flags, eps_n=100, temp=20.):
     print("Testing %d step planning" % n) 
     
     bsz = 100
-    env = gym.vector.SyncVectorEnv([lambda: SokobanWrapper(gym.make("Sokoban-v0"), noop=True)] * bsz)
+    env = gym.vector.SyncVectorEnv([lambda: EnvWrapper(gym.make("Sokoban-v0"), noop=True, name="Sokoban-v0")] * bsz)
     env = Vec_Environment(env, bsz)
     num_actions = env.gym_env.action_space[0].n
     

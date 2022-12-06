@@ -30,6 +30,7 @@ from torchbeast.model import Model
 
 import gym
 import gym_sokoban
+import gym_csokoban
 import numpy as np
 from matplotlib import pyplot as plt
 import logging
@@ -107,7 +108,7 @@ def act(
         logging.info("Actor %i started.", actor_index)
         timings = prof.Timings()  # Keep track of how fast things are.
 
-        gym_env = ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
+        gym_env = ModelWrapper(EnvWrapper(gym.make(flags.env), noop=not flags.env_disable_noop, name=flags.env), 
                                model=model, flags=flags)
         seed = actor_index ^ int.from_bytes(os.urandom(4), byteorder="little")
         gym_env.seed(seed)
@@ -349,10 +350,11 @@ def learn(
             target_logits_ls.append(learner_outputs["term_policy_logits"])
             masks_ls.append(zero_mask)
             c_ls.append(im_ent_c)        
-        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)      
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)       
+            
 
         reg_loss = flags.reg_cost * torch.sum(learner_outputs["reg_loss"])
-        total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss           
+        total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss         
               
         if flags.reward_type == 1:
             total_loss = total_loss + im_pg_loss + im_baseline_loss
@@ -1066,7 +1068,7 @@ class Node:
         self.ret_dict = {x: getattr(self, x) for x in ret_list}
         out = torch.concat(list(self.ret_dict.values()))        
         return out        
-    
+
 def define_parser():
 
     parser = argparse.ArgumentParser(description="PyTorch Scalable Agent")
@@ -1220,14 +1222,14 @@ else:
     flags.num_rewards = num_rewards = 2
 flags.im_discounting = flags.discounting ** (1/flags.rec_t)    
     
-raw_env = SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop)
+raw_env = EnvWrapper(gym.make(flags.env), noop=not flags.env_disable_noop, name=flags.env)
 raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
 
 model = Model(flags, raw_obs_shape, num_actions=num_actions)
 checkpoint = torch.load("../models/model_1.tar")
 model.load_state_dict(checkpoint["model_state_dict"])    
 
-env = Environment(ModelWrapper(SokobanWrapper(gym.make("Sokoban-v0"), noop=not flags.env_disable_noop), 
+env = Environment(ModelWrapper(EnvWrapper(gym.make(flags.env), noop=not flags.env_disable_noop, name=flags.env), 
      model=model, flags=flags))
 obs_shape = env.gym_env.observation_space.shape
 

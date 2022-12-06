@@ -27,10 +27,12 @@ extensions = [
     Extension("gym_csokoban.envs.csokoban", ["gym_csokoban/envs/csokoban.pyx"]),
 ]
 
-CYTHONIZE = bool(int(os.getenv("CYTHONIZE", 0))) and cythonize is not None
+#CYTHONIZE = bool(int(os.getenv("CYTHONIZE", 0))) and cythonize is not None
+CYTHONIZE = True
 
 if CYTHONIZE:
-    compiler_directives = {"language_level": 3, "embedsignature": True}
+    #compiler_directives = {"language_level": 3, "embedsignature": True}
+    compiler_directives = {}
     extensions = cythonize(extensions, compiler_directives=compiler_directives)
 else:
     extensions = no_cythonize(extensions)
@@ -44,5 +46,5 @@ setup(
     packages=["gym_csokoban"],
     ext_modules=extensions,
     install_requires=install_requires,
-    include_dirs=[numpy.get_include()]
+    include_dirs=[".", numpy.get_include()]
 )
