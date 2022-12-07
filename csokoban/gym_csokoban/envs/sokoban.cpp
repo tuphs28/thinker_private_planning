@@ -71,9 +71,9 @@ void read_bmp(const string &img_dir, const string &img_name, vector<unsigned cha
 			in.seekg(54 + y * padded_width * 3);
 			in.read(tmp, width * 3);
 			for (int x = 0; x < width; x++) {
-				data.push_back(tmp[(width - 1) * 3 - x * 3 + 2]);
-				data.push_back(tmp[(width - 1) * 3 - x * 3 + 1]);
-				data.push_back(tmp[(width - 1) * 3 - x * 3]);
+				data.push_back(tmp[x * 3 + 2]);
+				data.push_back(tmp[x * 3 + 1]);
+				data.push_back(tmp[x * 3]);
 			}
 		}
 		delete[] tmp;
@@ -154,11 +154,6 @@ float Sokoban::move_box(roomStatus& old_r, roomStatus& new_r) {
 
 float Sokoban::move(const action a) {
 	if (done) return 0.;
-	step_n++;
-	if (step_n > max_step_n) {
-		done = true;
-		return reward_step;
-	}
 	if (a == action::noop) return reward_step;	
 	roomStatus& old_r = room_status[player_pos_y][player_pos_x];
 	int new_pos_x = player_pos_x, new_pos_y = player_pos_y;
@@ -276,8 +271,16 @@ void Sokoban::reset(unsigned char* obs) {
 	render(obs);
 }
 
+void Sokoban::reset_level(unsigned char* obs, const int room_id) {
+	srand((unsigned)time(nullptr));
+	read_level(room_id);
+	step_n = rand() % 5;
+	render(obs);
+}
+
 void Sokoban::step(const action a, unsigned char* obs, float& reward, bool& done) {
-	reward = move(a);
+	reward = move(a);		
+	if (step_n >= max_step_n - 1) this->done = true; else step_n++;	
 	done = this->done;
 	render(obs);
 }

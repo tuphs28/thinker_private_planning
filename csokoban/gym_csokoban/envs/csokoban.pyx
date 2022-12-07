@@ -27,6 +27,12 @@ cdef class cSokoban:
 		self.c_sokoban.reset(&obs_view[0])
 		return obs.reshape(self.obs_x,self.obs_y,3)
 
+	def reset_level(self, int room_id):
+		cdef np.ndarray obs = np.zeros((self.obs_n), dtype=np.dtype("u1"))
+		cdef unsigned char[::1] obs_view = obs
+		self.c_sokoban.reset_level(&obs_view[0], room_id)
+		return obs.reshape(self.obs_x,self.obs_y,3)		
+
 	def step(self, int act):
 		cdef np.ndarray obs = np.zeros((self.obs_n), dtype=np.dtype("u1"))
 		cdef unsigned char[::1] obs_view = obs

@@ -17,12 +17,21 @@ class SokobanEnv(gym.Env):
     def step(self, action):
         return self.sokoban.step(action)
 
-    def reset(self):
-        return self.sokoban.reset()
-
+    def reset(self, room_id=None):
+        if room_id is None:
+            return self.sokoban.reset()
+        else:
+            return self.sokoban.reset_level(room_id)   
     def clone_state(self):
         return self.sokoban.clone_state()
 
     def restore_state(self, state):
-        return self.sokoban.restore_state(state)        
+        return self.sokoban.restore_state(state)    
 
+    @property
+    def step_n(self):
+        return self.sokoban.step_n
+
+    @step_n.setter
+    def step_n(self, step_n):
+        self.sokoban.step_n = step_n  
