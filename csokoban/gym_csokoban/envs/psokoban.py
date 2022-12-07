@@ -15,7 +15,9 @@ class SokobanEnv(gym.Env):
         self.sokoban.reset()
 
     def step(self, action):
-        return self.sokoban.step(action)
+        obs, reward, done, info = self.sokoban.step(action)
+        reward = round(reward, 2)
+        return obs, reward, done, info
 
     def reset(self, room_id=None):
         if room_id is None:

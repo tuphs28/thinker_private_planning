@@ -50,14 +50,14 @@ cdef class cSokoban:
 		cdef int step_n = 0
 		cdef bool done = False
 		self.c_sokoban.clone_state(&room_status_view[0], step_n, done)
-		return {"room_status": room_status, 
-		 		"step_n": step_n,
-		 		"done": done}
+		return {"sokoban_room_status": room_status, 
+		 		"sokoban_step_n": step_n,
+		 		"sokoban_done": done}
 
 	def restore_state(self, state):		
-		cdef np.ndarray room_status = state["room_status"]
-		cdef int step_n  = state["step_n"]
-		cdef bool done = state["done"]
+		cdef np.ndarray room_status = state["sokoban_room_status"]
+		cdef int step_n  = state["sokoban_step_n"]
+		cdef bool done = state["sokoban_done"]
 		cdef unsigned char[::1] room_status_view = room_status
 		self.c_sokoban.restore_state(&room_status_view[0], step_n, done)
 
