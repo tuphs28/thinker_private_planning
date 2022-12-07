@@ -1139,61 +1139,242 @@ def define_parser():
     return parser
 
 parser = define_parser()
-flags = parser.parse_args([])        
+flags = parser.parse_args()        
 
-flags.xpid = None
-flags.load_checkpoint = ""
+if flags.reward_type == 0:
+    flags.num_rewards = num_rewards = 1
+else:
+    flags.num_rewards = num_rewards = 2
+flags.im_discounting = flags.discounting ** (1/flags.rec_t)    
+    
+raw_env = EnvWrapper(gym.make(flags.env), noop=not flags.env_disable_noop, name=flags.env)
+raw_obs_shape, num_actions = raw_env.observation_space.shape, raw_env.action_space.n 
 
-flags.env = "cSokoban-v0"
-flags.num_actors = 1
-flags.batch_size = 8
-flags.unroll_length = 50
-flags.learning_rate = 0.0001
-flags.grad_norm_clipping = 60
+model = Model(flags, raw_obs_shape, num_actions=num_actions)
+checkpoint = torch.load("../models/model_1.tar")
+model.load_state_dict(checkpoint["model_state_dict"])    
 
-flags.entropy_cost = 0.00001
-flags.im_entropy_cost = 0.00001
-flags.reg_cost = 0.01
-flags.real_cost = 1
-flags.real_im_cost = 1
-flags.im_cost = 1
-flags.discounting = 0.97
-flags.lamb = 1.
+env = Environment(ModelWrapper(EnvWrapper(gym.make(flags.env), noop=not flags.env_disable_noop, name=flags.env), 
+     model=model, flags=flags))
+obs_shape = env.gym_env.observation_space.shape
 
-flags.trun_bs = False
-flags.total_steps = 500000000
-flags.disable_adam = False
+mp.set_sharing_strategy('file_system')
 
-flags.tran_t = 1
-flags.tran_mem_n = 5
-flags.tran_layer_n = 3
-flags.tran_lstm = True
-flags.tran_lstm_no_attn = False
-flags.tran_attn_b = 5
-flags.tran_norm_first = False
-flags.tran_ff_n = 256
-flags.tran_skip = False
-flags.tran_erasep = False
-flags.tran_dim = 64
-flags.tran_rpos = True
+if flags.load_checkpoint:
+    flags.savedir = os.path.split(os.path.split(flags.load_checkpoint)[0])[0]
+    flags.xpid = os.path.split(os.path.split(flags.load_checkpoint)[0])[-1]    
+else:
+    if flags.xpid is None:
+        flags.xpid = "torchbeast-%s" % time.strftime("%Y%m%d-%H%M%S")
+flags.git_revision = get_git_revision_hash()
 
-flags.no_mem = True
-flags.rec_t = 10
-flags.model_type_nn = 0
-flags.perfect_model = True
-flags.reward_type = 1
-flags.stat_pos_encode = False
-flags.stat_pos_encode_dim = 32
+plogger = file_writer.FileWriter(
+    xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir
+)
 
-flags.reset_m = -1
-flags.tree_carry = True
-flags.thres_carry = True
-flags.reward_carry = False
-flags.thres_discounting = 0.97
-flags.flex_t = False
-flags.flex_t_cost = 1e-6
-flags.flex_t_cost_m = 1e-2
-flags.flex_t_cost_type = 0
-flags.flex_t_term_b = -3.
+flags.device = None
+if not flags.disable_cuda and torch.cuda.is_available():
+    logging.info("Using CUDA.")
+    flags.device = torch.device("cuda")
+else:
+    logging.info("Not using CUDA.")
+    flags.device = torch.device("cpu")
 
-flags.savedir = "~/tmp"    
+checkpointpath = os.path.expandvars(
+    os.path.expanduser("%s/%s/%s" % (flags.savedir, flags.xpid, "model.tar"))
+)
+
+if flags.num_buffers is None:  # Set sensible default for num_buffers.
+    flags.num_buffers = max(2 * flags.num_actors, flags.batch_size)
+if flags.num_actors >= flags.num_buffers:
+    raise ValueError("num_buffers should be larger than num_actors")
+if flags.num_buffers < flags.batch_size:
+    raise ValueError("num_buffers should be larger than batch_size")
+
+T = flags.unroll_length
+B = flags.batch_size
+
+actor_net = Actor_net(obs_shape, num_actions, flags)
+buffers = create_buffers(flags, obs_shape, num_actions, num_rewards)
+
+if flags.load_checkpoint:
+    train_checkpoint = torch.load(flags.load_checkpoint)
+    actor_net.load_state_dict(train_checkpoint["model_state_dict"])  
+
+actor_net.share_memory()
+
+# Add initial RNN state.
+initial_agent_state_buffers = []
+for _ in range(flags.num_buffers):
+    state = actor_net.initial_state(batch_size=1)
+    for t in state:
+        t.share_memory_()
+    initial_agent_state_buffers.append(state)
+
+actor_processes = []
+ctx = mp.get_context()
+free_queue = ctx.SimpleQueue()
+full_queue = ctx.SimpleQueue()
+
+for i in range(flags.num_actors):
+    actor = ctx.Process(target=act, args=(flags, i, free_queue, full_queue,
+            actor_net, model, buffers, initial_agent_state_buffers,),)
+    actor.start()
+    actor_processes.append(actor)
+
+learner_net = Actor_net(obs_shape, num_actions, flags)
+if flags.load_checkpoint:
+    learner_net.load_state_dict(train_checkpoint["model_state_dict"])
+#learner_net= DataParallelWrapper(nn.DataParallel(learner_net))   # commented out if no need multi-gpu
+learner_net = learner_net.to(device=flags.device)  
+
+if not flags.disable_adam:
+    print("Using Adam...")        
+    optimizer = torch.optim.Adam(learner_net.parameters(),lr=flags.learning_rate)
+else:
+    print("Using RMS Prop...")
+    optimizer = torch.optim.RMSprop(
+        learner_net.actor.parameters(),
+        lr=flags.learning_rate,
+        momentum=flags.momentum,
+        eps=flags.epsilon,
+        alpha=flags.alpha,)
+    
+if flags.load_checkpoint:
+    optimizer.load_state_dict(train_checkpoint["optimizer_state_dict"])    
+    
+print("All parameters: ")
+for k, v in learner_net.named_parameters(): print(k, v.numel())    
+
+if not flags.flex_t:
+    lr_lambda = lambda epoch: 1 - min(epoch * T * B, flags.total_steps * flags.rec_t) / (flags.total_steps * flags.rec_t)
+else:
+    lr_lambda = lambda epoch: 1 - min(epoch, flags.total_steps) / flags.total_steps
+
+scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+if flags.load_checkpoint:
+    scheduler.load_state_dict(train_checkpoint["scheduler_state_dict"])
+    
+logger = logging.getLogger("logfile")
+stat_keys = ["mean_episode_return", "episode_returns", "total_loss",
+    "pg_loss", "baseline_loss", "entropy_loss", "max_rollout_depth"]
+if flags.reward_type == 1:
+    stat_keys.extend(["im_pg_loss", "im_baseline_loss"])
+
+logger.info("# Step\t%s", "\t".join(stat_keys))
+
+step, real_step, stats, last_returns, last_im_returns, tot_eps = 0, 0, {}, deque(maxlen=400), deque(maxlen=40000), 0
+if flags.load_checkpoint:
+    if "step" in train_checkpoint.keys():    
+        step = train_checkpoint["step"]
+        real_step = train_checkpoint["real_step"]
+    else:
+        # legacy support
+        step = train_checkpoint["scheduler_state_dict"]["_step_count"] * T * B
+    
+def batch_and_learn(i, lock=threading.Lock()):
+    """Thread target for the learning process."""
+    #nonlocal step, stats, last_returns, tot_eps
+    global step, real_step, stats, last_returns, last_im_returns, tot_eps
+    timings = prof.Timings()
+    #while step < flags.total_steps:
+    while real_step < flags.total_steps:
+        timings.reset()
+        batch, agent_state = get_batch(flags, free_queue, full_queue, buffers,
+            initial_agent_state_buffers, timings,)
+        stats = learn(flags, actor_net, learner_net, batch, 
+                      agent_state, optimizer, scheduler, real_step)
+        last_returns.extend(stats["episode_returns"])
+        if "im_episode_returns" in stats:
+            last_im_returns.extend(stats["im_episode_returns"])
+        tot_eps = tot_eps + len(stats["episode_returns"])
+        timings.time("learn")
+        with lock:
+            to_log = dict(step=step, real_step=real_step)
+            to_log.update({k: stats[k] for k in stat_keys})            
+            to_log.update({"rmean_im_episode_return": np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
+                           "rmean_episode_return": np.average(last_returns) if len(last_returns) > 0 else 0.,
+                           "episode": tot_eps})
+            plogger.log(to_log)
+            step += T * B
+            real_step += stats["real_step"]
+
+    if i == 0:
+        logging.info("Batch and learn: %s", timings.summary())
+
+for m in range(flags.num_buffers):
+    free_queue.put(m)
+
+threads = []
+for i in range(flags.num_learner_threads):
+    thread = threading.Thread(
+        target=batch_and_learn, name="batch-and-learn-%d" % i, args=(i,)
+    )
+    thread.start()
+    threads.append(thread)
+
+def checkpoint():
+    if flags.disable_checkpoint:
+        return
+    logging.info("Saving checkpoint to %s", checkpointpath)
+    torch.save(
+        {
+            "model_state_dict": actor_net.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "step": step,
+            "real_step": real_step,
+            "flags": vars(flags),
+        },
+        checkpointpath,
+    )
+
+timer = timeit.default_timer
+try:
+    last_checkpoint_time = timer()
+    train_start_time = timer()
+    while real_step < flags.total_steps:
+        start_step = step
+        start_time = timer()
+        time.sleep(5)
+
+        if timer() - last_checkpoint_time > 10 * 60:  # Save every 10 min.
+            checkpoint()
+            last_checkpoint_time = timer()
+
+        sps = (step - start_step) / (timer() - start_time)
+        if stats.get("episode_returns", None):
+            mean_return = (
+                "Return per episode: %.1f. " % stats["mean_episode_return"]
+            )
+        else:
+            mean_return = ""
+        total_loss = stats.get("total_loss", float("inf"))
+
+        print_str =  "Steps %i (%i) @ %.1f SPS. Eps %i. Return %f (%f). Loss %.2f" % (real_step, step, sps, tot_eps, 
+            np.average(last_returns) if len(last_returns) > 0 else 0.,
+            np.average(last_im_returns) if len(last_im_returns) > 0 else 0.,
+            total_loss)
+
+        for s in ["mean_plan_step", "max_rollout_depth", "pg_loss", "baseline_loss", "im_pg_loss", 
+                  "im_baseline_loss", "entropy_loss", "reg_loss", "total_norm"]:
+            if s in stats: print_str += " %s %.2f" % (s, stats[s])
+
+        logging.info(print_str)
+        
+except KeyboardInterrupt:
+    for thread in threads:
+        thread.join()        
+    # Try joining actors then quit.
+else:
+    for thread in threads:
+        thread.join()
+    logging.info("Learning finished after %d steps. (%f s)" % (step, timer() - train_start_time))
+finally:
+    for _ in range(flags.num_actors):
+        free_queue.put(None)
+    for actor in actor_processes:
+        actor.join(timeout=1)
+
+checkpoint()
+plogger.close()
