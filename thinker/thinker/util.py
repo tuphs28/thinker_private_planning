@@ -21,9 +21,9 @@ def parse(args=None):
                         help="File location of the preload model network.")
 
     # Training settings.        
-    parser.add_argument("--num_actors", default=32, type=int, metavar="N",
-                        help="Number of actors (default: 32).")
-    parser.add_argument("--total_steps", default=500000000, type=int, metavar="T",
+    parser.add_argument("--num_actors", default=48, type=int, metavar="N",
+                        help="Number of actors (default: 48).")
+    parser.add_argument("--total_steps", default=50000000, type=int, metavar="T",
                         help="Total environment steps to train for.")
     parser.add_argument("--batch_size", default=32, type=int, metavar="B",
                         help="Learner batch size.")
@@ -35,7 +35,7 @@ def parse(args=None):
     # Architecture settings
     parser.add_argument("--tran_dim", default=96, type=int, metavar="N",
                         help="Size of transformer hidden dim.")
-    parser.add_argument("--tran_mem_n", default=5, type=int, metavar="N",
+    parser.add_argument("--tran_mem_n", default=40, type=int, metavar="N",
                         help="Size of transformer memory.")
     parser.add_argument("--tran_layer_n", default=3, type=int, metavar="N",
                         help="Number of transformer layer.")
@@ -43,7 +43,7 @@ def parse(args=None):
                         help="Number of recurrent step for transformer.")   
     parser.add_argument("--tran_lstm_no_attn", action="store_true",
                         help="Whether to disable attention in LSTM-transformer.")
-    parser.add_argument("--tran_attn_b", default=0.,
+    parser.add_argument("--tran_attn_b", default=5.,
                         type=float, help="Bias attention for current position.")        
     
     # Loss settings.
