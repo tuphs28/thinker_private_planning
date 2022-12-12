@@ -796,7 +796,7 @@ class ModelWrapper(gym.Wrapper):
                     self.root_node.expand(r=torch.tensor([0.], dtype=torch.float32), 
                                           v=vs[-1, 0].unsqueeze(-1), logits=logits[-1, 0],
                                           encoded=encoded, override=True)
-                    self.parent = None
+                    self.root_node.parent = None
                 
                 if self.thres is not None:
                     self.thres = self.thres_discounting * self.thres + (1 - self.thres_discounting) * vs[-1, 0].item()
