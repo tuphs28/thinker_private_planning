@@ -9,9 +9,10 @@
             "type": "python",
             "request": "launch",
             //"program": "${file}",
-            "program": "thinker/train.py",
+            "program": "train.py",
             "console": "integratedTerminal",
-            "justMyCode": true
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}/thinker"
         }
     ]
 }
