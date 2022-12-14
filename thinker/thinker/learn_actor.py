@@ -210,6 +210,8 @@ class ActorLearner():
             if n % 1 == 0:
                 self.param_buffer.set_weights.remote("actor_net", self.actor_net.get_weights())
             n += 1
+            
+        self.plogger.close()
         return True
 
     def compute_losses(self, train_actor_out: TrainActorOut, initial_actor_state: tuple):

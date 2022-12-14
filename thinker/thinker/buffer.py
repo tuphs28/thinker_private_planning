@@ -47,12 +47,14 @@ class ModelBuffer():
 
         self.max_buffer_n = flags.model_buffer_n // (self.t * self.n) + 1 # maximum buffer length
         self.batch_size = flags.model_batch_size # batch size in returned sample
-        self.wram_up_n = flags.model_warm_up_n  # number of total transition before returning samples
+        self.wram_up_n = (flags.model_warm_up_n if not flags.load_checkpoint else
+            flags.model_buffer_n)     # number of total transition before returning samples
 
         self.buffer = []
         self.priorities = None
         self.base_ind = 0
         self.abs_tran_n = 0
+        self.preload_n = 0
         self.clean_m = 0
     
     def write(self, data):
@@ -92,7 +94,7 @@ class ModelBuffer():
         data = type(self.buffer[0])(*data)
 
         abs_flat_inds = flat_inds + self.base_ind
-        return data, weights, abs_flat_inds, self.abs_tran_n
+        return data, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
 
     def update_priority(self, abs_flat_inds, priorities):
         """ Update priority in the buffer; both input 
@@ -108,6 +110,13 @@ class ModelBuffer():
             del self.buffer[:excess_n]
             self.priorities = self.priorities[excess_n * self.t * self.n:]
             self.base_ind += excess_n * self.t * self.n
+
+    def check_preload(self):
+        return (len(self.buffer) >= self.max_buffer_n, len(self.buffer) * self.t * self.n)
+
+    def set_preload(self):
+        self.preload_n = self.abs_tran_n
+        return True
 
 @ray.remote
 class ParamBuffer(object):

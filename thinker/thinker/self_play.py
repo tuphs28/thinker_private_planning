@@ -122,12 +122,18 @@ class SelfPlayWorker():
 
             env_out = self.env.initial(self.model_net)            
             actor_state = self.actor_net.initial_state(batch_size=1)
-            actor_out, _ = self.actor_net(env_out, actor_state)           
+            actor_out, _ = self.actor_net(env_out, actor_state)   
+
+            # config for preloading before actor network start learning
+            preload_needed = self.flags.train_model and self.flags.load_checkpoint
+            preload = False
+            learner_actor_start = not preload_needed or preload
 
             while (True):      
                 # prepare train_actor_out data to be written
                 initial_actor_state = actor_state
-                self.write_actor_buffer(env_out, actor_out, 0)
+                if learner_actor_start:
+                    self.write_actor_buffer(env_out, actor_out, 0)
                 for t in range(self.flags.unroll_length):
                     actor_out, actor_state = self.actor_net(env_out, actor_state)    
                     action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
@@ -135,20 +141,33 @@ class SelfPlayWorker():
                         action.append(actor_out.term_action)
                     action = torch.cat(action, dim=-1)
                     env_out = self.env.step(action.unsqueeze(0), self.model_net)
-                    self.write_actor_buffer(env_out, actor_out, t+1)       
+                    if learner_actor_start:
+                        self.write_actor_buffer(env_out, actor_out, t+1)       
                     if self.flags.train_model and env_out.cur_t == 0: 
-                        self.write_send_model_buffer(env_out, actor_out)       
-                train_actor_out = (self.actor_local_buffer, initial_actor_state)
+                        self.write_send_model_buffer(env_out, actor_out)                    
 
-                # send the data to remote actor buffer
-                status = 0
-                while (True):
-                    status = ray.get(self.actor_buffer.get_status.remote())
-                    if status == AB_FULL: time.sleep(0.01) 
-                    else: break
-                if status == AB_FINISH: break
-                train_actor_out = ray.put(train_actor_out)
-                self.actor_buffer.write.remote([train_actor_out])
+                if learner_actor_start:
+                    # send the data to remote actor buffer
+                    train_actor_out = (self.actor_local_buffer, initial_actor_state)
+                    status = 0
+                    while (True):
+                        status = ray.get(self.actor_buffer.get_status.remote())
+                        if status == AB_FULL: time.sleep(0.01) 
+                        else: break
+                    if status == AB_FINISH: break
+                    train_actor_out = ray.put(train_actor_out)
+                    self.actor_buffer.write.remote([train_actor_out])
+
+                # if preload needed, check if preloaded
+                if preload_needed and not preload:
+                    preload, tran_n = ray.get(self.model_buffer.check_preload.remote())
+                    if self.rank == 0: 
+                        if preload:
+                            print("Finish preloading")
+                            ray.get(self.model_buffer.set_preload.remote())
+                        else:
+                            print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
+                    learner_actor_start = not preload_needed or preload
 
                 # set model weight                
                 if n % 1 == 0:
