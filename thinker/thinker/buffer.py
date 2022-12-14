@@ -1,5 +1,8 @@
 import numpy as np
+import time
+from operator import itemgetter 
 import ray
+import torch
 
 AB_CAN_WRITE, AB_FULL, AB_FINISH = 0, 1, 2
 
@@ -32,6 +35,79 @@ class ActorBuffer():
             # remotely this becomes a ref of a list of ref; need double ray.get to get value
         else:
             return None
+
+@ray.remote
+class ModelBuffer():
+    def __init__(self, flags):
+        self.alpha = flags.priority_alpha
+        
+        self.t = flags.model_unroll_length   
+        self.k = flags.model_k_step_return
+        self.n = flags.actor_parallel_n             
+
+        self.max_buffer_n = flags.model_buffer_n // (self.k * self.n) + 1 # maximum buffer length
+        self.batch_size = flags.model_batch_size # batch size in returned sample
+        self.wram_up_n = flags.model_warm_up_n  # number of total transition before returning samples
+
+        self.buffer = []
+        self.priorities = None
+        self.base_ind = 0
+        self.abs_tran_n = 0
+        self.clean_m = 0
+    
+    def write(self, data):
+        # data is a named tuple with elements of size (t+k, n, ...)        
+        self.buffer.append(data)
+        if self.priorities is None:
+            self.priorities = np.ones((self.t * self.n), dtype=float)
+        else:
+            max_priorities = np.full((self.t * self.n), fill_value=self.priorities.max(), dtype=float)
+            self.priorities = np.concatenate([self.priorities, max_priorities])
+        self.abs_tran_n += self.t * self.n
+
+        # clean periordically
+        self.clean_m += 1
+        if self.clean_m > 100:
+            self.clean()
+            self.clean_m = 0
+    
+    def read(self, beta):
+        if self.priorities is None or self.abs_tran_n < self.wram_up_n: return None
+        buffer_n = len(self.buffer)
+        tran_n = len(self.priorities)
+        probs = self.priorities ** self.alpha
+        probs /= probs.sum()
+        flat_inds = np.random.choice(tran_n, self.batch_size, p=probs, replace=False)
+        inds = np.unravel_index(flat_inds, (buffer_n, self.t, self.n))
+
+        weights = (tran_n * probs[flat_inds]) ** (-beta)
+        weights /= weights.max()        
+
+        data = []
+        for d in range(len(self.buffer[0])):
+            elems=[]
+            for i in range(self.batch_size):
+                elems.append(self.buffer[inds[0][i]][d][inds[1][i]:inds[1][i]+self.k+1, inds[2][i]].unsqueeze(1))
+            data.append(torch.concat(elems, dim=1))
+        data = type(self.buffer[0])(*data)
+
+        abs_flat_inds = flat_inds + self.base_ind
+        return data, weights, abs_flat_inds, self.abs_tran_n
+
+    def update_priority(self, abs_flat_inds, priorities):
+        """ Update priority in the buffer; both input 
+        are np array of shape (update_size,)"""
+        flat_inds = abs_flat_inds - self.base_ind
+        mask = (flat_inds > 0)
+        self.priorities[flat_inds[mask]] = priorities[mask]
+
+    def clean(self):
+        buffer_n = len(self.buffer)
+        if buffer_n > self.max_buffer_n:
+            excess_n = buffer_n - self.max_buffer_n
+            del self.buffer[:excess_n]
+            self.priorities = self.priorities[excess_n * self.t * self.n:]
+            self.base_ind += excess_n * self.t * self.n
 
 @ray.remote
 class ParamBuffer(object):

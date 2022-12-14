@@ -85,7 +85,7 @@ def from_logits(
         **vtrace_returns._asdict(),
     )  
 
-@ray.remote(num_cpus=1, num_gpus=1)
+@ray.remote(num_cpus=1, num_gpus=0.5)
 class ActorLearner():
     def __init__(self, param_buffer: ParamBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace): 
         self.param_buffer = param_buffer
@@ -120,22 +120,17 @@ class ActorLearner():
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
         if flags.load_checkpoint:
-            self.load_checkpoint(flags.load_checkpoint)
+            self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_actor.tar"))
+            self.flags.savedir = os.path.split(os.path.split(self.flags.load_checkpoint)[0])[0]
+            self.flags.xpid = os.path.split(os.path.split(self.flags.load_checkpoint)[0])[-1]    
 
         self.im_discounting = self.flags.discounting ** (1/self.flags.rec_t)      
 
-        # initialize file logs
-        if self.flags.load_checkpoint:
-            self.flags.savedir = os.path.split(os.path.split(self.flags.load_checkpoint)[0])[0]
-            self.flags.xpid = os.path.split(os.path.split(self.flags.load_checkpoint)[0])[-1]    
-        else:
-            if self.flags.xpid is None:
-                self.flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
+        # initialize file logs                        
         self.flags.git_revision = util.get_git_revision_hash()
         self.plogger = FileWriter(xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir)
 
-        self.check_point_path = os.path.expandvars(
-            os.path.expanduser("%s/%s/%s" % (flags.savedir, flags.xpid, "checkpoint.tar")))        
+        self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_actor.tar")       
 
         # set shared buffer's weights
         self.param_buffer.set_weights.remote("actor_net", self.actor_net.get_weights())
@@ -148,7 +143,7 @@ class ActorLearner():
         timer = timeit.default_timer
         start_step = self.step
         start_time = timer()
-        ckp_start_time = timer()
+        ckp_start_time = int(time.strftime("%M")) // 10
         n = 0
         while (self.real_step < self.flags.total_steps):                    
             # get data remotely    
@@ -196,8 +191,8 @@ class ActorLearner():
             # print statistics
             if timer() - start_time > 5:
                 sps = (self.step - start_step) / (timer() - start_time)                
-                print_str =  "Steps %i (%i) @ %.1f SPS. Eps %i. Return %f (%f). Loss %.2f" % (
-                    self.real_step, self.step, sps, self.tot_eps, 
+                print_str =  "Steps %i (%i:%i) @ %.1f SPS. Eps %i. Return %f (%f). Loss %.2f" % (
+                    n, self.real_step, self.step, sps, self.tot_eps, 
                     stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
                 print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
                                "baseline_loss", "im_pg_loss", "im_baseline_loss", 
@@ -207,9 +202,9 @@ class ActorLearner():
                 start_step = self.step
                 start_time = timer()      
             
-            if timer() - ckp_start_time > 600:
+            if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
-                ckp_start_time = timer()      
+                ckp_start_time = int(time.strftime("%M")) // 10
             
             # update shared buffer's weights
             if n % 1 == 0:
@@ -368,7 +363,7 @@ class ActorLearner():
         return stats
 
     def save_checkpoint(self):
-        print("Saving checkpoint to %s" % self.check_point_path)
+        print("Saving actor checkpoint to %s" % self.check_point_path)
         torch.save(
             { "step": self.step,
               "real_step": self.real_step,
@@ -393,4 +388,4 @@ class ActorLearner():
         self.optimizer.load_state_dict(train_checkpoint["actor_net_optimizer_state_dict"])         
         self.scheduler.load_state_dict(train_checkpoint["actor_net_scheduler_state_dict"])       
         self.actor_net.set_weights(train_checkpoint["actor_net_state_dict"])        
-        print("Loaded checkpoint from %s" % check_point_path)   
+        print("Loaded actor checkpoint from %s" % check_point_path)   

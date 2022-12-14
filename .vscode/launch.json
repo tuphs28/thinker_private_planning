@@ -12,7 +12,8 @@
             "program": "train.py",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "cwd": "${workspaceFolder}/thinker"
+            "cwd": "${workspaceFolder}/thinker",
+            "args": "--train_model --num_actors 8 --model_warm_up_n 200 --model_unroll_length 50"
         }
     ]
 }

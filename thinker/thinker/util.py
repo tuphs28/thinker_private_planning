@@ -1,4 +1,5 @@
 import collections
+import time
 import timeit
 import argparse
 import subprocess
@@ -20,30 +21,52 @@ def parse(args=None):
     parser.add_argument("--preload_model", default="~/RS/thinker/models/model_1.tar",
                         help="File location of the preload model network.")
 
-    # Training settings.        
-    parser.add_argument("--num_actors", default=48, type=int, metavar="N",
+    # Actor Training settings.            
+    parser.add_argument("--num_actors", default=48, type=int, 
                         help="Number of actors (default: 48).")
-    parser.add_argument("--total_steps", default=50000000, type=int, metavar="T",
+    parser.add_argument("--actor_parallel_n", default=1, type=int, 
+                        help="Number of parallel env. per actor")
+    parser.add_argument("--total_steps", default=50000000, type=int, 
                         help="Total environment steps to train for.")
-    parser.add_argument("--batch_size", default=32, type=int, metavar="B",
-                        help="Learner batch size.")
-    parser.add_argument("--unroll_length", default=200, type=int, metavar="T",
+    parser.add_argument("--batch_size", default=32, type=int, 
+                        help="Actor learner batch size.")
+    parser.add_argument("--unroll_length", default=200, type=int, 
                         help="The unroll length (time dimension).")
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
+    # Model Training settings. 
+    parser.add_argument("--train_model", action="store_true",
+                        help="Enable training of model.")
+    parser.add_argument("--model_batch_size", default=128, type=int, 
+                        help="Model learner batch size.")                        
+    parser.add_argument("--model_unroll_length", default=200, type=int, 
+                        help="Number of transition per unroll in model buffer.")
+    parser.add_argument("--model_k_step_return", default=5, type=int, 
+                        help="Number of recurrent step when training the model.")    
+    parser.add_argument("--priority_alpha", default=0.6, type=float,
+                        help="Alpha used to compute the priority from model buffer.")
+    parser.add_argument("--priority_beta", default=0.4, type=float,
+                        help="Initial beta used to compute the priority from model buffer.")
+    parser.add_argument("--model_buffer_n", default=200000, type=int, 
+                        help="Maximum number of transition in model buffer.") 
+    parser.add_argument("--model_warm_up_n", default=400000, type=int, 
+                        help="Number of transition accumulated before model start learning.")                         
+    parser.add_argument("--model_logits_loss_cost", default=0.05, type=float,
+                        help="Multipler to policy logit loss when training the model.")       
+
     # Architecture settings
-    parser.add_argument("--tran_dim", default=96, type=int, metavar="N",
+    parser.add_argument("--tran_dim", default=96, type=int, 
                         help="Size of transformer hidden dim.")
-    parser.add_argument("--tran_mem_n", default=40, type=int, metavar="N",
+    parser.add_argument("--tran_mem_n", default=40, type=int, 
                         help="Size of transformer memory.")
-    parser.add_argument("--tran_layer_n", default=3, type=int, metavar="N",
+    parser.add_argument("--tran_layer_n", default=3, type=int,
                         help="Number of transformer layer.")
-    parser.add_argument("--tran_t", default=1, type=int, metavar="T",
+    parser.add_argument("--tran_t", default=1, type=int, 
                         help="Number of recurrent step for transformer.")   
     parser.add_argument("--tran_lstm_no_attn", action="store_true",
                         help="Whether to disable attention in LSTM-transformer.")
-    parser.add_argument("--tran_attn_b", default=5.,
+    parser.add_argument("--tran_attn_b", default=5,
                         type=float, help="Bias attention for current position.")        
     
     # Loss settings.
@@ -63,21 +86,21 @@ def parse(args=None):
                         type=float, help="Imaginary reward cost/multiplier.")   
     parser.add_argument("--discounting", default=0.97,
                         type=float, help="Discounting factor.")
-    parser.add_argument("--lamb", default=1.,
+    parser.add_argument("--lamb", default=1,
                         type=float, help="Lambda when computing trace.")
     parser.add_argument("--reward_clipping", default=10, type=int, 
-                        metavar="N", help="Reward clipping.")
+                       help="Reward clipping.")
     
-    # Model settings
-    parser.add_argument("--reward_type", default=1, type=int, metavar="N",
+    # Model wrapper settings
+    parser.add_argument("--reward_type", default=1, type=int, 
                         help="Reward type")   
-    parser.add_argument("--reset_m", default=-1, type=int, metavar="N",
+    parser.add_argument("--reset_m", default=-1, type=int,
                         help="Auto reset after passing m node since an unexpanded noded")    
     parser.add_argument("--model_type_nn", default=0,
                         type=float, help="Model type.")     
     parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",
                         help="Whether to use perfect model.")          
-    parser.add_argument("--rec_t", default=40, type=int, metavar="N",
+    parser.add_argument("--rec_t", default=40, type=int, 
                         help="Number of planning steps.")
     parser.add_argument("--flex_t", action="store_true",
                         help="Whether to enable flexible planning steps.") 
@@ -98,9 +121,13 @@ def parse(args=None):
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,
-                        type=float, metavar="LR", help="Learning rate.")
+                        type=float, metavar="LR", help="Learning rate for actor learne.")
+    parser.add_argument("--model_learning_rate", default=0.00002,
+                        type=float, metavar="LR", help="Learning rate for model learner.")                        
     parser.add_argument("--grad_norm_clipping", default=600, type=float,
-                        help="Global gradient norm clip.")
+                        help="Global gradient norm clip for actor learner.")
+    parser.add_argument("--model_grad_norm_clipping", default=0, type=float,
+                        help="Global gradient norm clip for model learner.")                        
 
     if args is None:
         flags = parser.parse_args()  
@@ -112,6 +139,8 @@ def parse(args=None):
         path = getattr(flags, f)
         if path: setattr(flags, f, os.path.expanduser(path))
 
+    if flags.xpid is None:
+        flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
     return flags
 
 def tuple_map(x, f):
