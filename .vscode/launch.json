@@ -13,7 +13,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "cwd": "${workspaceFolder}/thinker",
-            "args": "--train_model --num_actors 8 --model_warm_up_n 200 --model_unroll_length 50"
+            "args": "--train_model --num_actors 8 --model_warm_up_n 200 --model_unroll_length 50 --model_buffer_n 1000"
         }
     ]
 }

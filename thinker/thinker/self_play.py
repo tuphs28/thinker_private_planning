@@ -84,14 +84,14 @@ class SelfPlayWorker():
     def empty_model_buffer(self):
         pre_shape = (self.flags.model_unroll_length + self.flags.model_k_step_return, 1,)
         return TrainModelOut(
-            gym_env_out=torch.zeros(pre_shape + self.env.gym_env_out_shape, dtype=torch.float32),
+            gym_env_out=torch.zeros(pre_shape + self.env.gym_env_out_shape, dtype=torch.uint8),
             policy_logits=torch.zeros(pre_shape + (self.env.num_actions,), dtype=torch.float32),
             action=torch.zeros(pre_shape, dtype=torch.long),
             reward=torch.zeros(pre_shape, dtype=torch.float32),
             done=torch.ones(pre_shape, dtype=torch.bool)) 
 
     def write_single_model_buffer(self, n: int, t: int, env_out: EnvOut, actor_out: ActorOut):
-        self.model_local_buffer[n].gym_env_out[t] = env_out.gym_env_out[0,0]        
+        self.model_local_buffer[n].gym_env_out[t] = env_out.gym_env_out[0,0]       
         self.model_local_buffer[n].reward[t] = env_out.reward[0,0,0]
         self.model_local_buffer[n].done[t] = env_out.done[0,0]
         self.model_local_buffer[n].policy_logits[t] = actor_out.policy_logits[0,0]

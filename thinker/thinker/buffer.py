@@ -45,7 +45,7 @@ class ModelBuffer():
         self.k = flags.model_k_step_return
         self.n = flags.actor_parallel_n             
 
-        self.max_buffer_n = flags.model_buffer_n // (self.k * self.n) + 1 # maximum buffer length
+        self.max_buffer_n = flags.model_buffer_n // (self.t * self.n) + 1 # maximum buffer length
         self.batch_size = flags.model_batch_size # batch size in returned sample
         self.wram_up_n = flags.model_warm_up_n  # number of total transition before returning samples
 
@@ -67,7 +67,7 @@ class ModelBuffer():
 
         # clean periordically
         self.clean_m += 1
-        if self.clean_m > 100:
+        if self.clean_m % 10 == 0:
             self.clean()
             self.clean_m = 0
     
@@ -101,7 +101,7 @@ class ModelBuffer():
         mask = (flat_inds > 0)
         self.priorities[flat_inds[mask]] = priorities[mask]
 
-    def clean(self):
+    def clean(self):        
         buffer_n = len(self.buffer)
         if buffer_n > self.max_buffer_n:
             excess_n = buffer_n - self.max_buffer_n

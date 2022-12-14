@@ -305,7 +305,7 @@ class ModelNet(nn.Module):
     def forward(self, x, actions, one_hot=False):
         """
         Args:
-            x(tensor): frames with shape (B, C, H, W), in the form of s_t
+            x(tensor): frames (uint8 or float) with shape (B, C, H, W), in the form of s_t
             actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
         Return:
             reward(tensor): predicted reward with shape (k, B), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
@@ -314,7 +314,8 @@ class ModelNet(nn.Module):
             encoded(tensor): encoded states with shape (k+1, B), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
                 Recall we use the transition notation: s_t, a_t, r_{t+1}, s_{t+1}, ...
         """
-        
+        if x.dtype != torch.float32:
+            x = x.float()
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
         encoded = self.frameEncoder(x, actions[0])

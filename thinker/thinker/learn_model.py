@@ -71,6 +71,7 @@ class ModelLearner():
         start_step = self.step
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
+        last_psteps = 0
         n = 0
 
         max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
@@ -87,7 +88,9 @@ class ModelLearner():
                 time.sleep(0.01)
 
             # start consume data
-            train_model_out, is_weights, inds, self.real_step = data
+            train_model_out, is_weights, inds, new_psteps = data            
+            self.real_step += new_psteps - last_psteps            
+            last_psteps = new_psteps
 
             # move the data to the process device
             train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
@@ -188,6 +191,7 @@ class ModelLearner():
             rs_loss = torch.sum(((rs - target_rewards) ** 2) * (~done_masks).float(), dim=0)
             rs_loss = rs_loss * is_weights
             rs_loss = torch.sum(rs_loss)
+            
         #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
         vs_loss = torch.sum(((vs[:-1] - target_vs) ** 2) * (~done_masks).float(), dim=0)
         vs_loss = vs_loss * is_weights

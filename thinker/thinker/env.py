@@ -33,7 +33,7 @@ def PreWrap(env, name):
 def _format(x):
     """Add batch and time index to env output"""
     if x[0] is not None:
-        gym_env_out = torch.from_numpy(x[0]).float()
+        gym_env_out = torch.from_numpy(x[0])
         gym_env_out = gym_env_out.view((1, 1) + gym_env_out.shape)        
     else:
         gym_env_out = None
