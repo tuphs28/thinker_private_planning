@@ -51,11 +51,9 @@ def parse(args=None):
     parser.add_argument("--model_buffer_n", default=200000, type=int, 
                         help="Maximum number of transition in model buffer.") 
     parser.add_argument("--model_warm_up_n", default=400000, type=int, 
-                        help="Number of transition accumulated before model start learning.")                         
-    parser.add_argument("--model_logits_loss_cost", default=0.05, type=float,
-                        help="Multipler to policy logit loss when training the model.")       
-
-    # Architecture settings
+                        help="Number of transition accumulated before model start learning.")                        
+  
+    # Actor architecture settings
     parser.add_argument("--tran_dim", default=96, type=int, 
                         help="Size of transformer hidden dim.")
     parser.add_argument("--tran_mem_n", default=40, type=int, 
@@ -69,7 +67,13 @@ def parse(args=None):
     parser.add_argument("--tran_attn_b", default=5,
                         type=float, help="Bias attention for current position.")        
     
-    # Loss settings.
+    # Model architecure settings
+    parser.add_argument("--model_type_nn", default=0,
+                        type=float, help="Model type.")        
+    parser.add_argument("--model_rnn", action="store_true",
+                        help="Whether to use ConvLSTM in model (only support perfect model).")    
+    
+    # Actor loss settings
     parser.add_argument("--entropy_cost", default=0.00001,
                         type=float, help="Entropy cost/multiplier.")
     parser.add_argument("--im_entropy_cost", default=0.000005,
@@ -91,13 +95,15 @@ def parse(args=None):
     parser.add_argument("--reward_clipping", default=10, type=int, 
                        help="Reward clipping.")
     
+    # Model loss settings
+    parser.add_argument("--model_logits_loss_cost", default=0.05, type=float,
+                       help="Multipler to policy logit loss when training the model.")                            
+    
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
                         help="Reward type")   
     parser.add_argument("--reset_m", default=-1, type=int,
-                        help="Auto reset after passing m node since an unexpanded noded")    
-    parser.add_argument("--model_type_nn", default=0,
-                        type=float, help="Model type.")     
+                        help="Auto reset after passing m node since an unexpanded noded")     
     parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",
                         help="Whether to use perfect model.")          
     parser.add_argument("--rec_t", default=40, type=int, 
@@ -121,13 +127,14 @@ def parse(args=None):
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,
-                        type=float, metavar="LR", help="Learning rate for actor learne.")
+                        type=float, help="Learning rate for actor learne.")
     parser.add_argument("--model_learning_rate", default=0.00002,
-                        type=float, metavar="LR", help="Learning rate for model learner.")                        
+                        type=float, help="Learning rate for model learner.")                        
     parser.add_argument("--grad_norm_clipping", default=600, type=float,
                         help="Global gradient norm clip for actor learner.")
     parser.add_argument("--model_grad_norm_clipping", default=0, type=float,
-                        help="Global gradient norm clip for model learner.")                        
+                        help="Global gradient norm clip for model learner.")            
+
 
     if args is None:
         flags = parser.parse_args()  

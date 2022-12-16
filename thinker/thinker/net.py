@@ -290,9 +290,9 @@ class Output_rvpi(nn.Module):
         r, v, logits = self.fc_r(x), self.fc_v(x), self.fc_logits(x)
         return r, v, logits
 
-class ModelNet(nn.Module):    
+class ModelNetBase(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        
-        super(ModelNet, self).__init__()      
+        super(ModelNetBase, self).__init__()      
         self.flags = flags
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
@@ -314,8 +314,6 @@ class ModelNet(nn.Module):
             encoded(tensor): encoded states with shape (k+1, B), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
                 Recall we use the transition notation: s_t, a_t, r_{t+1}, s_{t+1}, ...
         """
-        if x.dtype != torch.float32:
-            x = x.float()
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
         encoded = self.frameEncoder(x, actions[0])
@@ -353,3 +351,81 @@ class ModelNet(nn.Module):
 
     def set_weights(self, weights):
         self.load_state_dict(weights)        
+
+
+class ModelNetRNN(nn.Module):    
+    def __init__(self, obs_shape, num_actions, flags):        
+        super(ModelNetRNN, self).__init__()      
+        self.flags = flags
+        self.obs_shape = obs_shape
+        self.num_actions = num_actions 
+
+        self.tran_t = 3     
+        self.tran_mem_n = 0
+        self.tran_layer_n = 3
+        self.tran_lstm_no_attn = True
+        self.attn_mask_b = 0
+        self.conv_out = 32
+        self.no_mem = flags.no_mem                   # whether to earse real memory at the end of planning stage
+        
+        self.conv_out_hw = 8
+        self.d_model = self.conv_out
+        
+        self.conv1 = nn.Conv2d(in_channels=self.obs_shape[0], out_channels=self.conv_out, kernel_size=8, stride=4)        
+        self.conv2 = nn.Conv2d(in_channels=self.conv_out, out_channels=self.conv_out, kernel_size=4, stride=2)        
+        self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
+        self.env_input_size = self.conv_out
+        d_in = self.env_input_size + self.d_model 
+
+        self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
+                                input_dim=d_in-self.d_model, hidden_dim=self.d_model,
+                                kernel_size=3, num_layers=self.tran_layer_n,
+                                num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
+                                attn_mask_b=self.attn_mask_b)                         
+        
+        rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
+        self.fc = nn.Linear(rnn_out_size, 256)        
+               
+        self.policy = nn.Linear(256, self.num_actions)        
+        self.baseline = nn.Linear(256, 1)        
+        
+    def forward(self, x, actions, one_hot=False):
+        """
+        Args:
+            x(tensor): frames (uint8 or float) with shape (B, C, H, W), in the form of s_t
+            actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
+        Return:
+            reward(tensor): predicted reward with shape (k, B), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
+            value(tensor): predicted value with shape (k+1, B), in the form of v_{t}, v_{t+1}, v_{t+2}, ..., v_{t+k}
+            policy(tensor): predicted policy with shape (k+1, B), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
+            encoded(tensor): encoded states with shape (k+1, B), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
+                Recall we use the transition notation: s_t, a_t, r_{t+1}, s_{t+1}, ...
+        """
+        assert actions.shape[0] == 1, "not support k > 0"
+        B = x.shape[0]
+
+        x = x.float() / 255.0  
+        core_input = self.frame_conv(x)      
+        core_state = self.core.init_state(B, x.device)
+        nd = torch.ones(B).to(x.device).bool()
+        for t in range(self.tran_t):          
+            core_input, core_state = self.core(core_input, core_state, nd, nd) # output shape: 1, B, core_output_size 
+            core_input = core_input[0]
+        core_output = core_input        
+        core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))           
+        logits = self.policy(core_output)
+        vs = self.baseline(core_output)
+        return None, vs[:,0].unsqueeze(0), logits.unsqueeze(0), None
+
+    def get_weights(self):
+        return {k: v.cpu() for k, v in self.state_dict().items()}
+
+    def set_weights(self, weights):
+        self.load_state_dict(weights)                
+
+def ModelNet(obs_shape, num_actions, flags):
+    if flags.model_rnn:
+        return ModelNetRNN(obs_shape, num_actions, flags)
+    else:
+        return ModelNetBase(obs_shape, num_actions, flags)
+    

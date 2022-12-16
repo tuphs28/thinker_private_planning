@@ -172,13 +172,13 @@ class ConvAttnLSTM(nn.Module):
 
         self.layers = nn.ModuleList(layers)
     
-    def init_state(self, bsz):        
-        core_state = (torch.zeros(self.num_layers, bsz, self.hidden_dim, self.h, self.w),
-                      torch.zeros(self.num_layers, bsz, self.hidden_dim, self.h, self.w),)
+    def init_state(self, bsz, device=None):        
+        core_state = (torch.zeros(self.num_layers, bsz, self.hidden_dim, self.h, self.w, device=device),
+                      torch.zeros(self.num_layers, bsz, self.hidden_dim, self.h, self.w, device=device),)
         if self.attn:
-            core_state = core_state + (torch.zeros(self.num_layers, bsz, self.num_heads, self.mem_n, self.tot_head_dim),
-                      torch.zeros(self.num_layers, bsz,  self.num_heads, self.mem_n, self.tot_head_dim),
-                      torch.ones(1, bsz, self.mem_n).bool())
+            core_state = core_state + (torch.zeros(self.num_layers, bsz, self.num_heads, self.mem_n, self.tot_head_dim, device=device),
+                      torch.zeros(self.num_layers, bsz,  self.num_heads, self.mem_n, self.tot_head_dim, device=device),
+                      torch.ones(1, bsz, self.mem_n, device=device).bool())
         return core_state
     
     def forward(self, x, core_state, notdone, notdone_attn=None):        

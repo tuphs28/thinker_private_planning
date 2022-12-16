@@ -1,3 +1,4 @@
+from collections import namedtuple
 import sys
 
 import time
@@ -5,14 +6,28 @@ import numpy as np
 import argparse
 import ray
 import torch
+
 from thinker.self_play import SelfPlayWorker
-from thinker.thinker.learn_actor import ActorLearner
-from thinker.buffer import ActorBuffer, ParamBuffer, ModelBuffer
+from thinker.learn_actor import ActorLearner
+from thinker.buffer import *
 import thinker.util as util
-from collections import namedtuple
+from thinker.net import *
 
 flags = util.parse()
+obs_shape=(3,80,80)
+num_actions = 5
+flags.model_rnn = False
 
+cnet = ModelNet(obs_shape, num_actions, flags)
+x = torch.rand(16, 3, 80, 80)
+actions = torch.zeros(1, 16).long()
+
+rs, vs, logits, encodeds = cnet.forward(x, actions, one_hot=False)
+print(vs.shape, logits.shape, encodeds)
+
+sys.exit()
+
+flags = util.parse()
 flags.batch_size = 2
 flags.model_unroll_length = 8
 flags.model_k_step_return = 5
