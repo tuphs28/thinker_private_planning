@@ -54,8 +54,8 @@ class ModelLearner():
 
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_model.tar"))
-            self.flags.savedir = os.path.split(os.path.split(self.flags.load_checkpoint))[0]
-            self.flags.xpid = os.path.split(os.path.split(self.flags.load_checkpoint))[-1]    
+            self.flags.savedir = os.path.split(self.flags.load_checkpoint)[0]
+            self.flags.xpid = os.path.split(self.flags.load_checkpoint)[-1]    
 
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_model.tar")
 
