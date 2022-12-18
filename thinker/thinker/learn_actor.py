@@ -121,8 +121,8 @@ class ActorLearner():
 
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_actor.tar"))
-            self.flags.savedir = os.path.split(os.path.split(self.flags.load_checkpoint))[0]
-            self.flags.xpid = os.path.split(os.path.split(self.flags.load_checkpoint))[-1]    
+            self.flags.savedir = os.path.split(self.flags.load_checkpoint)[0]
+            self.flags.xpid = os.path.split(self.flags.load_checkpoint)[-1]    
 
         self.im_discounting = self.flags.discounting ** (1/self.flags.rec_t)      
 
