@@ -150,7 +150,8 @@ def parse(args=None):
         check_point_path = os.path.join(flags.load_checkpoint, "ckp_actor.tar")
         train_checkpoint = torch.load(check_point_path, torch.device("cpu"))
         flags_ = train_checkpoint["flags"]
-        for k, v in flags_.items(): setattr(flags, k, v)
+        for k, v in flags_.items(): 
+            if k != "load_checkpoint": setattr(flags, k, v)
 
     if flags.xpid is None:
         flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
