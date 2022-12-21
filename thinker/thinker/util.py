@@ -49,7 +49,9 @@ def parse(args=None):
     parser.add_argument("--train_model", action="store_true",
                         help="Enable training of model.")
     parser.add_argument("--model_batch_size", default=128, type=int, 
-                        help="Model learner batch size.")                        
+                        help="Model learner batch size.")   
+    parser.add_argument("--model_batch_mode", action="store_true",
+                        help="Whether to use the full rollout from model buffer in training.")                                            
     parser.add_argument("--model_unroll_length", default=200, type=int, 
                         help="Number of transition per unroll in model buffer.")
     parser.add_argument("--model_k_step_return", default=5, type=int, 

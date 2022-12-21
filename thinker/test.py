@@ -1,21 +1,3 @@
-from thinker.env import Environment
-import thinker.util as util
-import torch
-import sys
-
-flags = util.parse()
-env = Environment(flags, model_wrap=False)
-env_out = env.initial()
-print("0:", env_out)
-env_out = env.step(torch.tensor([3]).long())
-print("1: env_out", env_out)
-env_out = env.step(torch.tensor([2]).long())
-print("2: env_out", env_out)
-
-
-
-sys.exit()
-
 from collections import namedtuple
 import sys
 
@@ -31,6 +13,41 @@ from thinker.buffer import *
 import thinker.util as util
 from thinker.net import *
 
+
+flags = util.parse()
+flags.model_batch_size = 2
+flags.model_unroll_length = 8
+flags.model_k_step_return = 5
+flags.actor_parallel_n = 4
+flags.model_buffer_n = 1000
+flags.model_warm_up_n = 500
+flags.model_batch_mode = False
+
+t = flags.model_unroll_length   
+k = flags.model_k_step_return
+n = flags.actor_parallel_n  
+
+P = namedtuple("P", ["x","y"])
+model_buffer = ModelBuffer(flags)
+
+c = 0
+for c in range(100):
+    data = P(torch.full((t+k, n, 1),2*c), torch.full((t+k, n, 1),2*c+1))    
+    model_buffer.write(data)
+    r = model_buffer.read(1.)    
+    if r is not None:
+        data, weights, abs_flat_inds, ps_step = r
+        #print(data.x[:,:,0]) 
+        #model_buffer.update_priority(abs_flat_inds, np.zeros(flags.model_batch_size))
+
+print("1 read", data.x[:,:,0])
+model_buffer.update_priority(abs_flat_inds, np.full(flags.model_batch_size, 1000000))
+data, weights, abs_flat_inds, ps_step = model_buffer.read(1.)   
+print("2 read", data.x[:,:,0])
+
+sys.exit()
+
+
 flags = util.parse()
 obs_shape=(3,80,80)
 num_actions = 5
@@ -45,31 +62,6 @@ print(vs.shape, logits.shape, encodeds)
 
 sys.exit()
 
-flags = util.parse()
-flags.batch_size = 2
-flags.model_unroll_length = 8
-flags.model_k_step_return = 5
-flags.actor_parallel_n = 4
-flags.model_buffer_n = 1000
-
-t = flags.model_unroll_length   
-k = flags.model_k_step_return
-n = flags.actor_parallel_n  
-
-P = namedtuple("P", ["x","y"])
-model_buffer = ModelBuffer(flags)
-
-c = 0
-for c in range(100):
-    data = P(np.full((t+k, n, 1),2*c), np.full((t+k, n, 1),2*c+1))    
-    model_buffer.write(data)
-    data, weights, abs_flat_inds = model_buffer.read(1.)    
-    print(data) 
-    model_buffer.update_priority(abs_flat_inds, np.zeros(flags.batch_size))
-
-model_buffer.update_priority(abs_flat_inds, np.full(flags.batch_size, 100000))   
-
-sys.exit()
 parser = define_parser()
 flags = parser.parse_args([])
 

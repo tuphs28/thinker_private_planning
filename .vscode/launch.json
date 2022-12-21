@@ -9,15 +9,15 @@
             "type": "python",
             "request": "launch",
             //"program": "${file}",
-            "program": "train.py",
-            //"program": "test.py",
+            //"program": "train.py",
+            "program": "test.py",
             //"program": "test_model.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "cwd": "${workspaceFolder}/thinker",
             //"args": "--num_actors 8 --preload_model '/media/sc/datadisk/data/thinker/logs/planner_logs/thinker_model_0.1lr/ckp_model.tar'"
             //"args": "--num_actors 32 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 20000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_actor.tar --employ_model /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_model.tar"
-            "args": "--num_actors 16 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 2000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_actor.tar --employ_model ~/RS/thinker/models/model_1.tar --preload_model ''"
+            "args": "--num_actors 32 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 20000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor ~/RS/thinker/models/test/ckp_actor.tar --employ_model ~/RS/thinker/models/test/ckp_model.tar --preload_model ''"
         }
     ]
 }

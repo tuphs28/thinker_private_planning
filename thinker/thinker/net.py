@@ -423,8 +423,11 @@ class ModelNetRNN(nn.Module):
     def set_weights(self, weights):
         self.load_state_dict(weights)                
 
-def ModelNet(obs_shape, num_actions, flags):
-    if flags.model_rnn:
+def ModelNet(obs_shape, num_actions, flags, rnn=None):
+    # rnn: whether to use rnn for model network; 
+    # override flags.model_rnn
+    rnn = flags.model_rnn if rnn is None else rnn
+    if rnn:
         return ModelNetRNN(obs_shape, num_actions, flags)
     else:
         return ModelNetBase(obs_shape, num_actions, flags)

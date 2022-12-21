@@ -158,14 +158,20 @@ class ModelLearner():
         return True
 
     def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor):
-        k, b = self.flags.model_k_step_return, self.flags.model_batch_size
-        if self.flags.perfect_model:            
-            _, vs, logits, _ = self.model_net(
-                x=train_model_out.gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
-                actions=train_model_out.action.reshape(1, -1),
-                one_hot=False)
-            vs = vs.reshape(k+1, b)
-            logits = logits.reshape(k+1, b, -1)
+        k, b = train_model_out.gym_env_out.shape[0]-1, train_model_out.gym_env_out.shape[1]
+        if self.flags.perfect_model:   
+            if not self.flags.model_rnn:
+                _, vs, logits, _ = self.model_net(
+                    x=train_model_out.gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
+                    actions=train_model_out.action.reshape(1, -1),
+                    one_hot=False)
+                vs = vs.reshape(k+1, b)
+                logits = logits.reshape(k+1, b, -1)
+            else:
+                vs, logits = self.model_net.forward_full(
+                    x=train_model_out.gym_env_out,
+                    actions=train_model_out.action,
+                    one_hot=False)
         else:        
             rs, vs, logits, _ = self.model_net(
                 x=train_model_out.gym_env_out[0], 
@@ -192,13 +198,16 @@ class ModelLearner():
         # vs is stored in the form of v_{t}, ..., v_{t+k-1}
         # logits is stored in the form of a{t}, ..., a_{t+k-1}
 
-        done_masks = []
-        done = torch.zeros(b).bool().to(self.device)
-        for t in range(k):
-            if t > 0: done = torch.logical_or(done, train_model_out.done[t])
-            done_masks.append(done.unsqueeze(0))
+        if not self.flags.perfect_model:
+            done_masks = []
+            done = torch.zeros(b).bool().to(self.device)
+            for t in range(k):
+                if t > 0: done = torch.logical_or(done, train_model_out.done[t])
+                done_masks.append(done.unsqueeze(0))
 
-        done_masks = torch.concat(done_masks, dim=0)
+            done_masks = torch.concat(done_masks, dim=0)
+        else:
+            done_masks = torch.zeros(k, b).bool().to(self.device)
         
         # compute final loss
 
