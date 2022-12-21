@@ -9,7 +9,7 @@ EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'reward', 'done',
     'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action',
     'max_rollout_depth'])
 
-def Environment(flags):
+def Environment(flags, model_wrap=True):
     """Create an environment using flags.env; first
     wrap the env with basic wrapper, then wrap it
     with a model, and finally wrap it with PosWrapper
@@ -17,10 +17,14 @@ def Environment(flags):
 
     Args:
         flags (namespace): configuration flags
+        model_wrap (boolean): whether to wrap the environment with model
     Return:
         environment
     """
-    return PostWrapper(ModelWrapper(PreWrap(gym.make(flags.env), flags.env), flags), flags)
+    if model_wrap:
+        return PostWrapper(ModelWrapper(PreWrap(gym.make(flags.env), flags.env), flags), True, flags)
+    else:
+        return PostWrapper(PreWrap(gym.make(flags.env), flags.env), False, flags)
 
 def PreWrap(env, name):
     if name == "cSokoban-v0":
@@ -30,37 +34,56 @@ def PreWrap(env, name):
 
     return env
 
-def _format(x):
+def _format(gym_env_out, model_out):
     """Add batch and time index to env output"""
-    if x[0] is not None:
-        gym_env_out = torch.from_numpy(x[0])
+    if gym_env_out is not None:
+        gym_env_out = torch.from_numpy(gym_env_out)
         gym_env_out = gym_env_out.view((1, 1) + gym_env_out.shape)        
     else:
         gym_env_out = None
-    model_out = x[1].view((1, 1) + x[1].shape)
+    if model_out is not None:
+        model_out = model_out.view((1, 1) + model_out.shape)
+    else:
+        model_out = None
     return gym_env_out, model_out
 
 class PostWrapper:
     """The final wrapper for env.; convert all return to tensor and 
     calculates the episode return"""
 
-    def __init__(self, env, flags):
+    def __init__(self, env, model_wrap, flags):
         self.env = env
         self.flags = flags
         self.episode_return = None
         self.episode_step = None
+        self.model_wrap = model_wrap
         self.num_actions = env.env.action_space.n 
-        self.model_out_shape = env.observation_space.shape
-        self.gym_env_out_shape = env.env.observation_space.shape                
+        if self.model_wrap:
+            self.model_out_shape = env.observation_space.shape
+            self.gym_env_out_shape = env.env.observation_space.shape                
+        else:
+            self.gym_env_out_shape = env.observation_space.shape                
 
-    def initial(self, model_net):
-        initial_reward = torch.zeros(1, 1, 2 if self.flags.reward_type == 1 else 1)
+    def initial(self, model_net=None):
+        if self.model_wrap:
+            reward_shape = 2 if self.flags.reward_type == 1 else 1
+            action_shape = 4 if self.flags.flex_t else 3
+        else:
+            reward_shape = 1
+            action_shape = 1
+
+        initial_reward = torch.zeros(1, 1, reward_shape)
         # This supports only single-tensor actions.
-        initial_last_action = torch.zeros(1, 1, 4 if self.flags.flex_t else 3, dtype=torch.int64)
-        self.episode_return = torch.zeros(1, 1, 2 if self.flags.reward_type == 1 else 1)
+        initial_last_action = torch.zeros(1, 1, action_shape, dtype=torch.long)
+        self.episode_return = torch.zeros(1, 1, reward_shape)
         self.episode_step = torch.zeros(1, 1, dtype=torch.int32)
         initial_done = torch.ones(1, 1, dtype=torch.bool)
-        gym_env_out, model_out = _format(self.env.reset(model_net))
+
+        if self.model_wrap:
+            gym_env_out, model_out = _format(*self.env.reset(model_net))
+        else:
+            gym_env_out, model_out = _format(self.env.reset(), None)
+
         return EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
@@ -69,34 +92,44 @@ class PostWrapper:
             truncated_done=torch.tensor(0).view(1, 1).bool(),
             episode_return=self.episode_return,
             episode_step=self.episode_step,
-            cur_t=torch.tensor(0).view(1, 1),
+            cur_t=torch.tensor(0).view(1, 1) if self.model_wrap else None,
             last_action=initial_last_action,
-            max_rollout_depth=torch.tensor(0.).view(1, 1)
+            max_rollout_depth=torch.tensor(0.).view(1, 1) if self.model_wrap else None
         )
 
-    def step(self, action, model_net):
-        out, reward, done, unused_info = self.env.step(action[0,0].cpu().detach().numpy(), model_net)     
+    def step(self, action, model_net=None):
+        if self.model_wrap:
+            out, reward, done, unused_info = self.env.step(action[0,0].cpu().detach().numpy(), model_net)     
+            gym_env_out, model_out = _format(*out)
+        else:
+            out, reward, done, unused_info = self.env.step(action[0,0,0].cpu().detach().numpy())     
+            gym_env_out, model_out = _format(out, None)
         self.episode_step += 1
         self.episode_return = self.episode_return + torch.tensor(reward).unsqueeze(0).unsqueeze(0)
         episode_step = self.episode_step
         episode_return = self.episode_return.clone()
         if done:
-            out = self.env.reset(model_net)
+            if self.model_wrap:
+                out = self.env.reset(model_net)
+            else:
+                out = self.env.reset()
             self.episode_return = torch.zeros(1, 1, 1)
             self.episode_step = torch.zeros(1, 1, dtype=torch.int32)        
-        gym_env_out, model_out = _format(out)
+        
         reward = torch.tensor(reward).view(1, 1, -1)
         done = torch.tensor(done).view(1, 1)
         truncated_done = 'TimeLimit.truncated' in unused_info and unused_info['TimeLimit.truncated']
         truncated_done = torch.tensor(truncated_done).view(1, 1)
-        cur_t = torch.tensor(unused_info["cur_t"]).view(1, 1)
-        if cur_t == 0 and self.episode_return.shape[2] > 1:
-            self.episode_return[:, :, 1] = 0.
-        if 'max_rollout_depth' in unused_info:
-            max_rollout_depth = torch.tensor(unused_info["max_rollout_depth"]).view(1, 1)
+        if self.model_wrap:
+            cur_t = torch.tensor(unused_info["cur_t"]).view(1, 1)
+            if cur_t == 0 and self.episode_return.shape[2] > 1:
+                self.episode_return[:, :, 1] = 0.
+            if 'max_rollout_depth' in unused_info:
+                max_rollout_depth = torch.tensor(unused_info["max_rollout_depth"]).view(1, 1)
+            else:
+                max_rollout_depth = torch.tensor(0.).view(1, 1)
         else:
-            max_rollout_depth = torch.tensor(0.).view(1, 1)
-        
+            cur_t, max_rollout_depth = None, None
         return EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
@@ -147,7 +180,9 @@ class ModelWrapper(gym.Wrapper):
         self.thres_carry = flags.thres_carry        
         self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space.n
+        self.cur_node = None
         self.root_node = None
+        self.debug = False
             
         if not self.flex_t:
             obs_n = 9 + self.num_actions * 10 + self.rec_t
@@ -179,6 +214,8 @@ class ModelWrapper(gym.Wrapper):
         info["max_rollout_depth"] = self.max_rollout_depth
         if (not self.flex_t and self.cur_t < self.rec_t - 1) or (
             self.flex_t and self.cur_t < self.rec_t - 1 and not term):
+          if self.debug and self.cur_t == 1: self.debug_xs = []  
+
           self.cur_t += 1
           out = self.use_model(model_net, None, None, im_action, self.cur_t, reset=reset, term=term, done=False)          
           if self.reward_type == 0:
@@ -223,21 +260,20 @@ class ModelWrapper(gym.Wrapper):
                     self.thres = None
                 
                 if self.no_mem:
-                    re_action = 0
-                    re_reward = torch.tensor([0.], dtype=torch.float32)                
+                    re_action = 0            
                 else:
-                    re_action = a                
-                    re_reward = torch.tensor([r], dtype=torch.float32)                
+                    re_action = a                             
                 
                 x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
                 self.x = self.x_ = x_tensor
-                a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions)                
+                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions)                
                 _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True) 
                 
                 if self.perfect_model: 
                     encoded = self.clone_state()
                 else:
                     encoded=encodeds[-1]
+                if self.debug: encoded["x"] = x
                 
                 if (not self.tree_carry or self.root_node is None or 
                     not self.root_node.children[a].expanded() or done):
@@ -260,6 +296,7 @@ class ModelWrapper(gym.Wrapper):
                     self.thres = self.thres_discounting * self.thres + (1 - self.thres_discounting) * vs[-1, 0].item()
                 
                 self.root_node.visit()
+                if self.debug and self.cur_node is not None: self.debug_xs.append(self.cur_node.encoded["x"])
                 self.cur_node = self.root_node
                 
             else:
@@ -281,6 +318,7 @@ class ModelWrapper(gym.Wrapper):
                             self.env.restore_state(self.cur_node.encoded)                        
                             x, r, done, info = self.env.step(a) 
                             encoded = self.env.clone_state()
+                            if self.debug: encoded["x"] = x
                             if done: encoded["done"] = True                        
                             x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
                             self.x_ = x_tensor
@@ -351,6 +389,7 @@ class ModelWrapper(gym.Wrapper):
                 self.ret_dict["thres"] = self.thres
             
             if reset:
+                if cur_t > 0 and self.debug: self.debug_xs.append(self.cur_node.encoded["x"])
                 self.rollout_depth = 0
                 self.unexpand_rollout_depth = 0.
                 self.cur_node = self.root_node

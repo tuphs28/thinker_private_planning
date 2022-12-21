@@ -119,13 +119,20 @@ class ModelBuffer():
         return True
 
 @ray.remote
-class ParamBuffer(object):
+class GeneralBuffer(object):
     def __init__(self):
-        self.weights = {}
+        self.data = {}
+    
+    def extend_data(self, name, x):
+        if name in self.data:
+            self.data[name].extend(x)
+        else:
+            self.data[name] = x
+        return self.data[name]
 
-    def set_weights(self, name, weights):
-        self.weights[name]  = weights
+    def set_data(self, name, x):
+        self.data[name] = x
         return True
 
-    def get_weights(self, name):        
-        return self.weights[name] if name in self.weights else None
+    def get_data(self, name):        
+        return self.data[name] if name in self.data else None

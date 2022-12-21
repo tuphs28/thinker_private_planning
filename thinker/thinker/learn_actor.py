@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns
 from thinker.core.file_writer import FileWriter
-from thinker.buffer import ActorBuffer, ParamBuffer
+from thinker.buffer import ActorBuffer, GeneralBuffer
 from thinker.buffer import AB_CAN_WRITE, AB_FULL, AB_FINISH
 from thinker.net import ActorNet, ModelNet, ActorOut
 from thinker.self_play import TrainActorOut
@@ -87,13 +87,13 @@ def from_logits(
 
 @ray.remote(num_cpus=1, num_gpus=0.5)
 class ActorLearner():
-    def __init__(self, param_buffer: ParamBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace): 
+    def __init__(self, param_buffer: GeneralBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace): 
         self.param_buffer = param_buffer
         self.actor_buffer = actor_buffer
         self.rank = rank
         self.flags = flags
 
-        env = Environment(flags)        
+        env = Environment(flags, model_wrap=True)        
         self.actor_net = ActorNet(obs_shape=env.model_out_shape, num_actions=env.num_actions, flags=flags)
 
         # initialize learning setting
@@ -119,6 +119,11 @@ class ActorLearner():
             lr_lambda = lambda epoch: 1 - min(epoch, self.flags.total_steps) / self.flags.total_steps
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
+        if self.flags.preload_actor and not flags.load_checkpoint:
+            checkpoint = torch.load(self.flags.preload_actor, map_location=torch.device('cpu'))
+            self.actor_net.set_weights(checkpoint["actor_net_state_dict"])  
+            print("Loadded actor network from %s" % self.flags.preload_actor)
+
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_actor.tar"))
             self.flags.savedir = os.path.split(self.flags.load_checkpoint)[0]
@@ -133,7 +138,7 @@ class ActorLearner():
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_actor.tar")       
 
         # set shared buffer's weights
-        self.param_buffer.set_weights.remote("actor_net", self.actor_net.get_weights())
+        self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
 
         # move network and optimizer to process device
         self.actor_net.to(self.device)
@@ -208,7 +213,7 @@ class ActorLearner():
             
             # update shared buffer's weights
             if n % 1 == 0:
-                self.param_buffer.set_weights.remote("actor_net", self.actor_net.get_weights())
+                self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
             n += 1
             
         self.plogger.close()

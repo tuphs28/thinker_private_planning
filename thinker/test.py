@@ -1,3 +1,21 @@
+from thinker.env import Environment
+import thinker.util as util
+import torch
+import sys
+
+flags = util.parse()
+env = Environment(flags, model_wrap=False)
+env_out = env.initial()
+print("0:", env_out)
+env_out = env.step(torch.tensor([3]).long())
+print("1: env_out", env_out)
+env_out = env.step(torch.tensor([2]).long())
+print("2: env_out", env_out)
+
+
+
+sys.exit()
+
 from collections import namedtuple
 import sys
 

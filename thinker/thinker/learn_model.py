@@ -6,9 +6,9 @@ import timeit
 import ray
 import torch
 import torch.nn.functional as F
-from thinker.buffer import ParamBuffer, ModelBuffer
+from thinker.buffer import GeneralBuffer, ModelBuffer
 from thinker.net import ModelNet
-from thinker.self_play import TrainModelOut
+from thinker.self_play import SelfPlayWorker, TrainModelOut, PO_MODEL
 from thinker.env import Environment
 import thinker.util as util
 
@@ -21,7 +21,7 @@ def compute_cross_entropy_loss(logits, target_logits, mask, is_weights):
 
 @ray.remote(num_cpus=1, num_gpus=0.5)
 class ModelLearner():
-    def __init__(self, param_buffer: ParamBuffer, model_buffer: ModelBuffer, rank: int, flags: argparse.Namespace): 
+    def __init__(self, param_buffer: GeneralBuffer, model_buffer: ModelBuffer, rank: int, flags: argparse.Namespace): 
         self.param_buffer = param_buffer
         self.model_buffer = model_buffer
         self.rank = rank
@@ -60,11 +60,17 @@ class ModelLearner():
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_model.tar")
 
         # set shared buffer's weights
-        self.param_buffer.set_weights.remote("model_net", self.model_net.get_weights())
+        self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
         # move network and optimizer to process device
         self.model_net.to(self.device)
         util.optimizer_to(self.optimizer, self.device)
+
+        # model tester
+        self.test_buffer = GeneralBuffer.remote()   
+        self.model_tester = [SelfPlayWorker.remote(param_buffer=param_buffer, 
+            actor_buffer=None, model_buffer=None, test_buffer=self.test_buffer, 
+            policy=PO_MODEL, rank=n+1, flags=flags) for n in range(5)]
 
     def learn_data(self):
         timer = timeit.default_timer
@@ -73,6 +79,7 @@ class ModelLearner():
         ckp_start_time = int(time.strftime("%M")) // 10
         last_psteps = 0
         n = 0
+        r_actor = None
 
         max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
         # in case the actor learner stops before model learner
@@ -86,6 +93,10 @@ class ModelLearner():
                 data = ray.get(self.model_buffer.read.remote(beta))
                 if data is not None: break            
                 time.sleep(0.01)
+                if timer() - start_time > 5:
+                    _, tran_n = ray.get(self.model_buffer.check_preload.remote())
+                    print("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
+                    start_time = timer()
 
             # start consume data
             train_model_out, is_weights, inds, new_psteps = data            
@@ -106,9 +117,7 @@ class ModelLearner():
             total_loss.backward()
             optimize_params = self.optimizer.param_groups[0]['params']
             if self.flags.model_grad_norm_clipping > 0:
-                total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
-            else:
-                total_norm = 0.
+                torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
             
             self.optimizer.step()
             self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
@@ -134,7 +143,17 @@ class ModelLearner():
             
             # update shared buffer's weights
             if n % 1 == 0:
-                self.param_buffer.set_weights.remote("model_net", self.model_net.get_weights())
+                self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
+
+            # test the model policy returns
+            if n % 1000 == 0:
+                if r_actor is not None: 
+                    all_returns = ray.get(r_actor)[0]
+                    self.test_buffer.set_data.remote("episode_returns", [])
+                    print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
+                        (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
+                r_actor = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                   
+
             n += 1
         return True
 
@@ -198,7 +217,7 @@ class ModelLearner():
         vs_loss = torch.sum(vs_loss)
 
         logits_loss = self.flags.model_logits_loss_cost * compute_cross_entropy_loss(
-            logits, target_logits.detach(), done_masks, is_weights)        
+            logits, target_logits.detach(), done_masks, is_weights)   
 
         total_loss = vs_loss + logits_loss
         if rs_loss is not None: total_loss = total_loss + rs_loss
@@ -212,6 +231,11 @@ class ModelLearner():
         return losses, priorities
 
     def save_checkpoint(self):
+        basepath = os.path.split(self.check_point_path)[0]
+        if not os.path.exists(basepath):
+            print("Creating log directory: %s", basepath)
+            os.makedirs(basepath, exist_ok=True)
+
         print("Saving model checkpoint to %s" % self.check_point_path)
         torch.save(
             { "step": self.step,

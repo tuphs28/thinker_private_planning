@@ -13,15 +13,25 @@ def parse(args=None):
                         help="Gym environment.")
     parser.add_argument("--xpid", default=None,
                         help="Experiment id (default: None).")
-
-    parser.add_argument("--load_checkpoint", default="",
-                        help="Load checkpoint directory.")    
     parser.add_argument("--savedir", default="~/RS/thinker/logs/thinker",
                         help="Root dir where experiment data will be saved.")
+
+    # Preload settings.
+    parser.add_argument("--load_checkpoint", default="",
+                        help="Load checkpoint directory.")    
+    parser.add_argument("--preload_actor", default="",
+                        help="File location of the preload actor network.")                        
     parser.add_argument("--preload_model", default="~/RS/thinker/models/model_1.tar",
                         help="File location of the preload model network.")
+    parser.add_argument("--employ_model", default="",
+                        help="Use another fixed model for the planning agent")                        
+
 
     # Actor Training settings.            
+    parser.add_argument("--policy_type", default=0, type=int, 
+                        help="Policy used for self-play worker; 0 for actor net, 1 for model policy") 
+    parser.add_argument("--disable_train_actor", action="store_false", dest="train_actor",
+                        help="Disable training of actor.")   
     parser.add_argument("--num_actors", default=48, type=int, 
                         help="Number of actors (default: 48).")
     parser.add_argument("--actor_parallel_n", default=1, type=int, 
@@ -141,7 +151,7 @@ def parse(args=None):
     else:
         flags = parser.parse_args(args)  
     
-    fs = ["load_checkpoint", "savedir", "preload_model"]    
+    fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor", "employ_model"]    
     for f in fs:
         path = getattr(flags, f)
         if path: setattr(flags, f, os.path.expanduser(path))
@@ -176,6 +186,10 @@ def optimizer_to(optim, device):
                     subparam.data = subparam.data.to(device)
                     if subparam._grad is not None:
                         subparam._grad.data = subparam._grad.data.to(device)
+
+def construct_tuple(x, **kwargs):
+    return x(**{k: kwargs[k] if k in kwargs else None for k in x._fields})
+
 
 class Timings:
 
