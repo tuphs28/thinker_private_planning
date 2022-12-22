@@ -85,6 +85,8 @@ class ModelLearner():
         last_psteps = 0
         
         r_tester = None
+        all_return = None
+        
         numel_per_step = self.flags.model_batch_size * (
                 1 if not self.flags.model_batch_mode else self.flags.model_unroll_length)
 
