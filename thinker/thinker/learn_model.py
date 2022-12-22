@@ -6,6 +6,7 @@ import timeit
 import ray
 import torch
 import torch.nn.functional as F
+from thinker.core.file_writer import FileWriter
 from thinker.buffer import GeneralBuffer, ModelBuffer
 from thinker.net import ModelNet
 from thinker.self_play import SelfPlayWorker, TrainModelOut, PO_MODEL
@@ -56,6 +57,9 @@ class ModelLearner():
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_model.tar"))
             self.flags.savedir = os.path.split(self.flags.load_checkpoint)[0]
             self.flags.xpid = os.path.split(self.flags.load_checkpoint)[-1]    
+
+        self.flags.git_revision = util.get_git_revision_hash()
+        self.plogger = FileWriter(xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir, suffix="_model")
 
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_model.tar")
 
@@ -133,16 +137,26 @@ class ModelLearner():
             self.step += numel_per_step
             # print statistics
             if timer() - start_time > 5:
-                sps = (self.step - start_step) / (timer() - start_time)    
-                print_str =  "Steps %i (%i:%i) @ %.1f SPS. Loss %.2f" % (
-                    n, self.real_step, self.step, sps, total_loss / numel_per_step)
-                print_stats = ["vs_loss", "logits_loss", "rs_loss"]
+                sps = (self.step - start_step) / (timer() - start_time)                
+                print_str =  "Steps %i (%i:%i) @ %.1f SPS. Model return mean (std) %f (%f)" % (
+                    n, self.real_step, self.step, sps, 
+                    np.mean(all_returns) if all_returns is not None else 0.,
+                    np.std(all_returns) if all_returns is not None else 0.)
+                print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
                         print_str += " %s %.2f" % (k, losses[k].item() / numel_per_step)
                 print(print_str)
                 start_step = self.step
                 start_time = timer()      
+
+                # write to log file
+                stats = {"step": self.step,
+                         "real_step": self.real_step,
+                         "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
+                         "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None}
+                for k in print_stats: 
+                    stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
@@ -158,8 +172,8 @@ class ModelLearner():
                 if r_tester is not None: 
                     all_returns = ray.get(r_tester)[0]
                     self.test_buffer.set_data.remote("episode_returns", [])
-                    print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
-                        (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
+                    #print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
+                    #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
                 r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                   
 
             n += 1
