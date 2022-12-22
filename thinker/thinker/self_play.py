@@ -183,10 +183,10 @@ class SelfPlayWorker():
 
                 # set model weight                
                 if n % 1 == 0:
-                    if train_actor:
+                    if self.flags.train_actor:
                         weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                         self.actor_net.set_weights(weights)
-                    if train_model:                
+                    if self.flags.train_model:             
                         weights = ray.get(self.param_buffer.get_data.remote("model_net"))
                         self.model_net.set_weights(weights)                
                 n += 1
@@ -282,7 +282,8 @@ class SelfPlayWorker():
         if not model_net.rnn:
             _, _, policy_logits, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)                        
         else:
-            if not hasattr(self, 'model_state'): self.model_state = self.model_net.core.init_state(bsz=1)
+            if not hasattr(self, 'model_state'): 
+                self.model_state = self.model_net.core.init_state(bsz=1)
             _, policy_logits, self.model_state = model_net(x=env_out.gym_env_out, 
                 actions=env_out.last_action[:,:,0], 
                 done=env_out.done,                

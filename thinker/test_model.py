@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     self_play_workers = [SelfPlayWorker.remote(param_buffer=param_buffer, 
       actor_buffer=None, model_buffer=None, test_buffer=test_buffer, 
-      policy=PO_NET, rank=n, flags=flags) for n in range(flags.num_actors)]
+      policy=PO_MODEL, rank=n, flags=flags) for n in range(flags.num_actors)]
     r_worker = [x.gen_data.remote(test_eps_n=1000) for x in self_play_workers]    
     ray.get(r_worker)
         
