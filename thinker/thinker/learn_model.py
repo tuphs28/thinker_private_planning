@@ -153,7 +153,7 @@ class ModelLearner():
                 self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
             # test the model policy returns
-            if self.step - start_step_test > 1000:
+            if self.step - start_step_test > 10000:
                 start_step_test = self.step
                 if r_tester is not None: 
                     all_returns = ray.get(r_tester)[0]
@@ -255,7 +255,7 @@ class ModelLearner():
     def save_checkpoint(self):
         basepath = os.path.split(self.check_point_path)[0]
         if not os.path.exists(basepath):
-            print("Creating log directory: %s", basepath)
+            print("Creating log directory: %s" % basepath)
             os.makedirs(basepath, exist_ok=True)
 
         print("Saving model checkpoint to %s" % self.check_point_path)
