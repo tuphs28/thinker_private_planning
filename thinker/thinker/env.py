@@ -74,7 +74,7 @@ class PostWrapper:
 
         initial_reward = torch.zeros(1, 1, reward_shape)
         # This supports only single-tensor actions.
-        initial_last_action = torch.zeros(1, 1, action_shape, dtype=torch.long)
+        self.last_action = torch.zeros(1, 1, action_shape, dtype=torch.long)
         self.episode_return = torch.zeros(1, 1, reward_shape)
         self.episode_step = torch.zeros(1, 1, dtype=torch.int32)
         initial_done = torch.ones(1, 1, dtype=torch.bool)
@@ -93,7 +93,7 @@ class PostWrapper:
             episode_return=self.episode_return,
             episode_step=self.episode_step,
             cur_t=torch.tensor(0).view(1, 1) if self.model_wrap else None,
-            last_action=initial_last_action,
+            last_action=self.last_action,
             max_rollout_depth=torch.tensor(0.).view(1, 1) if self.model_wrap else None
         )
 
@@ -130,6 +130,15 @@ class PostWrapper:
                 max_rollout_depth = torch.tensor(0.).view(1, 1)
         else:
             cur_t, max_rollout_depth = None, None
+
+        if self.model_wrap:
+            if cur_t == 0:
+                self.last_action = action
+            else:
+                self.last_action = self.last_action.clone()            
+                self.last_action[:, :, 1:] = action[:, :, 1:]
+        else:
+            self.last_action = action
         return EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
