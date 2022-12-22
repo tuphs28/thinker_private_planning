@@ -52,6 +52,7 @@ class FileWriter:
         xp_args: dict = None,
         rootdir: str = "~/logs",
         symlink_to_latest: bool = True,
+        suffix: str = "",
     ):
         if not xpid:
             # Make unique id.
@@ -103,10 +104,10 @@ class FileWriter:
                 pass
 
         self.paths = dict(
-            msg="{base}/out.log".format(base=self.basepath),
-            logs="{base}/logs.csv".format(base=self.basepath),
-            fields="{base}/fields.csv".format(base=self.basepath),
-            meta="{base}/meta.json".format(base=self.basepath),
+            msg="{base}/out{suffix}.log".format(base=self.basepath, suffix=suffix),
+            logs="{base}/logs{suffix}.csv".format(base=self.basepath, suffix=suffix),
+            fields="{base}/fields{suffix}.csv".format(base=self.basepath, suffix=suffix),
+            meta="{base}/meta{suffix}.json".format(base=self.basepath, suffix=suffix),
         )
 
         self._logger.info("Saving arguments to %s", self.paths["meta"])

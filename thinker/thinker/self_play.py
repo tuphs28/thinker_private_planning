@@ -178,9 +178,9 @@ class SelfPlayWorker():
                             print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                     learner_actor_start = not preload_needed or preload
 
-                # set model weight                
+                # update model weight                
                 if n % 1 == 0:
-                    if self.flags.train_actor:
+                    if self.flags.train_actor and self.policy == PO_NET :
                         weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                         self.actor_net.set_weights(weights)
                     if self.flags.train_model:           
