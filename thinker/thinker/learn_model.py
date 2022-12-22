@@ -153,7 +153,7 @@ class ModelLearner():
                 self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
             # test the model policy returns
-            if self.step - start_step_test > 10000:
+            if self.step - start_step_test > 100000:
                 start_step_test = self.step
                 if r_tester is not None: 
                     all_returns = ray.get(r_tester)[0]
