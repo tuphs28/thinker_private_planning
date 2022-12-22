@@ -148,7 +148,7 @@ class PostWrapper:
             episode_return=episode_return,
             episode_step=episode_step,
             cur_t=cur_t,
-            last_action=action,
+            last_action=self.last_action,
             max_rollout_depth=max_rollout_depth
         )
 
