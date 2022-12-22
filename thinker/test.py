@@ -15,6 +15,33 @@ from thinker.net import *
 
 
 flags = util.parse()
+obs_shape=(3,80,80)
+num_actions = 5
+flags.model_rnn = True
+
+cnet = ModelNet(obs_shape, num_actions, flags, rnn=True)
+x = torch.rand(10, 16, 3, 80, 80)
+actions = torch.zeros(10, 16).long()
+done = torch.zeros(10, 16).bool()
+state = cnet.core.init_state(16)
+
+vs, logits, state = cnet.forward(x, actions, done, state, one_hot=False)
+vs, logits, state = cnet.forward(x, actions, done, state, one_hot=False)
+print(vs, logits)
+
+sys.exit()
+
+parser = define_parser()
+flags = parser.parse_args([])
+
+self_play_worker = SelfPlayWorker(None, None, 1, flags)
+self_play_worker.gen_data()
+
+
+sys.exit()
+
+
+flags = util.parse()
 flags.model_batch_size = 2
 flags.model_unroll_length = 8
 flags.model_k_step_return = 5
@@ -44,30 +71,6 @@ print("1 read", data.x[:,:,0])
 model_buffer.update_priority(abs_flat_inds, np.full(flags.model_batch_size, 1000000))
 data, weights, abs_flat_inds, ps_step = model_buffer.read(1.)   
 print("2 read", data.x[:,:,0])
-
-sys.exit()
-
-
-flags = util.parse()
-obs_shape=(3,80,80)
-num_actions = 5
-flags.model_rnn = False
-
-cnet = ModelNet(obs_shape, num_actions, flags)
-x = torch.rand(16, 3, 80, 80)
-actions = torch.zeros(1, 16).long()
-
-rs, vs, logits, encodeds = cnet.forward(x, actions, one_hot=False)
-print(vs.shape, logits.shape, encodeds)
-
-sys.exit()
-
-parser = define_parser()
-flags = parser.parse_args([])
-
-self_play_worker = SelfPlayWorker(None, None, 1, flags)
-self_play_worker.gen_data()
-
 
 sys.exit()
 

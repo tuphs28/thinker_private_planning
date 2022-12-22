@@ -75,15 +75,18 @@ class ModelLearner():
     def learn_data(self):
         timer = timeit.default_timer
         start_step = self.step
+        start_step_test = self.step
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         last_psteps = 0
-        n = 0
-        r_actor = None
+        
+        r_tester = None
+        numel_per_step = self.flags.model_batch_size * (
+                1 if not self.flags.model_batch_mode else self.flags.model_unroll_length)
 
         max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
         # in case the actor learner stops before model learner
-
+        n = 0
         while (self.real_step < self.flags.total_steps - max_diff):                    
             c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
             beta = self.flags.priority_beta * (1 - c) + 1. * c
@@ -99,16 +102,20 @@ class ModelLearner():
                     start_time = timer()
 
             # start consume data
-            train_model_out, is_weights, inds, new_psteps = data            
+            train_model_out, model_state, is_weights, inds, new_psteps = data            
             self.real_step += new_psteps - last_psteps            
             last_psteps = new_psteps
 
             # move the data to the process device
             train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
+            if self.flags.model_rnn:
+                model_state = util.tuple_map(model_state, lambda x:x.to(self.device))
+            else:
+                model_state = None
             is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
                         
             # compute losses
-            losses, priorities = self.compute_losses(train_model_out, is_weights)
+            losses, priorities = self.compute_losses(train_model_out, is_weights, model_state)
             total_loss = losses["total_loss"]
             self.model_buffer.update_priority.remote(inds, priorities)
             
@@ -123,16 +130,16 @@ class ModelLearner():
             self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
             self.scheduler.step()                 
             
-            self.step += self.flags.model_batch_size
+            self.step += numel_per_step
             # print statistics
             if timer() - start_time > 5:
-                sps = (self.step - start_step) / (timer() - start_time)                
+                sps = (self.step - start_step) / (timer() - start_time)    
                 print_str =  "Steps %i (%i:%i) @ %.1f SPS. Loss %.2f" % (
-                    n, self.real_step, self.step, sps, total_loss)
+                    n, self.real_step, self.step, sps, total_loss / numel_per_step)
                 print_stats = ["vs_loss", "logits_loss", "rs_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
-                        print_str += " %s %.2f" % (k, losses[k].item())
+                        print_str += " %s %.2f" % (k, losses[k].item() / numel_per_step)
                 print(print_str)
                 start_step = self.step
                 start_time = timer()      
@@ -146,18 +153,19 @@ class ModelLearner():
                 self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
             # test the model policy returns
-            if n % 1000 == 0:
-                if r_actor is not None: 
-                    all_returns = ray.get(r_actor)[0]
+            if self.step - start_step_test > 1000:
+                start_step_test = self.step
+                if r_tester is not None: 
+                    all_returns = ray.get(r_tester)[0]
                     self.test_buffer.set_data.remote("episode_returns", [])
                     print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                         (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
-                r_actor = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                   
+                r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                   
 
             n += 1
         return True
 
-    def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor):
+    def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor, model_state: tuple):
         k, b = train_model_out.gym_env_out.shape[0]-1, train_model_out.gym_env_out.shape[1]
         if self.flags.perfect_model:   
             if not self.flags.model_rnn:
@@ -168,9 +176,11 @@ class ModelLearner():
                 vs = vs.reshape(k+1, b)
                 logits = logits.reshape(k+1, b, -1)
             else:
-                vs, logits = self.model_net.forward_full(
-                    x=train_model_out.gym_env_out,
+                vs, logits, model_state = self.model_net(
+                    x=train_model_out.gym_env_out,                                        
                     actions=train_model_out.action,
+                    done=train_model_out.done,
+                    state=model_state,
                     one_hot=False)
         else:        
             rs, vs, logits, _ = self.model_net(
@@ -183,7 +193,10 @@ class ModelLearner():
         target_logits = train_model_out.policy_logits[1:]
 
         target_vs = []
-        target_v = self.model_net(train_model_out.gym_env_out[-1], train_model_out.action[[-1]])[1][0].detach()        
+        if not self.flags.perfect_model: 
+            target_v = self.model_net(train_model_out.gym_env_out[-1], train_model_out.action[[-1]])[1][0].detach()        
+        else:
+            target_v = vs[-1]
         for t in range(k, 0, -1):
             new_target_v = train_model_out.reward[t] + self.flags.discounting * (
                 target_v * (~train_model_out.done[t]).float())
@@ -223,7 +236,7 @@ class ModelLearner():
         #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
         vs_loss = torch.sum(((vs[:-1] - target_vs) ** 2) * (~done_masks).float(), dim=0)
         vs_loss = vs_loss * is_weights
-        vs_loss = torch.sum(vs_loss)
+        vs_loss = self.flags.model_vs_loss_cost * torch.sum(vs_loss)
 
         logits_loss = self.flags.model_logits_loss_cost * compute_cross_entropy_loss(
             logits, target_logits.detach(), done_masks, is_weights)   

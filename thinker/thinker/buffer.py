@@ -45,6 +45,7 @@ class ModelBuffer():
         self.k = flags.model_k_step_return
         self.n = flags.actor_parallel_n             
         self.batch_mode = flags.model_batch_mode
+        self.model_rnn = flags.model_rnn
 
         self.max_buffer_n = flags.model_buffer_n // (self.t * self.n) + 1 # maximum buffer length
         self.batch_size = flags.model_batch_size # batch size in returned sample
@@ -52,16 +53,21 @@ class ModelBuffer():
             flags.model_buffer_n)     # number of total transition before returning samples
 
         self.buffer = []
+        self.state = []
+
         self.priorities = None
         self.base_ind = 0
         self.abs_tran_n = 0
         self.preload_n = 0
         self.clean_m = 0
     
-    def write(self, data):
+    def write(self, data, state, rank):
         # data is a named tuple with elements of size (t+k, n, ...)        
         self.buffer.append(data)
+        self.state.append(state)
+
         p_shape = self.t*self.n if not self.batch_mode else self.n
+
         if self.priorities is None:
             self.priorities = np.ones((p_shape), dtype=float)
         else:
@@ -100,10 +106,22 @@ class ModelBuffer():
                 else:
                     elems.append(self.buffer[inds[0][i]][d][:, inds[1][i]].unsqueeze(1))
             data.append(torch.concat(elems, dim=1))
-        data = type(self.buffer[0])(*data)
+        data = type(self.buffer[0])(*data)        
+        
+        if self.model_rnn and self.batch_mode:
+            data_state = []
+            for d in range(len(self.state[0])):
+                elems=[]
+                for i in range(self.batch_size):
+                    elems.append(self.state[inds[0][i]][d][:, inds[1][i]].unsqueeze(1))
+                data_state.append(torch.concat(elems, dim=1))
+            data_state = tuple(data_state)    
+        else:
+            data_state = None
+
 
         abs_flat_inds = flat_inds + self.base_ind
-        return data, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
+        return data, data_state, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
 
     def update_priority(self, abs_flat_inds, priorities):
         """ Update priority in the buffer; both input 
@@ -117,6 +135,7 @@ class ModelBuffer():
         if buffer_n > self.max_buffer_n:
             excess_n = buffer_n - self.max_buffer_n
             del self.buffer[:excess_n]
+            del self.state[:excess_n]
             if not self.batch_mode:
                 self.priorities = self.priorities[excess_n * self.t * self.n:]            
                 self.base_ind += excess_n * self.t * self.n

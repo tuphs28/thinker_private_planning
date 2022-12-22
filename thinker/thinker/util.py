@@ -25,6 +25,8 @@ def parse(args=None):
                         help="File location of the preload model network.")
     parser.add_argument("--employ_model", default="",
                         help="Use another fixed model for the planning agent")                        
+    parser.add_argument("--employ_model_rnn",  action="store_true",
+                        help="Whether to use ConvLSTM in the employed model (only support perfect model).")                        
 
 
     # Actor Training settings.            
@@ -110,6 +112,8 @@ def parse(args=None):
     # Model loss settings
     parser.add_argument("--model_logits_loss_cost", default=0.05, type=float,
                        help="Multipler to policy logit loss when training the model.")                            
+    parser.add_argument("--model_vs_loss_cost", default=1, type=float,
+                       help="Multipler to policy vs loss when training the model.")                           
     
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
@@ -167,10 +171,20 @@ def parse(args=None):
 
     if flags.xpid is None:
         flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
+
+    if flags.model_rnn:
+        assert flags.model_batch_mode, "rnn model can only be equipped with batch model mode"
+
     return flags
 
 def tuple_map(x, f):
-    return type(x)(*(f(y) if y is not None else None for y in x))
+    if type(x) == tuple:
+        return tuple(f(y) if y is not None else None for y in x)
+    else:
+        return type(x)(*(f(y) if y is not None else None for y in x))
+
+def construct_tuple(x, **kwargs):
+    return x(**{k: kwargs[k] if k in kwargs else None for k in x._fields})
 
 def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
@@ -189,8 +203,7 @@ def optimizer_to(optim, device):
                     if subparam._grad is not None:
                         subparam._grad.data = subparam._grad.data.to(device)
 
-def construct_tuple(x, **kwargs):
-    return x(**{k: kwargs[k] if k in kwargs else None for k in x._fields})
+
 
 
 class Timings:

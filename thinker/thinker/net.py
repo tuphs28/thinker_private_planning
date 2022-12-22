@@ -7,6 +7,9 @@ from thinker.core.rnn import ConvAttnLSTM
 ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_policy_logits', 'term_policy_logits', 
     'action', 'im_action', 'reset_action', 'term_action', 'baseline', 'reg_loss'])
 
+def add_hw(x, h, w):
+    return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h,w))
+
 class ActorNet(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):
 
@@ -293,6 +296,7 @@ class Output_rvpi(nn.Module):
 class ModelNetBase(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        
         super(ModelNetBase, self).__init__()      
+        self.rnn = False
         self.flags = flags
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
@@ -356,6 +360,7 @@ class ModelNetBase(nn.Module):
 class ModelNetRNN(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        
         super(ModelNetRNN, self).__init__()      
+        self.rnn = True
         self.flags = flags
         self.obs_shape = obs_shape
         self.num_actions = num_actions 
@@ -369,12 +374,12 @@ class ModelNetRNN(nn.Module):
         self.no_mem = flags.no_mem                   # whether to earse real memory at the end of planning stage
         
         self.conv_out_hw = 8
-        self.d_model = self.conv_out
+        self.d_model = self.conv_out 
         
         self.conv1 = nn.Conv2d(in_channels=self.obs_shape[0], out_channels=self.conv_out, kernel_size=8, stride=4)        
         self.conv2 = nn.Conv2d(in_channels=self.conv_out, out_channels=self.conv_out, kernel_size=4, stride=2)        
         self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
-        self.env_input_size = self.conv_out
+        self.env_input_size = self.conv_out + self.num_actions
         d_in = self.env_input_size + self.d_model 
 
         self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
@@ -389,33 +394,34 @@ class ModelNetRNN(nn.Module):
         self.policy = nn.Linear(256, self.num_actions)        
         self.baseline = nn.Linear(256, 1)        
         
-    def forward(self, x, actions, one_hot=False):
-        """
-        Args:
-            x(tensor): frames (uint8 or float) with shape (B, C, H, W), in the form of s_t
-            actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
-        Return:
-            reward(tensor): predicted reward with shape (k, B), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
-            value(tensor): predicted value with shape (k+1, B), in the form of v_{t}, v_{t+1}, v_{t+2}, ..., v_{t+k}
-            policy(tensor): predicted policy with shape (k+1, B), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
-            encoded(tensor): encoded states with shape (k+1, B), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
-                Recall we use the transition notation: s_t, a_t, r_{t+1}, s_{t+1}, ...
-        """
-        assert actions.shape[0] == 1, "not support k > 0"
-        B = x.shape[0]
+    def forward(self, x, actions, done, state, one_hot=False):
+        assert done.dtype == torch.bool, "done has to be boolean"
+
+        T, B = x.shape[0], x.shape[1]
 
         x = x.float() / 255.0  
-        core_input = self.frame_conv(x)      
-        core_state = self.core.init_state(B, x.device)
-        nd = torch.ones(B).to(x.device).bool()
-        for t in range(self.tran_t):          
-            core_input, core_state = self.core(core_input, core_state, nd, nd) # output shape: 1, B, core_output_size 
-            core_input = core_input[0]
-        core_output = core_input        
+        x = torch.flatten(x, 0, 1)
+        conv_out = self.frame_conv(x)      
+        if not one_hot:
+            actions = F.one_hot(actions.view(T * B), self.num_actions).float()
+        else:
+            actions = actions.view(T * B, -1)
+        core_input = torch.concat([conv_out, add_hw(actions, self.conv_out_hw, self.conv_out_hw)], dim=1)                        
+        core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
+
+        core_output_list = []
+        notdone = (~done).float()
+        for input, nd in zip(core_input.unbind(), notdone.unbind()):
+            for t in range(self.tran_t):                          
+                nd_ = nd if t == 0 else torch.ones_like(nd)
+                output, state = self.core(input, state, nd_, nd_) # output shape: 1, B, core_output_size 
+            core_output_list.append(output)    
+        core_output = torch.flatten(torch.cat(core_output_list), 0, 1)
         core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))           
-        logits = self.policy(core_output)
-        vs = self.baseline(core_output)
-        return None, vs[:,0].unsqueeze(0), logits.unsqueeze(0), None
+        logits = self.policy(core_output).view(T, B, self.num_actions)
+        vs = self.baseline(core_output).view(T, B)
+
+        return vs, logits, state
 
     def get_weights(self):
         return {k: v.cpu() for k, v in self.state_dict().items()}
