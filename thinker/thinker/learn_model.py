@@ -75,15 +75,18 @@ class ModelLearner():
     def learn_data(self):
         timer = timeit.default_timer
         start_step = self.step
+        start_step_test = self.step
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         last_psteps = 0
-        n = 0
-        r_actor = None
+        
+        r_tester = None
+        numel_per_step = self.flags.model_batch_size * self.flags.model_k_step_return
 
         max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
         # in case the actor learner stops before model learner
 
+        n = 0
         while (self.real_step < self.flags.total_steps - max_diff):                    
             c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
             beta = self.flags.priority_beta * (1 - c) + 1. * c
@@ -123,16 +126,16 @@ class ModelLearner():
             self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
             self.scheduler.step()                 
             
-            self.step += self.flags.model_batch_size
+            self.step += numel_per_step
             # print statistics
             if timer() - start_time > 5:
                 sps = (self.step - start_step) / (timer() - start_time)                
                 print_str =  "Steps %i (%i:%i) @ %.1f SPS. Loss %.2f" % (
-                    n, self.real_step, self.step, sps, total_loss)
+                    n, self.real_step, self.step, sps, total_loss / numel_per_step)
                 print_stats = ["vs_loss", "logits_loss", "rs_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
-                        print_str += " %s %.2f" % (k, losses[k].item())
+                        print_str += " %s %.2f" % (k, losses[k].item() / numel_per_step)
                 print(print_str)
                 start_step = self.step
                 start_time = timer()      
@@ -146,13 +149,14 @@ class ModelLearner():
                 self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
             # test the model policy returns
-            if n % 1000 == 0:
-                if r_actor is not None: 
-                    all_returns = ray.get(r_actor)[0]
+            if self.step - start_step_test > 100000:
+                start_step_test = self.step
+                if r_tester is not None: 
+                    all_returns = ray.get(r_tester)[0]
                     self.test_buffer.set_data.remote("episode_returns", [])
                     print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                         (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
-                r_actor = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                   
+                r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                        
 
             n += 1
         return True

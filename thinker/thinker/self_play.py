@@ -79,11 +79,15 @@ class SelfPlayWorker():
 
         # override model weight if employ_model is True
         if flags.employ_model:            
+            self.employ_model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, 
+                num_actions=self.env.num_actions, flags=flags, rnn=self.flags.employ_model_rnn)
             checkpoint = torch.load(self.flags.employ_model, map_location=torch.device('cpu'))
-            self.model_net.set_weights(checkpoint["model_state_dict"] if "model_state_dict" in 
-                    checkpoint else checkpoint["model_net_state_dict"])
+            self.employ_model_net.set_weights(checkpoint["model_state_dict"] if "model_state_dict" in 
+                    checkpoint else checkpoint["model_net_state_dict"])            
             if rank == 0:  
                 print("Override model network from %s" % self.flags.employ_model)
+        else:
+            self.employ_model_net = self.model_net
 
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
@@ -134,7 +138,7 @@ class SelfPlayWorker():
                         actor_out = self.po_model(env_out, self.model_net)
                         action = actor_out.action
 
-                    env_out = self.env.step(action, self.model_net)
+                    env_out = self.env.step(action, self.employ_model_net)
 
                     # write the data to the respective buffers
                     if learner_actor_start:
@@ -176,10 +180,10 @@ class SelfPlayWorker():
 
                 # set model weight                
                 if n % 1 == 0:
-                    if train_actor:
+                    if self.flags.train_actor:
                         weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                         self.actor_net.set_weights(weights)
-                    if train_model and not self.flags.employ_model:                
+                    if self.flags.train_model:           
                         weights = ray.get(self.param_buffer.get_data.remote("model_net"))
                         self.model_net.set_weights(weights)                
                 n += 1
