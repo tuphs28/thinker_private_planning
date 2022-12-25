@@ -16,19 +16,20 @@ _fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'g
 TrainActorOut = namedtuple('TrainActorOut', _fields)
 TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done'])
 
-PO_NET, PO_MODEL = 0, 1
+PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
 
 @ray.remote
 class SelfPlayWorker():
     def __init__(self, param_buffer:GeneralBuffer, actor_buffer: ActorBuffer, 
             model_buffer:ModelBuffer, test_buffer:GeneralBuffer,
-            policy:int, rank: int, flags:argparse.Namespace):                
+            policy:int, policy_params:dict, rank: int, flags:argparse.Namespace):                
 
         self.param_buffer = param_buffer
         self.actor_buffer = actor_buffer
         self.model_buffer = model_buffer
         self.test_buffer = test_buffer  
         self.policy = policy
+        self.policy_params = policy_params
         self.rank = rank
         self.flags = flags
 
@@ -109,8 +110,12 @@ class SelfPlayWorker():
                 actor_out = self.po_model(env_out, self.model_net)
                 action = actor_out.action
                 actor_state = None
+            elif self.policy == PO_NSTEP:
+                actor_out = self.po_nstep(self.env, self.model_net)
+                action = actor_out.action
+                actor_state = None                
 
-            train_actor = self.flags.train_actor and  self.policy == PO_NET and test_eps_n == 0
+            train_actor = self.flags.train_actor and self.policy == PO_NET and test_eps_n == 0
             train_model = self.flags.train_model and test_eps_n == 0
 
             # config for preloading before actor network start learning
@@ -136,6 +141,9 @@ class SelfPlayWorker():
                     elif self.policy == PO_MODEL:
                         # policy directly from the model
                         actor_out = self.po_model(env_out, self.model_net)
+                        action = actor_out.action
+                    elif self.policy == PO_NSTEP:
+                        actor_out = self.po_nstep(self.env, self.model_net)
                         action = actor_out.action
 
                     env_out = self.env.step(action, self.employ_model_net)
@@ -265,4 +273,40 @@ class SelfPlayWorker():
         _, _, policy_logits, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)                        
         action = torch.multinomial(F.softmax(policy_logits[0], dim=1), num_samples=1).unsqueeze(0)
         actor_out = util.construct_tuple(ActorOut, policy_logits=policy_logits, action=action)        
+        # policy_logits has shape (T, B, num_actions)
+        # action has shape (T, B, 1)
         return actor_out
+
+    def po_nstep(self, env, model_net):
+        discounting = self.flags.discounting        
+        if self.policy_params is not None:
+            n = self.policy_params["n"]
+            temp = self.policy_params["temp"]
+        else:
+            n, temp = 1, 0.5 # default policy param
+        policy_logits, action, _ = self.nstep(env, model_net, discounting, n, temp)
+        policy_logits = policy_logits.unsqueeze(0)
+        action = action.unsqueeze(0)
+        actor_out = util.construct_tuple(ActorOut, policy_logits=policy_logits, action=action)               
+        return actor_out 
+
+    def nstep(self, env, model_net, discounting, n, temp):  
+        with torch.no_grad():
+            num_actions = env.num_actions
+            q_ret = torch.zeros(1, num_actions)    
+            state = env.clone_state()
+            for act in range(num_actions):
+                env_out = env.step(torch.full(size=(1, 1, 1), fill_value=act, dtype=torch.long))
+                if n > 1:
+                    _, _, sub_q_ret = self.nstep(env, model_net, discounting, n-1, temp)
+                    ret = env_out.reward + discounting * torch.max(sub_q_ret, dim=1)[0] * (~env_out.done).float()
+                else:
+                    _, baseline, _, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)
+                    ret = env_out.reward + discounting * baseline * (~env_out.done).float()
+                q_ret[:, act] = ret
+                env.restore_state(state)
+
+            policy_logits = q_ret / temp
+            prob = F.softmax(policy_logits, dim=1)
+            action = torch.multinomial(prob, num_samples=1)
+        return policy_logits, action, q_ret  

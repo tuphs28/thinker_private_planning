@@ -72,9 +72,15 @@ class ModelLearner():
 
         # model tester
         self.test_buffer = GeneralBuffer.remote()   
-        self.model_tester = [SelfPlayWorker.remote(param_buffer=param_buffer, 
-            actor_buffer=None, model_buffer=None, test_buffer=self.test_buffer, 
-            policy=PO_MODEL, rank=n+1, flags=flags) for n in range(5)]
+        self.model_tester = [SelfPlayWorker.remote(
+            param_buffer=param_buffer, 
+            actor_buffer=None, 
+            model_buffer=None, 
+            test_buffer=self.test_buffer, 
+            policy=self.flags.test_policy_type, 
+            policy_params=None, 
+            rank=n+1, 
+            flags=flags) for n in range(5)]
 
     def learn_data(self):
         timer = timeit.default_timer

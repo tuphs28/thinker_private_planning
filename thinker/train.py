@@ -28,9 +28,15 @@ if __name__ == "__main__":
         raise Exception("policy not supported")
         
     print("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
-    self_play_workers = [SelfPlayWorker.remote(param_buffer=param_buffer, 
-      actor_buffer=actor_buffer, model_buffer=model_buffer, test_buffer=None,
-      policy=flags.policy_type, rank=n, flags=flags) for n in range(flags.num_actors)]
+    self_play_workers = [SelfPlayWorker.remote(
+        param_buffer=param_buffer, 
+        actor_buffer=actor_buffer, 
+        model_buffer=model_buffer, 
+        test_buffer=None,
+        policy=flags.policy_type, 
+        policy_params=None, 
+        rank=n, 
+        flags=flags) for n in range(flags.num_actors)]
     r_worker = [x.gen_data.remote() for x in self_play_workers]    
 
     r_learner = []

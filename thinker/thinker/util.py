@@ -29,7 +29,7 @@ def parse(args=None):
 
     # Actor Training settings.            
     parser.add_argument("--policy_type", default=0, type=int, 
-                        help="Policy used for self-play worker; 0 for actor net, 1 for model policy") 
+                        help="Policy used for self-play worker; 0 for actor net, 1 for model policy, 2 for 1-step greedy") 
     parser.add_argument("--disable_train_actor", action="store_false", dest="train_actor",
                         help="Disable training of actor.")   
     parser.add_argument("--num_actors", default=48, type=int, 
@@ -62,6 +62,8 @@ def parse(args=None):
                         help="Maximum number of transition in model buffer.") 
     parser.add_argument("--model_warm_up_n", default=400000, type=int, 
                         help="Number of transition accumulated before model start learning.")                        
+    parser.add_argument("--test_policy_type", default=1, type=int, 
+                        help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
   
     # Actor architecture settings
     parser.add_argument("--tran_dim", default=96, type=int, 

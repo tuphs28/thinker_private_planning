@@ -98,7 +98,8 @@ class PostWrapper:
         )
 
     def step(self, action, model_net=None):
-        if self.model_wrap:
+        assert len(action.shape) == 3, "dim of action should be 3"
+        if self.model_wrap:            
             out, reward, done, unused_info = self.env.step(action[0,0].cpu().detach().numpy(), model_net)     
             gym_env_out, model_out = _format(*out)
         else:
