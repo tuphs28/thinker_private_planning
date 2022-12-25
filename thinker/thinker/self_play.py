@@ -81,7 +81,7 @@ class SelfPlayWorker():
         # override model weight if employ_model is True
         if flags.employ_model:            
             self.employ_model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, 
-                num_actions=self.env.num_actions, flags=flags, rnn=self.flags.employ_model_rnn)
+                num_actions=self.env.num_actions, flags=flags)
             checkpoint = torch.load(self.flags.employ_model, map_location=torch.device('cpu'))
             self.employ_model_net.set_weights(checkpoint["model_state_dict"] if "model_state_dict" in 
                     checkpoint else checkpoint["model_net_state_dict"])            
