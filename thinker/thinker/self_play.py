@@ -128,8 +128,8 @@ class SelfPlayWorker():
                 initial_actor_state = actor_state
                 if learner_actor_start:
                     self.write_actor_buffer(env_out, actor_out, 0)
-                for t in range(self.flags.unroll_length):
 
+                for t in range(self.flags.unroll_length):
                     # generate action
                     if self.policy == PO_NET:
                         # policy from applying actor network on the model-wrapped environment
@@ -195,6 +195,14 @@ class SelfPlayWorker():
                         weights = ray.get(self.param_buffer.get_data.remote("model_net"))
                         self.model_net.set_weights(weights)                
                 n += 1
+
+                # Signal control for all self-play threads
+                signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
+                while (signals is not None and "halt" in signals and signals["halt"]):
+                    time.sleep(0.1)
+                    signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
+                if (signals is not None and "term" in signals and signals["term"]):
+                    return True
 
         return True                          
 

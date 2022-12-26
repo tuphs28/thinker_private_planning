@@ -96,6 +96,9 @@ class ModelBuffer():
         abs_flat_inds = flat_inds + self.base_ind
         return data, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
 
+    def get_processed_n(self):
+        return self.abs_tran_n - self.preload_n
+
     def update_priority(self, abs_flat_inds, priorities):
         """ Update priority in the buffer; both input 
         are np array of shape (update_size,)"""
@@ -129,6 +132,11 @@ class GeneralBuffer(object):
         else:
             self.data[name] = x
         return self.data[name]
+
+    def update_dict_item(self, name, key, value):
+        if not name in self.data: self.data[name] = {}
+        self.data[name][key] = value
+        return True        
 
     def set_data(self, name, x):
         self.data[name] = x

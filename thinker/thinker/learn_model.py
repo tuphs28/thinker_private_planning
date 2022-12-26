@@ -142,10 +142,14 @@ class ModelLearner():
             # print statistics
             if timer() - start_time > 5:
                 sps = (self.step - start_step) / (timer() - start_time)                
-                print_str =  "Steps %i (%i:%i) @ %.1f SPS. Model return mean (std) %f (%f)" % (
-                    n, self.real_step, self.step, sps, 
-                    np.mean(all_returns) if all_returns is not None else 0.,
-                    np.std(all_returns) if all_returns is not None else 0.)
+                print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f)" % (
+                                n, 
+                                self.real_step, 
+                                self.step, 
+                                self.step_per_transition(), 
+                                sps, 
+                                np.mean(all_returns) if all_returns is not None else 0.,
+                                np.std(all_returns) if all_returns is not None else 0.)
                 print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
@@ -181,6 +185,20 @@ class ModelLearner():
                     #print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                     #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
                 r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                        
+
+            # control the number of learning step per transition
+            while (self.flags.model_max_step_per_transition > 0 and 
+                self.step_per_transition() > self.flags.model_max_step_per_transition):
+                time.sleep(0.1)
+                new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
+                self.real_step += new_psteps - last_psteps            
+                last_psteps = new_psteps                
+            
+            if self.flags.model_min_step_per_transition > 0:
+                if self.step_per_transition() < self.flags.model_min_step_per_transition:
+                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", True)
+                else:
+                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
 
             n += 1
         return True
@@ -257,6 +275,9 @@ class ModelLearner():
         priorities = ((vs[0] - target_vs[0]) ** 2).detach().cpu().numpy()
 
         return losses, priorities
+
+    def step_per_transition(self):
+        return self.step / (self.real_step - self.flags.model_warm_up_n + 1) 
 
     def save_checkpoint(self):
         basepath = os.path.split(self.check_point_path)[0]

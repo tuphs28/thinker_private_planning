@@ -64,6 +64,11 @@ def parse(args=None):
                         help="Number of transition accumulated before model start learning.")                        
     parser.add_argument("--test_policy_type", default=1, type=int, 
                         help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
+    parser.add_argument("--model_min_step_per_transition", default=-1, type=int, 
+                        help="Minimum number of model learning step on one transition")                         
+    parser.add_argument("--model_max_step_per_transition", default=-1, type=int, 
+                        help="Maximum number of model learning step on one transition")                                                 
+                            
   
     # Actor architecture settings
     parser.add_argument("--tran_dim", default=96, type=int, 
