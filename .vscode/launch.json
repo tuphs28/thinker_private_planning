@@ -9,16 +9,17 @@
             "type": "python",
             "request": "launch",
             //"program": "${file}",
-            //"program": "train.py",
-            //"program": "test.py",
-            "program": "test_model.py",
+            //"program": "train.py",            
+            //"program": "test_model.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "cwd": "${workspaceFolder}/thinker",            
             //"args": "--num_actors 32 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 20000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_actor.tar --employ_model /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_model.tar"
-            //"args": "--num_actors 32 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 20000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor ~/RS/thinker/models/test/ckp_actor.tar --employ_model ~/RS/thinker/models/test/ckp_model.tar --preload_model ''"
-            //"args": "--num_actors 32 --model_batch_size 32 --model_unroll_length 10 --train_model --disable_train_actor --model_rnn --model_batch_mode --model_logits_loss_cost 1 --model_vs_loss_cost 0 --model_learning_rate 0.0002 --model_warm_up_n 20000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor ~/RS/thinker/models/test/ckp_actor.tar --preload_model '' --employ_model ~/RS/thinker/models/test/ckp_model.tar"
-            "args": "--preload_model ~/RS/thinker/models/test/ckp_model_rnn.tar --model_rnn --model_batch_mode"
+            //"args": "--num_actors 16 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 2000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_actor.tar --employ_model ~/RS/thinker/models/model_1.tar --preload_model ''"
+            "program": "train.py",
+            "args": "--num_actors 8 --train_model --model_warm_up_n 1600 --model_min_step_per_transition 100 --model_max_step_per_transition 110"
+            //"program": "test_model.py",
+            //"args": "--num_actors 16 --preload_model '~/RS/thinker/models/test/ckp_model.tar'"
         }
     ]
 }

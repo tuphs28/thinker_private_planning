@@ -72,9 +72,15 @@ class ModelLearner():
 
         # model tester
         self.test_buffer = GeneralBuffer.remote()   
-        self.model_tester = [SelfPlayWorker.remote(param_buffer=param_buffer, 
-            actor_buffer=None, model_buffer=None, test_buffer=self.test_buffer, 
-            policy=PO_MODEL, rank=n+1, flags=flags) for n in range(5)]
+        self.model_tester = [SelfPlayWorker.remote(
+            param_buffer=param_buffer, 
+            actor_buffer=None, 
+            model_buffer=None, 
+            test_buffer=self.test_buffer, 
+            policy=self.flags.test_policy_type, 
+            policy_params=None, 
+            rank=n+1, 
+            flags=flags) for n in range(5)]
 
     def learn_data(self):
         timer = timeit.default_timer
@@ -83,15 +89,18 @@ class ModelLearner():
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         last_psteps = 0
+
         
         r_tester = None
         all_returns = None
         
         numel_per_step = self.flags.model_batch_size * (
-                1 if not self.flags.model_batch_mode else self.flags.model_unroll_length)
+                self.flags.model_k_step_return if not self.flags.model_batch_mode else 
+                self.flags.model_unroll_length + self.flags.model_k_step_return)
 
         max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
         # in case the actor learner stops before model learner
+
         n = 0
         while (self.real_step < self.flags.total_steps - max_diff):                    
             c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
@@ -140,10 +149,14 @@ class ModelLearner():
             # print statistics
             if timer() - start_time > 5:
                 sps = (self.step - start_step) / (timer() - start_time)                
-                print_str =  "Steps %i (%i:%i) @ %.1f SPS. Model return mean (std) %f (%f)" % (
-                    n, self.real_step, self.step, sps, 
-                    np.mean(all_returns) if all_returns is not None else 0.,
-                    np.std(all_returns) if all_returns is not None else 0.)
+                print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f)" % (
+                                n, 
+                                self.real_step, 
+                                self.step, 
+                                self.step_per_transition(), 
+                                sps, 
+                                np.mean(all_returns) if all_returns is not None else 0.,
+                                np.std(all_returns) if all_returns is not None else 0.)
                 print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
@@ -159,6 +172,8 @@ class ModelLearner():
                          "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None}
                 for k in print_stats: 
                     stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
+
+                self.plogger.log(stats)                
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
@@ -176,7 +191,21 @@ class ModelLearner():
                     self.test_buffer.set_data.remote("episode_returns", [])
                     #print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                     #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
-                r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                   
+                r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                        
+
+            # control the number of learning step per transition
+            while (self.flags.model_max_step_per_transition > 0 and 
+                self.step_per_transition() > self.flags.model_max_step_per_transition):
+                time.sleep(0.1)
+                new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
+                self.real_step += new_psteps - last_psteps            
+                last_psteps = new_psteps                
+            
+            if self.flags.model_min_step_per_transition > 0:
+                if self.step_per_transition() < self.flags.model_min_step_per_transition:
+                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", True)
+                else:
+                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
 
             n += 1
         return True
@@ -267,6 +296,9 @@ class ModelLearner():
         priorities = ((vs[0] - target_vs[0]) ** 2).detach().cpu().numpy()
 
         return losses, priorities
+
+    def step_per_transition(self):
+        return self.step / (self.real_step - self.flags.model_warm_up_n + 1) 
 
     def save_checkpoint(self):
         basepath = os.path.split(self.check_point_path)[0]
