@@ -371,7 +371,6 @@ class ModelNetRNN(nn.Module):
         self.tran_lstm_no_attn = True
         self.attn_mask_b = 0
         self.conv_out = 32
-        self.no_mem = flags.no_mem                   # whether to earse real memory at the end of planning stage
         
         self.conv_out_hw = 8
         self.d_model = self.conv_out 
@@ -395,6 +394,18 @@ class ModelNetRNN(nn.Module):
         self.baseline = nn.Linear(256, 1)        
         
     def forward(self, x, actions, done, state, one_hot=False):
+        """
+        Args:
+            x(tensor): frames (uint8 or float) with shape (T, B, C, H, W), in the form of s_t
+            actions(tensor): action (int64) with shape (T, B) or (T, B, num_actions)
+            done(tensor): done (bool) with shape (T, B)
+            state(tuple): tuple of inital state
+            one_hot(bool): whether the actions are in one-hot encoding
+        Return:
+            vs(tensor): values (float) with shape (T, B)
+            logits(tensor): policy logits (float) with shape (T, B, num_actions)
+            state(tuple): tuple of state tensor after the last step
+        """
         assert done.dtype == torch.bool, "done has to be boolean"
 
         T, B = x.shape[0], x.shape[1]

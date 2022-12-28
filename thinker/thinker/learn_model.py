@@ -130,9 +130,10 @@ class ModelLearner():
             is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
                         
             # compute losses
-            losses, priorities = self.compute_losses(train_model_out, is_weights, model_state)
+            losses, priorities, model_state = self.compute_losses(train_model_out, is_weights, model_state)
             total_loss = losses["total_loss"]
-            self.model_buffer.update_priority.remote(inds, priorities)
+            if model_state is not None: model_state = util.tuple_map(model_state, lambda x:x.cpu())
+            self.model_buffer.update_priority.remote(inds, priorities, model_state)
             
             # gradient descent on loss
             self.optimizer.zero_grad()
@@ -295,7 +296,7 @@ class ModelLearner():
                    "rs_loss": rs_loss }
         priorities = ((vs[0] - target_vs[0]) ** 2).detach().cpu().numpy()
 
-        return losses, priorities
+        return losses, priorities, model_state
 
     def step_per_transition(self):
         return self.step / (self.real_step - self.flags.model_warm_up_n + 1) 

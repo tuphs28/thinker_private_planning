@@ -80,11 +80,12 @@ class PostWrapper:
         initial_done = torch.ones(1, 1, dtype=torch.bool)
 
         if self.model_wrap:
-            gym_env_out, model_out = _format(*self.env.reset(model_net))
+            out, model_state = self.env.reset(model_net)
+            gym_env_out, model_out = _format(*out)
         else:
             gym_env_out, model_out = _format(self.env.reset(), None)
 
-        return EnvOut(
+        ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
             reward=initial_reward,
@@ -96,11 +97,12 @@ class PostWrapper:
             last_action=self.last_action,
             max_rollout_depth=torch.tensor(0.).view(1, 1) if self.model_wrap else None
         )
+        return (ret, model_state) if self.model_wrap else ret
 
-    def step(self, action, model_net=None):
+    def step(self, action, model_net=None, model_state=None):
         assert len(action.shape) == 3, "dim of action should be 3"
         if self.model_wrap:            
-            out, reward, done, unused_info = self.env.step(action[0,0].cpu().detach().numpy(), model_net)     
+            out, reward, done, unused_info, model_state = self.env.step(action[0,0].cpu().detach().numpy(), model_net, model_state)     
             gym_env_out, model_out = _format(*out)
         else:
             out, reward, done, unused_info = self.env.step(action[0,0,0].cpu().detach().numpy())     
@@ -140,7 +142,7 @@ class PostWrapper:
                 self.last_action[:, :, 1:] = action[:, :, 1:]
         else:
             self.last_action = action
-        return EnvOut(
+        ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
             reward=reward,
@@ -152,6 +154,7 @@ class PostWrapper:
             last_action=self.last_action,
             max_rollout_depth=max_rollout_depth
         )
+        return (ret, model_state) if self.model_wrap else ret
 
     def close(self):
         self.env.close()
@@ -208,13 +211,16 @@ class ModelWrapper(gym.Wrapper):
         
     def reset(self, model_net, **kwargs):
         x = self.env.reset(**kwargs)
-        self.cur_t = 0    
-        out = self.use_model(model_net, x, 0., 0, self.cur_t, reset=1., term=0., done=False)
+        self.cur_t = 0            
+        model_state = model_net.core.init_state(1) if model_net.rnn else None        
+        out, model_state = self.use_model(model_net=model_net, 
+            model_state = model_state, x=x, r=0.,
+            a=0, cur_t=self.cur_t, reset=1., term=0., done=False)
         if self.reward_type == 1:
             self.last_root_max_q = self.root_max_q
-        return (x, out)
+        return (x, out), model_state
     
-    def step(self, action, model_net):  
+    def step(self, action, model_net, model_state=None):  
         if not self.flex_t:
             re_action, im_action, reset = action
             term = None
@@ -227,7 +233,9 @@ class ModelWrapper(gym.Wrapper):
           if self.debug and self.cur_t == 1: self.debug_xs = []  
 
           self.cur_t += 1
-          out = self.use_model(model_net, None, None, im_action, self.cur_t, reset=reset, term=term, done=False)          
+          out, model_state = self.use_model(model_net=model_net, 
+            model_state=None, x=None, r=None, a=im_action, 
+            cur_t=self.cur_t, reset=reset, term=term, done=False)          
           if self.reward_type == 0:
             r = np.array([0.])
           else:
@@ -241,9 +249,11 @@ class ModelWrapper(gym.Wrapper):
           x = None
         else:
           self.cur_t = 0
-          if self.perfect_model: self.env.restore_state(self.root_node.encoded)
+          if self.perfect_model: self.env.restore_state(self.root_node.encoded["env_state"])
           x, r, done, info_ = self.env.step(re_action)                    
-          out = self.use_model(model_net, x, r, re_action, self.cur_t, reset=1., term=term, done=done) 
+          out, model_state = self.use_model(model_net=model_net, 
+            model_state=model_state, x=x, r=r, a=re_action, 
+            cur_t=self.cur_t, reset=1., term=term, done=done) 
           info.update(info_)
           info['cur_t'] = self.cur_t
           if self.reward_type == 0:
@@ -253,9 +263,9 @@ class ModelWrapper(gym.Wrapper):
         if self.reward_type == 1:
             self.last_root_max_q = self.root_max_q   
         
-        return (x, out), r, done, info        
+        return (x, out), r, done, info, model_state
         
-    def use_model(self, model_net, x, r, a, cur_t, reset, term, done=False):     
+    def use_model(self, model_net, model_state, x, r, a, cur_t, reset, term, done):     
         with torch.no_grad():
             if cur_t == 0:
                 self.rollout_depth = 0.
@@ -274,16 +284,25 @@ class ModelWrapper(gym.Wrapper):
                 else:
                     re_action = a                             
                 
-                x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+                x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0) # x is in shape (1, C, H, W)
                 self.x = self.x_ = x_tensor
-                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions)                
-                _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True) 
+                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions)     
+                # a_tensor is in shape (num_action,)
+                if not model_net.rnn:
+                    _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                     
+                else:
+                    vs, logits, model_state = model_net(x=x_tensor.unsqueeze(0), 
+                              actions=a_tensor.unsqueeze(0).unsqueeze(0), 
+                              done=torch.tensor(done, dtype=bool).unsqueeze(0).unsqueeze(0),
+                              state=model_state,
+                              one_hot=True) 
                 
                 if self.perfect_model: 
-                    encoded = self.clone_state()
+                    encoded = {"env_state": self.clone_state()}
                 else:
                     encoded=encodeds[-1]
                 if self.debug: encoded["x"] = x
+                if model_net.rnn: encoded["model_state"] = model_state
                 
                 if (not self.tree_carry or self.root_node is None or 
                     not self.root_node.children[a].expanded() or done):
@@ -325,15 +344,24 @@ class ModelWrapper(gym.Wrapper):
                                      logits=logits[-1, 0], encoded=encodeds[-1])
                     else:                        
                         if "done" not in self.cur_node.encoded:                            
-                            self.env.restore_state(self.cur_node.encoded)                        
+                            self.env.restore_state(self.cur_node.encoded["env_state"])                        
                             x, r, done, info = self.env.step(a) 
-                            encoded = self.env.clone_state()
+                            encoded = {"env_state": self.clone_state()}
                             if self.debug: encoded["x"] = x
                             if done: encoded["done"] = True                        
                             x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
                             self.x_ = x_tensor
                             a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
-                            _, vs, logits, _ = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                        
+
+                            if not model_net.rnn:
+                                _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                     
+                            else:
+                                vs, logits, model_state = model_net(x=x_tensor.unsqueeze(0), 
+                                        actions=a_tensor.unsqueeze(0).unsqueeze(0), 
+                                        done=torch.tensor(done, dtype=bool).unsqueeze(0).unsqueeze(0),
+                                        state=self.cur_node.encoded["model_state"],
+                                        one_hot=True) 
+                                encoded["model_state"] = model_state                    
 
                             if done:
                                 v = torch.tensor([0.], dtype=torch.float32)
@@ -406,7 +434,7 @@ class ModelWrapper(gym.Wrapper):
                 self.cur_node.visit()
                 self.pass_unexpand = False
             
-            return out
+            return out, self.root_node.encoded["model_state"] if model_net.rnn else None
                 
 class Node:
     def __init__(self, parent, action, logit, num_actions, discounting, rec_t):        

@@ -40,14 +40,6 @@ class SelfPlayWorker():
         self.model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, num_actions=self.env.num_actions, flags=flags)
         self.model_net.train(False)
 
-        if flags.train_model: 
-            self.model_local_buffer = [self.empty_model_buffer(), self.empty_model_buffer()]        
-            self.model_n = 0
-            self.model_t = 0
-            if self.flags.model_rnn:
-                self.initial_model_state = self.model_net.core.init_state(1)
-                self.model_state = self.model_net.core.init_state(1)
-
         # the networks weight are set by the respective learner; but if the respective
         # learner does not exist, then rank 0 worker will set the weights
         if rank == 0 and not self.flags.train_actor and self.policy==PO_NET:
@@ -93,6 +85,14 @@ class SelfPlayWorker():
         else:
             self.employ_model_net = self.model_net
 
+        if flags.train_model: 
+            self.model_local_buffer = [self.empty_model_buffer(), self.empty_model_buffer()]        
+            self.model_n = 0
+            self.model_t = 0
+            if self.flags.model_rnn:
+                self.initial_model_state = self.model_net.core.init_state(1)
+                self.model_state = self.model_net.core.init_state(1)          
+
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
         Args:
@@ -105,7 +105,10 @@ class SelfPlayWorker():
             if verbose: print("Actor %d started." % self.rank)
             n = 0            
 
-            env_out = self.env.initial(self.employ_model_net)      
+            if self.policy == PO_NET:
+                env_out, self.employ_model_state = self.env.initial(self.employ_model_net)      
+            else:
+                env_out = self.env.initial(self.employ_model_net)      
             if self.policy == PO_NET:      
                 actor_state = self.actor_net.initial_state(batch_size=1)
                 actor_out, _ = self.actor_net(env_out, actor_state)   
@@ -149,7 +152,11 @@ class SelfPlayWorker():
                         actor_out = self.po_nstep(self.env, self.model_net)
                         action = actor_out.action
 
-                    env_out = self.env.step(action, self.employ_model_net)
+                    if self.policy == PO_NET:
+                        env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
+                            self.employ_model_state)
+                    else:
+                        env_out = self.env.step(action, self.employ_model_net)
 
                     # write the data to the respective buffers
                     if learner_actor_start:
@@ -196,8 +203,7 @@ class SelfPlayWorker():
                         self.actor_net.set_weights(weights)
                     if self.flags.train_model:           
                         weights = ray.get(self.param_buffer.get_data.remote("model_net"))
-                        self.model_net.set_weights(weights)                
-                n += 1
+                        self.model_net.set_weights(weights)       
 
                 # Signal control for all self-play threads
                 signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
@@ -205,7 +211,9 @@ class SelfPlayWorker():
                     time.sleep(0.1)
                     signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
                 if (signals is not None and "term" in signals and signals["term"]):
-                    return True
+                    return True               
+                         
+                n += 1
 
         return True                          
 
@@ -252,15 +260,22 @@ class SelfPlayWorker():
             self.flags.model_k_step_return)
         self.write_single_model_buffer(n, t, env_out, actor_out)        
 
-        if self.flags.model_rnn:            
-            _, _, self.model_state = self.model_net(
-                x=env_out.gym_env_out, 
-                actions=env_out.last_action[:, :, 0], 
-                done=env_out.done,
-                state=self.model_state, 
-                one_hot=False)
-            if t == cap_t - 1:
-                self.initial_model_state_ = self.model_state
+        if self.flags.model_rnn:   
+            # if the learnt model is rnn but not the same as employ_model, 
+            # we have to compute the model state
+            if self.flags.employ_model:
+                with torch.no_grad:
+                    _, _, self.model_state = self.model_net(
+                        x=env_out.gym_env_out, 
+                        actions=env_out.last_action[:, :, 0], 
+                        done=env_out.done,
+                        state=self.model_state, 
+                        one_hot=False)
+            else:
+                self.model_state = self.employ_model_state
+                    
+        if t == cap_t - 1:
+            self.initial_model_state_ = self.model_state
 
         if t >= cap_t:
             # write the beginning of another buffer

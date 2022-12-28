@@ -150,7 +150,7 @@ class ActorLearner():
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         n = 0
-        while (self.real_step < self.flags.total_steps):                    
+        while (self.real_step < self.flags.total_steps):   
             # get data remotely    
             while (True):
                 data = ray.get(self.actor_buffer.read.remote())

@@ -56,6 +56,9 @@ class ModelBuffer():
         self.state = []
 
         self.priorities = None
+        self.next_inds = None
+        self.cur_inds = np.full((flags.num_actors), fill_value=-1, dtype=np.int)
+
         self.base_ind = 0
         self.abs_tran_n = 0
         self.preload_n = 0
@@ -64,7 +67,7 @@ class ModelBuffer():
     def write(self, data, state, rank):
         # data is a named tuple with elements of size (t+k, n, ...)        
         self.buffer.append(data)
-        self.state.append(state)
+        self.state.append(state)        
 
         p_shape = self.t*self.n if not self.batch_mode else self.n
 
@@ -73,7 +76,19 @@ class ModelBuffer():
         else:
             max_priorities = np.full((p_shape), fill_value=self.priorities.max(), dtype=float)
             self.priorities = np.concatenate([self.priorities, max_priorities])
-        self.abs_tran_n += self.t * self.n
+
+        # to record a table for chaining entry
+        last_ind = int(self.cur_inds[rank] - self.base_ind / self.n)
+        if last_ind >= 0:            
+            self.next_inds[last_ind] = len(self.next_inds) + self.base_ind / self.n
+        if self.next_inds is None:
+            self.next_inds = np.full((1), fill_value=np.nan,)
+        else:
+            self.next_inds = np.concatenate([self.next_inds, np.full((1), fill_value=np.nan)])
+        self.cur_inds[rank] = len(self.next_inds) + self.base_ind / self.n - 1
+        
+
+        self.abs_tran_n += self.t * self.n                        
 
         # clean periordically
         self.clean_m += 1
@@ -104,7 +119,7 @@ class ModelBuffer():
                 if not self.batch_mode:
                     elems.append(self.buffer[inds[0][i]][d][inds[1][i]:inds[1][i]+self.k+1, inds[2][i]].unsqueeze(1))
                 else:
-                    elems.append(self.buffer[inds[0][i]][d][:, inds[1][i]].unsqueeze(1))
+                    elems.append(self.buffer[inds[0][i]][d][:-self.k, inds[1][i]].unsqueeze(1))
             data.append(torch.concat(elems, dim=1))
         data = type(self.buffer[0])(*data)        
         
@@ -112,26 +127,41 @@ class ModelBuffer():
             data_state = []
             for d in range(len(self.state[0])):
                 elems=[]
-                for i in range(self.batch_size):
-                    elems.append(self.state[inds[0][i]][d][:, inds[1][i]].unsqueeze(1))
-                data_state.append(torch.concat(elems, dim=1))
+                for i in range(self.batch_size):                    
+                    elems.append(self.state[inds[0][i]][d][inds[1][i]].unsqueeze(0))
+                data_state.append(torch.concat(elems, dim=0))
             data_state = tuple(data_state)    
         else:
             data_state = None
 
-
-        abs_flat_inds = flat_inds + self.base_ind
+        base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.batch_mode
+        abs_flat_inds = flat_inds + base_ind_pri
         return data, data_state, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
 
     def get_processed_n(self):
         return self.abs_tran_n - self.preload_n
 
-    def update_priority(self, abs_flat_inds, priorities):
-        """ Update priority in the buffer; both input 
+    def update_priority(self, abs_flat_inds, priorities, state):
+        """ Update priority and states in the buffer; both input 
         are np array of shape (update_size,)"""
-        flat_inds = abs_flat_inds - self.base_ind
+        base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.batch_mode
+        flat_inds = abs_flat_inds - base_ind_pri
         mask = (flat_inds > 0)
         self.priorities[flat_inds[mask]] = priorities[mask]        
+
+        if state is not None:
+            assert self.batch_mode, "can only update state in batch mode"
+            mask = (flat_inds > 0)
+            if len(mask) > 0:                
+                flat_inds_masked = flat_inds[mask]
+                state_masked = tuple(x[:, mask] for x in state) # assume batch size is in the second dim
+                inds = np.unravel_index(flat_inds_masked, (len(self.buffer), self.n))
+                for i in range(len(flat_inds_masked)):
+                    next_abs_ind = self.next_inds[inds[0][i]]
+                    if np.isnan(next_abs_ind): continue
+                    next_ind = int(next_abs_ind - self.base_ind / self.n)
+                    for d in range(len(self.state[0])):
+                        self.state[next_ind][d][:, inds[1][i]] = state_masked[d][:, i]
 
     def clean(self):        
         buffer_n = len(self.buffer)
@@ -139,12 +169,12 @@ class ModelBuffer():
             excess_n = buffer_n - self.max_buffer_n
             del self.buffer[:excess_n]
             del self.state[:excess_n]
+            self.next_inds = self.next_inds[excess_n:]    
             if not self.batch_mode:
-                self.priorities = self.priorities[excess_n * self.t * self.n:]            
-                self.base_ind += excess_n * self.t * self.n
+                self.priorities = self.priorities[excess_n * self.t * self.n:]                            
             else:
-                self.priorities = self.priorities[excess_n * self.n:]            
-                self.base_ind += excess_n * self.n
+                self.priorities = self.priorities[excess_n * self.n:]    
+            self.base_ind += excess_n * self.n                        
 
     def check_preload(self):
         return (len(self.buffer) >= self.max_buffer_n, len(self.buffer) * self.t * self.n)
