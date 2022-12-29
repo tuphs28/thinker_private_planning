@@ -134,7 +134,7 @@ class ModelBuffer():
         else:
             data_state = None
 
-        base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.batch_mode
+        base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.base_ind
         abs_flat_inds = flat_inds + base_ind_pri
         return data, data_state, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
 
@@ -144,7 +144,7 @@ class ModelBuffer():
     def update_priority(self, abs_flat_inds, priorities, state):
         """ Update priority and states in the buffer; both input 
         are np array of shape (update_size,)"""
-        base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.batch_mode
+        base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.base_ind
         flat_inds = abs_flat_inds - base_ind_pri
         mask = (flat_inds > 0)
         self.priorities[flat_inds[mask]] = priorities[mask]        
