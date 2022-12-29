@@ -96,7 +96,7 @@ class ModelLearner():
         
         numel_per_step = self.flags.model_batch_size * (
                 self.flags.model_k_step_return if not self.flags.model_batch_mode else 
-                self.flags.model_unroll_length + self.flags.model_k_step_return)
+                self.flags.model_unroll_length)
 
         max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
         # in case the actor learner stops before model learner
