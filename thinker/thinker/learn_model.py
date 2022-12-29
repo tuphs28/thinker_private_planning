@@ -112,7 +112,7 @@ class ModelLearner():
                 if data is not None: break            
                 time.sleep(0.01)
                 if timer() - start_time > 5:
-                    _, tran_n = ray.get(self.model_buffer.check_preload.remote())
+                    tran_n = ray.get(self.model_buffer.get_processed_n.remote())
                     print("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
                     start_time = timer()
 
