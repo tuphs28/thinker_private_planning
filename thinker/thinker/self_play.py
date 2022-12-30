@@ -151,13 +151,11 @@ class SelfPlayWorker():
                     elif self.policy == PO_NSTEP:
                         actor_out = self.po_nstep(self.env, self.model_net)
                         action = actor_out.action
-                    if self.rank == 0: print(1)
                     if self.policy == PO_NET:
                         env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
                             self.employ_model_state)
                     else:
                         env_out = self.env.step(action, self.employ_model_net)
-                    if self.rank == 0: print(2)
                     # write the data to the respective buffers
                     if learner_actor_start:
                         self.write_actor_buffer(env_out, actor_out, t+1)       
@@ -167,12 +165,10 @@ class SelfPlayWorker():
                         finish, all_returns = self.write_test_buffer(
                             env_out, actor_out, test_eps_n, verbose)
                         if finish: return all_returns
-                    if self.rank == 0: print(3)
                     #if torch.any(env_out.done):            
                     #    episode_returns = env_out.episode_return[env_out.done][:, 0]  
                     #    episode_returns = list(episode_returns.detach().cpu().numpy())
                     #    print(episode_returns)
-                if self.rank == 0: print(4)
                 if learner_actor_start:
                     # send the data to remote actor buffer
                     train_actor_out = (self.actor_local_buffer, initial_actor_state)
@@ -184,7 +180,6 @@ class SelfPlayWorker():
                     if status == AB_FINISH: break
                     train_actor_out = ray.put(train_actor_out)
                     self.actor_buffer.write.remote([train_actor_out])
-                if self.rank == 0: print(5)
                 # if preload buffer needed, check if preloaded
                 if train_actor and preload_needed and not preload:
                     preload, tran_n = ray.get(self.model_buffer.check_preload.remote())
@@ -195,7 +190,6 @@ class SelfPlayWorker():
                         else:
                             print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                     learner_actor_start = not preload_needed or preload
-                if self.rank == 0: print(6)
                 # update model weight                
                 if n % 1 == 0:
                     if self.flags.train_actor and self.policy == PO_NET :
@@ -274,8 +268,8 @@ class SelfPlayWorker():
             else:
                 self.model_state = self.employ_model_state
                     
-        if t == cap_t - 1:
-            self.initial_model_state_ = self.model_state
+            if t == cap_t - 1:
+                self.initial_model_state_ = self.model_state
 
         if t >= cap_t:
             # write the beginning of another buffer
