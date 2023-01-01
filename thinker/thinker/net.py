@@ -369,16 +369,23 @@ class ModelNetRNN(nn.Module):
         self.tran_mem_n = 0
         self.tran_layer_n = 3
         self.tran_lstm_no_attn = True
-        self.attn_mask_b = 0
-        self.conv_out = 32
+        self.attn_mask_b = 0                
         
+        self.conv_out = 32        
         self.conv_out_hw = 8
-        self.d_model = self.conv_out 
-        
-        self.conv1 = nn.Conv2d(in_channels=self.obs_shape[0], out_channels=self.conv_out, kernel_size=8, stride=4)        
-        self.conv2 = nn.Conv2d(in_channels=self.conv_out, out_channels=self.conv_out, kernel_size=4, stride=2)        
+        #self.conv1 = nn.Conv2d(in_channels=self.obs_shape[0], out_channels=self.conv_out, kernel_size=8, stride=4)        
+        #self.conv2 = nn.Conv2d(in_channels=self.conv_out, out_channels=self.conv_out, kernel_size=4, stride=2)                
+        #self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
+
+        self.conv_out = 32
+        self.conv_out_hw = 5        
+        self.frame_encoder = FrameEncoder(num_actions=self.num_actions)
+        self.conv1 = nn.Conv2d(in_channels=128, out_channels=128//2, kernel_size=3, padding='same') 
+        self.conv2 = nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same') 
         self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
+
         self.env_input_size = self.conv_out + self.num_actions
+        self.d_model = self.conv_out 
         d_in = self.env_input_size + self.d_model 
 
         self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
@@ -411,16 +418,20 @@ class ModelNetRNN(nn.Module):
         T, B = x.shape[0], x.shape[1]
 
         x = x.float() / 255.0  
-        x = torch.flatten(x, 0, 1)
-        conv_out = self.frame_conv(x)      
+        x = torch.flatten(x, 0, 1)        
         if not one_hot:
             actions = F.one_hot(actions.view(T * B), self.num_actions).float()
         else:
             actions = actions.view(T * B, -1)
+
+        #conv_out = self.frame_conv(x)   
+        conv_out = self.frame_encoder(x, actions)   
+        conv_out = self.frame_conv(conv_out)   
+
         core_input = torch.concat([conv_out, add_hw(actions, self.conv_out_hw, self.conv_out_hw)], dim=1)                        
         core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
-
         core_output_list = []
+        #state = self.core.init_state(bsz=B, device=x.device)
         notdone = (~done).float()
         for input, nd in zip(core_input.unbind(), notdone.unbind()):
             for t in range(self.tran_t):                          
@@ -428,10 +439,9 @@ class ModelNetRNN(nn.Module):
                 output, state = self.core(input, state, nd_, nd_) # output shape: 1, B, core_output_size 
             core_output_list.append(output)    
         core_output = torch.flatten(torch.cat(core_output_list), 0, 1)
-        core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))           
-        logits = self.policy(core_output).view(T, B, self.num_actions)
+        core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))                   
         vs = self.baseline(core_output).view(T, B)
-
+        logits = self.policy(core_output).view(T, B, self.num_actions)
         return vs, logits, state
 
     def get_weights(self):
