@@ -90,8 +90,8 @@ class SelfPlayWorker():
             self.model_n = 0
             self.model_t = 0
             if self.flags.model_rnn:
-                self.initial_model_state = self.model_net.core.init_state(1)
-                self.model_state = self.model_net.core.init_state(1)          
+                self.initial_model_state = self.model_net.init_state(1)
+                self.model_state = self.model_net.init_state(1)          
 
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
@@ -308,7 +308,7 @@ class SelfPlayWorker():
             _, _, policy_logits, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)                        
         else:
             if not hasattr(self, 'model_state'): 
-                self.model_state = self.model_net.core.init_state(bsz=1)
+                self.model_state = self.model_net.init_state(bsz=1)
             _, policy_logits, self.model_state = model_net(x=env_out.gym_env_out, 
                 actions=env_out.last_action[:,:,0], 
                 done=env_out.done,                

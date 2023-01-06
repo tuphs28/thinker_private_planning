@@ -381,10 +381,11 @@ class ModelNetRNN(nn.Module):
         self.conv_out_hw = 5        
         self.frame_encoder = FrameEncoder(num_actions=self.num_actions)
         self.conv1 = nn.Conv2d(in_channels=128, out_channels=128//2, kernel_size=3, padding='same') 
+
         self.conv2 = nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same') 
         self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
 
-        self.debug = False
+        self.debug = True
         if self.debug:
             self.policy = nn.Linear(5*5*32, self.num_actions)        
             self.baseline = nn.Linear(5*5*32, 1)        
@@ -404,6 +405,11 @@ class ModelNetRNN(nn.Module):
                 
             self.policy = nn.Linear(256, self.num_actions)        
             self.baseline = nn.Linear(256, 1)        
+
+    def init_state(self, bsz, device=None):
+        if self.debug:
+            return (torch.zeros(1, bsz, 1, 1, 1),)
+        return self.core.init_state(bsz, device)
         
     def forward(self, x, actions, done, state, one_hot=False):
         """
@@ -437,12 +443,13 @@ class ModelNetRNN(nn.Module):
             core_output = torch.flatten(conv_out, start_dim=1)
             vs = self.baseline(core_output).view(T, B)
             logits = self.policy(core_output).view(T, B, self.num_actions)
-            state = (torch.zeros(1, B, 1, 1, 1),)
+            state = self.init_state(B, x.device)
             return vs, logits, state
-                   
+
+        core_input = conv_out
         core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
         core_output_list = []
-        #state = self.core.init_state(bsz=B, device=x.device)
+        #state = self.init_state(bsz=B, device=x.device)
         notdone = (~done).float()
         for input, nd in zip(core_input.unbind(), notdone.unbind()):
             for t in range(self.tran_t):                          

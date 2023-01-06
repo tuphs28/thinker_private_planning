@@ -212,7 +212,7 @@ class ModelWrapper(gym.Wrapper):
     def reset(self, model_net, **kwargs):
         x = self.env.reset(**kwargs)
         self.cur_t = 0            
-        model_state = model_net.core.init_state(1) if model_net.rnn else None        
+        model_state = model_net.init_state(1) if model_net.rnn else None        
         out, model_state = self.use_model(model_net=model_net, 
             model_state = model_state, x=x, r=0.,
             a=0, cur_t=self.cur_t, reset=1., term=0., done=False)
