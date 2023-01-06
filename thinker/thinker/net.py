@@ -365,9 +365,9 @@ class ModelNetRNN(nn.Module):
         self.obs_shape = obs_shape
         self.num_actions = num_actions 
 
-        self.tran_t = 3     
+        self.tran_t = 1
         self.tran_mem_n = 0
-        self.tran_layer_n = 3
+        self.tran_layer_n = 1
         self.tran_lstm_no_attn = True
         self.attn_mask_b = 0                
         
@@ -384,12 +384,12 @@ class ModelNetRNN(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same') 
         self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
 
-        self.debug = True
+        self.debug = False
         if self.debug:
             self.policy = nn.Linear(5*5*32, self.num_actions)        
             self.baseline = nn.Linear(5*5*32, 1)        
         else:
-            self.env_input_size = self.conv_out + self.num_actions
+            self.env_input_size = self.conv_out 
             self.d_model = self.conv_out 
             d_in = self.env_input_size + self.d_model 
 
@@ -439,8 +439,7 @@ class ModelNetRNN(nn.Module):
             logits = self.policy(core_output).view(T, B, self.num_actions)
             state = (torch.zeros(1, B, 1, 1, 1),)
             return vs, logits, state
-
-        core_input = torch.concat([conv_out, add_hw(actions, self.conv_out_hw, self.conv_out_hw)], dim=1)                        
+                   
         core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
         core_output_list = []
         #state = self.core.init_state(bsz=B, device=x.device)
