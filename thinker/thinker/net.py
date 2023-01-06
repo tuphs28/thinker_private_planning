@@ -385,7 +385,7 @@ class ModelNetRNN(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same') 
         self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
 
-        self.debug = True
+        self.debug = False
         if self.debug:
             self.policy = nn.Linear(5*5*32, self.num_actions)        
             self.baseline = nn.Linear(5*5*32, 1)        
