@@ -384,21 +384,26 @@ class ModelNetRNN(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same') 
         self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
 
-        self.env_input_size = self.conv_out + self.num_actions
-        self.d_model = self.conv_out 
-        d_in = self.env_input_size + self.d_model 
+        self.debug = True
+        if self.debug:
+            self.policy = nn.Linear(5*5*32, self.num_actions)        
+            self.baseline = nn.Linear(5*5*32, 1)        
+        else:
+            self.env_input_size = self.conv_out + self.num_actions
+            self.d_model = self.conv_out 
+            d_in = self.env_input_size + self.d_model 
 
-        self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
-                                input_dim=d_in-self.d_model, hidden_dim=self.d_model,
-                                kernel_size=3, num_layers=self.tran_layer_n,
-                                num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
-                                attn_mask_b=self.attn_mask_b)                         
-        
-        rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
-        self.fc = nn.Linear(rnn_out_size, 256)        
-               
-        self.policy = nn.Linear(256, self.num_actions)        
-        self.baseline = nn.Linear(256, 1)        
+            self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
+                                    input_dim=d_in-self.d_model, hidden_dim=self.d_model,
+                                    kernel_size=3, num_layers=self.tran_layer_n,
+                                    num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
+                                    attn_mask_b=self.attn_mask_b)                         
+            
+            rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
+            self.fc = nn.Linear(rnn_out_size, 256)        
+                
+            self.policy = nn.Linear(256, self.num_actions)        
+            self.baseline = nn.Linear(256, 1)        
         
     def forward(self, x, actions, done, state, one_hot=False):
         """
@@ -423,10 +428,17 @@ class ModelNetRNN(nn.Module):
             actions = F.one_hot(actions.view(T * B), self.num_actions).float()
         else:
             actions = actions.view(T * B, -1)
-
+        
         #conv_out = self.frame_conv(x)   
         conv_out = self.frame_encoder(x, actions)   
-        conv_out = self.frame_conv(conv_out)   
+        conv_out = self.frame_conv(conv_out) 
+
+        if self.debug:
+            core_output = torch.flatten(conv_out, start_dim=1)
+            vs = self.baseline(core_output).view(T, B)
+            logits = self.policy(core_output).view(T, B, self.num_actions)
+            state = (torch.zeros(1, B, 1, 1, 1),)
+            return vs, logits, state
 
         core_input = torch.concat([conv_out, add_hw(actions, self.conv_out_hw, self.conv_out_hw)], dim=1)                        
         core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
