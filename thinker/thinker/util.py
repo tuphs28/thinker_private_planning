@@ -93,6 +93,8 @@ def parse(args=None):
                         type=float, help="Model type.")        
     parser.add_argument("--model_rnn", action="store_true",
                         help="Whether to use ConvLSTM in model (only support perfect model).")    
+    parser.add_argument("--model_rnn_debug", action="store_true",
+                        help="Whether to debug model_rnn.")                          
     
     # Actor loss settings
     parser.add_argument("--entropy_cost", default=0.00001,

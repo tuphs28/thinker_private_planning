@@ -286,13 +286,13 @@ class ModelWrapper(gym.Wrapper):
                 
                 x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0) # x is in shape (1, C, H, W)
                 self.x = self.x_ = x_tensor
-                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions)     
-                # a_tensor is in shape (num_action,)
+                a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions) 
+                # a_tensor is in shape (1, num_action,)
                 if not model_net.rnn:
                     _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                     
                 else:
                     vs, logits, model_state = model_net(x=x_tensor.unsqueeze(0), 
-                              actions=a_tensor.unsqueeze(0).unsqueeze(0), 
+                              actions=a_tensor.unsqueeze(0), 
                               done=torch.tensor(done, dtype=bool).unsqueeze(0).unsqueeze(0),
                               state=model_state,
                               one_hot=True) 
@@ -357,7 +357,7 @@ class ModelWrapper(gym.Wrapper):
                                 _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                     
                             else:
                                 vs, logits, model_state = model_net(x=x_tensor.unsqueeze(0), 
-                                        actions=a_tensor.unsqueeze(0).unsqueeze(0), 
+                                        actions=a_tensor.unsqueeze(0), 
                                         done=torch.tensor(done, dtype=bool).unsqueeze(0).unsqueeze(0),
                                         state=self.cur_node.encoded["model_state"],
                                         one_hot=True) 
