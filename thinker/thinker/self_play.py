@@ -12,7 +12,8 @@ from thinker.net import ActorNet, ModelNet, ActorOut
 from thinker.env import Environment, EnvOut
 import thinker.util as util
 
-_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'gym_env_out')
+#_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'gym_env_out')
+_fields = tuple(item for item in ActorOut._fields + EnvOut._fields)
 TrainActorOut = namedtuple('TrainActorOut', _fields)
 TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done'])
 

@@ -17,8 +17,7 @@
             //"args": "--num_actors 32 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 20000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_actor.tar --employ_model /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_model.tar"
             //"args": "--num_actors 16 --train_model --disable_train_actor --model_learning_rate 0.0002 --model_warm_up_n 2000 --model_buffer_n 1000000 --priority_alpha 0. --preload_actor /media/sc/datadisk/data/thinker/logs/planner_logs/test/ckp_actor.tar --employ_model ~/RS/thinker/models/model_1.tar --preload_model ''"
             "program": "train.py",
-            //"args": "--num_actors 8 --train_model --model_warm_up_n 1600 --model_unroll_length 4 --model_batch_size 32 --model_rnn --preload_model '' --model_batch_mode"            
-            "args": "--num_actors 8 --train_model --model_warm_up_n 1600 --model_unroll_length 50 --model_batch_size 32 --preload_model ''"            
+            "args": "--num_actors 8 --train_model --model_warm_up_n 1600 --model_unroll_length 4 --model_batch_size 32 --preload_model '' --actor_see_p 0.5 --batch_size=16"                        
         }
     ]
 }

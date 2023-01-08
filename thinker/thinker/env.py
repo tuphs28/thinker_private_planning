@@ -5,7 +5,7 @@ from torch.nn import functional as F
 import gym
 import gym_csokoban
 
-EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'reward', 'done', 
+EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 
     'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action',
     'max_rollout_depth'])
 
@@ -58,6 +58,8 @@ class PostWrapper:
         self.episode_step = None
         self.model_wrap = model_wrap
         self.num_actions = env.env.action_space.n 
+        self.actor_see_p = flags.actor_see_p
+
         if self.model_wrap:
             self.model_out_shape = env.observation_space.shape
             self.gym_env_out_shape = env.env.observation_space.shape                
@@ -84,10 +86,12 @@ class PostWrapper:
             gym_env_out, model_out = _format(*out)
         else:
             gym_env_out, model_out = _format(self.env.reset(), None)
+        see_mask = torch.rand(size=(1, 1)) > (1 - self.actor_see_p)
 
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            see_mask=see_mask,
             reward=initial_reward,
             done=initial_done,
             truncated_done=torch.tensor(0).view(1, 1).bool(),
@@ -142,9 +146,12 @@ class PostWrapper:
                 self.last_action[:, :, 1:] = action[:, :, 1:]
         else:
             self.last_action = action
+        see_mask = torch.rand(size=(1, 1)) > (1 - self.actor_see_p)
+
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            see_mask=see_mask,
             reward=reward,
             done=done,
             truncated_done=truncated_done,          
@@ -213,7 +220,7 @@ class ModelWrapper(gym.Wrapper):
         x = self.env.reset(**kwargs)
         self.cur_t = 0            
         model_state = model_net.init_state(1) if model_net.rnn else None        
-        out, model_state = self.use_model(model_net=model_net, 
+        out, _, model_state = self.use_model(model_net=model_net, 
             model_state = model_state, x=x, r=0.,
             a=0, cur_t=self.cur_t, reset=1., term=0., done=False)
         if self.reward_type == 1:

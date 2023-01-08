@@ -87,6 +87,8 @@ def parse(args=None):
                         help="Whether to disable attention in LSTM-transformer.")
     parser.add_argument("--tran_attn_b", default=5,
                         type=float, help="Bias attention for current position.")        
+    parser.add_argument("--actor_see_p", default=0,
+                        type=float, help="Probability of allowing actor to see state.")                                
     
     # Model architecure settings
     parser.add_argument("--model_type_nn", default=0,

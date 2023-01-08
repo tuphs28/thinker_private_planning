@@ -27,6 +27,7 @@ class ActorNet(nn.Module):
         self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 2 for planning rewards)
         self.flex_t = flags.flex_t                   # whether to output the terminate action
         self.flex_t_term_b = flags.flex_t_term_b     # bias added to the logit of terminating
+        self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -44,6 +45,10 @@ class ActorNet(nn.Module):
                                 attn_mask_b=self.attn_mask_b)                         
         
         rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
+        if self.actor_see_p > 0:
+            down_scale_c = 4
+            rnn_out_size = rnn_out_size + 5 * 5 * (64 //down_scale_c)
+
         self.fc = nn.Linear(rnn_out_size, 256)        
         
         self.im_policy = nn.Linear(256, self.num_actions)        
@@ -52,9 +57,20 @@ class ActorNet(nn.Module):
         self.reset = nn.Linear(256, 2)        
         
         if self.flex_t: self.term = nn.Linear(256, 2)        
+
+        if self.actor_see_p > 0:
+            self.gym_frame_encoder = FrameEncoder(num_actions=self.num_actions, 
+                down_scale_c=down_scale_c, concat_action=False)
+            self.gym_frame_conv = torch.nn.Sequential(
+                nn.Conv2d(in_channels=256//down_scale_c, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
+                nn.ReLU(), 
+                nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
+                nn.ReLU())
         
         #print("actor size: ", sum(p.numel() for p in self.parameters()))
         #for k, v in self.named_parameters(): print(k, v.numel())   
+
+
 
     def initial_state(self, batch_size):
         state = self.core.init_state(batch_size) 
@@ -112,7 +128,17 @@ class ActorNet(nn.Module):
                                    
         core_output = torch.cat(core_output_list)  
         core_output = torch.flatten(core_output, 0, 1)        
-        core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))   
+        core_output = torch.flatten(core_output, start_dim=1)
+
+        if self.actor_see_p > 0:
+            gym_x = obs.gym_env_out * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            gym_x = torch.flatten(gym_x, 0, 1)   
+            conv_out = self.gym_frame_encoder(gym_x, actions = None)   
+            conv_out = self.gym_frame_conv(conv_out)
+            conv_out = torch.flatten(conv_out, start_dim=1)
+            core_output = torch.concat([core_output, conv_out], dim=1)
+
+        core_output = F.relu(self.fc(core_output))
         
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)
@@ -206,24 +232,33 @@ class ResBlock(nn.Module):
         return out
     
 class FrameEncoder(nn.Module):    
-    def __init__(self, num_actions, frame_channels=3, type_nn=0):
+    def __init__(self, num_actions, frame_channels=3, type_nn=0, down_scale_c=2, concat_action=True):
         self.num_actions = num_actions
+        self.type_nn = type_nn
+        self.down_scale_c=down_scale_c
+        self.concat_action = concat_action
+
         super(FrameEncoder, self).__init__() 
         
         if type_nn == 0:
             n_block = 1
         elif type_nn == 1:
             n_block = 2
-        
-        self.conv1 = nn.Conv2d(in_channels=frame_channels+num_actions, out_channels=128//DOWNSCALE_C, kernel_size=3, stride=2, padding=1) 
-        res = nn.ModuleList([ResBlock(inplanes=128//DOWNSCALE_C) for i in range(n_block)]) # Deep: 2 blocks here
+
+        if self.concat_action:
+            in_channels=frame_channels+num_actions
+        else:
+            in_channels=frame_channels
+
+        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=128//down_scale_c, kernel_size=3, stride=2, padding=1) 
+        res = nn.ModuleList([ResBlock(inplanes=128//down_scale_c) for i in range(n_block)]) # Deep: 2 blocks here
         self.res1 = torch.nn.Sequential(*res)
-        self.conv2 = nn.Conv2d(in_channels=128//DOWNSCALE_C, out_channels=256//DOWNSCALE_C, 
+        self.conv2 = nn.Conv2d(in_channels=128//down_scale_c, out_channels=256//down_scale_c, 
                                kernel_size=3, stride=2, padding=1) 
-        res = nn.ModuleList([ResBlock(inplanes=256//DOWNSCALE_C) for i in range(n_block)]) # Deep: 3 blocks here
+        res = nn.ModuleList([ResBlock(inplanes=256//down_scale_c) for i in range(n_block)]) # Deep: 3 blocks here
         self.res2 = torch.nn.Sequential(*res)
         self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
-        res = nn.ModuleList([ResBlock(inplanes=256//DOWNSCALE_C) for i in range(n_block)]) # Deep: 3 blocks here
+        res = nn.ModuleList([ResBlock(inplanes=256//down_scale_c) for i in range(n_block)]) # Deep: 3 blocks here
         self.res3 = torch.nn.Sequential(*res)
         self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
     
@@ -231,12 +266,13 @@ class FrameEncoder(nn.Module):
         """
         Args:
           x (tensor): frame with shape B, C, H, W        
-          action (tensor): action with shape B 
+          action (tensor): action with shape B, num_actions (in one-hot)
         """
         
         x = x.float() / 255.0    
-        actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
-        x = torch.concat([x, actions], dim=1)
+        if self.concat_action:
+            actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
+            x = torch.concat([x, actions], dim=1)
         x = F.relu(self.conv1(x))
         x = self.res1(x)
         x = F.relu(self.conv2(x))
@@ -380,9 +416,11 @@ class ModelNetRNN(nn.Module):
         self.conv_out = 32
         self.conv_out_hw = 5        
         self.frame_encoder = FrameEncoder(num_actions=self.num_actions)
-        self.conv1 = nn.Conv2d(in_channels=128, out_channels=128//2, kernel_size=3, padding='same') 
-        self.conv2 = nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same') 
-        self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
+        self.frame_conv = torch.nn.Sequential(
+                nn.Conv2d(in_channels=128, out_channels=128//2, kernel_size=3, padding='same'), 
+                nn.ReLU(), 
+                nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same'), 
+                nn.ReLU())
 
         self.debug = flags.model_rnn_debug
         if self.debug:
