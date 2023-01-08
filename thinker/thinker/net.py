@@ -337,8 +337,8 @@ class ModelNetBase(nn.Module):
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large
-        self.frame_encoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
-        self.dynamic_model = DynamicModel(num_actions=num_actions, inplanes=256//DOWNSCALE_C, type_nn=self.type_nn)
+        self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
+        self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=256//DOWNSCALE_C, type_nn=self.type_nn)
         self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(256//DOWNSCALE_C, 
                       obs_shape[1]//16, obs_shape[1]//16))
         
@@ -356,7 +356,7 @@ class ModelNetBase(nn.Module):
         """
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
-        encoded = self.frame_encoder(x, actions[0])
+        encoded = self.frameEncoder(x, actions[0])
         return self.forward_encoded(encoded, actions[1:], one_hot=True)
     
     def forward_encoded(self, encoded, actions, one_hot=False):
@@ -368,7 +368,7 @@ class ModelNetBase(nn.Module):
         encoded_list = [encoded.unsqueeze(0)]
         
         for k in range(actions.shape[0]):            
-            encoded = self.dynamic_model(encoded, actions[k])
+            encoded = self.dynamicModel(encoded, actions[k])
             r, v, logits = self.output_rvpi(encoded)
             r_list.append(r.squeeze(-1).unsqueeze(0))
             v_list.append(v.squeeze(-1).unsqueeze(0))
@@ -415,7 +415,7 @@ class ModelNetRNN(nn.Module):
 
         self.conv_out = 32
         self.conv_out_hw = 5        
-        self.frame_encoder = FrameEncoder(num_actions=self.num_actions)
+        self.frameEncoder = FrameEncoder(num_actions=self.num_actions)
         self.frame_conv = torch.nn.Sequential(
                 nn.Conv2d(in_channels=128, out_channels=128//2, kernel_size=3, padding='same'), 
                 nn.ReLU(), 
@@ -481,7 +481,7 @@ class ModelNetRNN(nn.Module):
             actions = actions.view(T * B, -1)
         
         #conv_out = self.frame_conv(x)   
-        conv_out = self.frame_encoder(x, actions)   
+        conv_out = self.frameEncoder(x, actions)   
         conv_out = self.frame_conv(conv_out) 
 
         if self.debug:
