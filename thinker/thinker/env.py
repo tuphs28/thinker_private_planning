@@ -233,9 +233,9 @@ class ModelWrapper(gym.Wrapper):
           if self.debug and self.cur_t == 1: self.debug_xs = []  
 
           self.cur_t += 1
-          out, model_state = self.use_model(model_net=model_net, 
+          out, x, model_state = self.use_model(model_net=model_net, 
             model_state=None, x=None, r=None, a=im_action, 
-            cur_t=self.cur_t, reset=reset, term=term, done=False)          
+            cur_t=self.cur_t, reset=reset, term=term, done=False)   # use the imagine x in imagine step       
           if self.reward_type == 0:
             r = np.array([0.])
           else:
@@ -246,14 +246,13 @@ class ModelWrapper(gym.Wrapper):
             r = np.array([0., (self.root_max_q - self.last_root_max_q - flex_t_cost).item()], dtype=np.float32)
           done = False
           info['cur_t'] = self.cur_t   
-          x = None
         else:
           self.cur_t = 0
           if self.perfect_model: self.env.restore_state(self.root_node.encoded["env_state"])
           x, r, done, info_ = self.env.step(re_action)                    
-          out, model_state = self.use_model(model_net=model_net, 
+          out, _, model_state = self.use_model(model_net=model_net, 
             model_state=model_state, x=x, r=r, a=re_action, 
-            cur_t=self.cur_t, reset=1., term=term, done=done) 
+            cur_t=self.cur_t, reset=1., term=term, done=done) # use the real x in real step
           info.update(info_)
           info['cur_t'] = self.cur_t
           if self.reward_type == 0:
@@ -301,7 +300,7 @@ class ModelWrapper(gym.Wrapper):
                     encoded = {"env_state": self.clone_state()}
                 else:
                     encoded=encodeds[-1]
-                if self.debug: encoded["x"] = x
+                encoded["x"] = x
                 if model_net.rnn: encoded["model_state"] = model_state
                 
                 if (not self.tree_carry or self.root_node is None or 
@@ -347,7 +346,7 @@ class ModelWrapper(gym.Wrapper):
                             self.env.restore_state(self.cur_node.encoded["env_state"])                        
                             x, r, done, info = self.env.step(a) 
                             encoded = {"env_state": self.clone_state()}
-                            if self.debug: encoded["x"] = x
+                            encoded["x"] = x
                             if done: encoded["done"] = True                        
                             x_tensor = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
                             self.x_ = x_tensor
@@ -434,7 +433,7 @@ class ModelWrapper(gym.Wrapper):
                 self.cur_node.visit()
                 self.pass_unexpand = False
             
-            return out, self.root_node.encoded["model_state"] if model_net.rnn else None
+            return out, self.cur_node.encoded["x"], self.root_node.encoded["model_state"] if model_net.rnn else None
                 
 class Node:
     def __init__(self, parent, action, logit, num_actions, discounting, rec_t):        
