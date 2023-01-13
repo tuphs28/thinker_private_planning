@@ -150,7 +150,8 @@ class ActorLearner():
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         n = 0
-        scaler = torch.cuda.amp.GradScaler()
+        if self.flags.float16:
+            scaler = torch.cuda.amp.GradScaler()
 
         while (self.real_step < self.flags.total_steps):   
             # get data remotely    
@@ -186,7 +187,7 @@ class ActorLearner():
                 total_loss.backward()
             
             optimize_params = self.optimizer.param_groups[0]['params']
-            scaler.unscale_(self.optimizer)
+            if self.flags.float16: scaler.unscale_(self.optimizer)
             if self.flags.grad_norm_clipping > 0:                
                 total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
             else:
@@ -197,6 +198,7 @@ class ActorLearner():
                 scaler.update()
             else:
                 self.optimizer.step()
+
             if not self.flags.flex_t:
                 self.scheduler.step()
             else:
