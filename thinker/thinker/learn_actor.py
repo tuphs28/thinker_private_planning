@@ -151,7 +151,7 @@ class ActorLearner():
         ckp_start_time = int(time.strftime("%M")) // 10
         n = 0
         if self.flags.float16:
-            scaler = torch.cuda.amp.GradScaler()
+            scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
 
         while (self.real_step < self.flags.total_steps):   
             # get data remotely    
