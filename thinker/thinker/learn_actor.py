@@ -150,6 +150,8 @@ class ActorLearner():
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         n = 0
+        scaler = torch.cuda.amp.GradScaler()
+
         while (self.real_step < self.flags.total_steps):   
             # get data remotely    
             while (True):
@@ -168,19 +170,33 @@ class ActorLearner():
             initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
             
             # compute losses
-            losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
+            if self.flags.float16:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):                
+                    losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
+            else:
+                losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
+
             total_loss = losses["total_loss"]
             
             # gradient descent on loss
             self.optimizer.zero_grad()
-            total_loss.backward()
+            if self.flags.float16:
+                scaler.scale(total_loss).backward()
+            else:
+                total_loss.backward()
+            
             optimize_params = self.optimizer.param_groups[0]['params']
-            if self.flags.grad_norm_clipping > 0:
+            scaler.unscale_(self.optimizer)
+            if self.flags.grad_norm_clipping > 0:                
                 total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
             else:
-                total_norm = 0.
-            
-            self.optimizer.step()
+                total_norm = 0.            
+
+            if self.flags.float16:
+                scaler.step(self.optimizer)
+                scaler.update()
+            else:
+                self.optimizer.step()
             if not self.flags.flex_t:
                 self.scheduler.step()
             else:
@@ -205,11 +221,14 @@ class ActorLearner():
                 for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
                 print(print_str)
                 start_step = self.step
-                start_time = timer()      
+                start_time = timer()     
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
                 ckp_start_time = int(time.strftime("%M")) // 10
+
+            del train_actor_out, losses, total_loss, stats, total_norm
+            torch.cuda.empty_cache()
             
             # update shared buffer's weights
             if n % 1 == 0:

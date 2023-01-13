@@ -98,7 +98,7 @@ class ActorNet(nn.Module):
                 term_policy_logits (tensor): logits of termination action (T x B x 2)
                 term_action (tensor): sampled termination action (non-one-hot form) (T x B)
         """
-        
+                
         x = obs.model_out.unsqueeze(-1).unsqueeze(-1)
         done = obs.done
         
@@ -106,13 +106,19 @@ class ActorNet(nn.Module):
         if len(done.shape) == 1: done = done.unsqueeze(0)  
             
         T, B, *_ = x.shape
+        if False: #B > 1: 
+            print("1", torch.any(torch.isnan(x)), x.dtype, x.shape)
+            print(x[0,0,:,0,0])
         x = torch.flatten(x, 0, 1)  # Merge time and batch.  
         env_input = self.frame_conv(x)                
+        if False: #B > 1: 
+            print("1.1", torch.any(torch.isnan(env_input)), env_input.dtype, env_input.shape)
+            print(env_input[0,:,0,0])
+            assert not torch.any(torch.isnan(env_input))
         core_input = env_input.view(T, B, -1, self.conv_out_hw, self.conv_out_hw)
         core_output_list = []
         notdone = ~(done.bool())
-        
-        for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):       
+        for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):  
             if self.no_mem and obs.cur_t[n, 0] == 0:
                 core_state = self.initial_state(B)
                 core_state = tuple(v.to(x.device) for v in core_state)
@@ -124,9 +130,9 @@ class ActorNet(nn.Module):
                 output, core_state = self.core(input, core_state, nd, nd) # output shape: 1, B, core_output_size 
                 
             last_input = input   
-            core_output_list.append(output)
-                                   
+            core_output_list.append(output)                             
         core_output = torch.cat(core_output_list)  
+            
         core_output = torch.flatten(core_output, 0, 1)        
         core_output = torch.flatten(core_output, start_dim=1)
 
@@ -146,8 +152,7 @@ class ActorNet(nn.Module):
         
         if self.flex_t: 
             term_policy_logits = self.term(core_output)            
-            term_policy_logits[:, 1] += self.flex_t_term_b
-        
+            term_policy_logits[:, 1] += self.flex_t_term_b  
         action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
         reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)

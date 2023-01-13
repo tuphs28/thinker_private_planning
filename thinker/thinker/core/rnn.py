@@ -64,11 +64,12 @@ class ConvAttnLSTMCell(nn.Module):
           concat_v (tensor): current attn v; shape (B, num_head, mem_n, total_dim)            
         """
         
+        B = input.shape[0]
         combined = torch.cat([input, h_cur], dim=1)  # concatenate along channel axis
         if self.linear:
             combined_conv = self.main(combined[:, :, 0, 0]).unsqueeze(-1).unsqueeze(-1)
         else:
-            combined_conv = self.main(combined)        
+            combined_conv = self.main(combined)           
         cc_i, cc_f, cc_o, cc_g, cc_a = torch.split(combined_conv, self.embed_dim, dim=1)
         i = torch.sigmoid(cc_i)
         f = torch.sigmoid(cc_f)
@@ -84,7 +85,7 @@ class ConvAttnLSTMCell(nn.Module):
             self.a = a
         else:
             concat_k, concat_v = None, None
-            
+
         h_next = o * torch.tanh(c_next)
         
         return h_next, c_next, concat_k, concat_v

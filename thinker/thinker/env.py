@@ -379,7 +379,7 @@ class ModelWrapper(gym.Wrapper):
                                              logits=logits[-1, 0], 
                                              encoded=encoded)
                         else:
-                            logits = torch.concat([x.logit for x in self.cur_node.children])  
+                            logits = torch.concat([ch.logit for ch in self.cur_node.children])  
                             next_node.expand(r=torch.tensor([0.], dtype=torch.float32), 
                                              v=torch.tensor([0.], dtype=torch.float32),
                                              logits=logits, 
@@ -428,6 +428,7 @@ class ModelWrapper(gym.Wrapper):
                              "logit": self.cur_node.ret_dict["child_logits"].unsqueeze(0),
                              "reset": reset,
                              "term": term}
+            x = self.cur_node.encoded["x"]
             
             if self.thres is not None:
                 self.ret_dict["thres"] = self.thres
@@ -440,7 +441,7 @@ class ModelWrapper(gym.Wrapper):
                 self.cur_node.visit()
                 self.pass_unexpand = False
             
-            return out, self.cur_node.encoded["x"], self.root_node.encoded["model_state"] if model_net.rnn else None
+            return out, x, self.root_node.encoded["model_state"] if model_net.rnn else None
                 
 class Node:
     def __init__(self, parent, action, logit, num_actions, discounting, rec_t):        

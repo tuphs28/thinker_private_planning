@@ -15,6 +15,8 @@ def parse(args=None):
                         help="Experiment id (default: None).")
     parser.add_argument("--savedir", default="~/RS/thinker/logs/thinker",
                         help="Root dir where experiment data will be saved.")
+    parser.add_argument("--float16",  action="store_true",
+                        help="Whether to use float 16 precision in training.")                               
 
     # Preload settings.
     parser.add_argument("--load_checkpoint", default="",
