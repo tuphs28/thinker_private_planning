@@ -50,7 +50,7 @@ class ModelLearner():
 
         if self.flags.preload_model and not flags.load_checkpoint:
             checkpoint = torch.load(self.flags.preload_model, map_location=torch.device('cpu'))
-            self.model_net.set_weights(checkpoint["model_state_dict"])  
+            self.model_net.set_weights(checkpoint["model_state_dict" if "model_state_dict" in checkpoint else "model_net_state_dict"])  
             print("Loadded model network from %s" % self.flags.preload_model)
 
         if flags.load_checkpoint:
