@@ -127,7 +127,10 @@ def parse(args=None):
                        help="Multipler to policy logit loss when training the model.")                            
     parser.add_argument("--model_vs_loss_cost", default=1, type=float,
                        help="Multipler to policy vs loss when training the model.")                           
-    
+    parser.add_argument("--model_bootstrap_maxq", action="store_true",
+                        help="Whether to use the max root value as bootstrapped value in training model.")    
+
+
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
                         help="Reward type")   

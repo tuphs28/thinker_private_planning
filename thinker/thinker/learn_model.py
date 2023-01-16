@@ -238,19 +238,25 @@ class ModelLearner():
         target_rewards = train_model_out.reward[1:]
         target_logits = train_model_out.policy_logits[1:]
 
-        target_vs = []
-        if not self.flags.perfect_model: 
-            target_v = self.model_net(train_model_out.gym_env_out[-1], train_model_out.action[[-1]])[1][0].detach()        
-        else:
-            target_v = vs[-1]
-        for t in range(k, 0, -1):
-            new_target_v = train_model_out.reward[t] + self.flags.discounting * (
-                target_v * (~train_model_out.done[t]).float())
-            target_vs.append(new_target_v.unsqueeze(0))
-            target_v = new_target_v
+        if not self.flags.model_bootstrap_maxq:
 
-        target_vs.reverse()
-        target_vs = torch.concat(target_vs, dim=0)
+            target_vs = []
+            if not self.flags.perfect_model: 
+                target_v = self.model_net(train_model_out.gym_env_out[-1], train_model_out.action[[-1]])[1][0].detach()        
+            else:
+                target_v = vs[-1]
+            for t in range(k, 0, -1):
+                new_target_v = train_model_out.reward[t] + self.flags.discounting * (
+                    target_v * (~train_model_out.done[t]).float())
+                target_vs.append(new_target_v.unsqueeze(0))
+                target_v = new_target_v
+
+            target_vs.reverse()
+            target_vs = torch.concat(target_vs, dim=0)
+
+        else:
+
+            target_vs = train_model_out.baseline[1:]
 
         # if done on step j, r_{j}, v_{j-1}, a_{j-1} has the last valid loss 
         # rs is stored in the form of r_{t+1}, ..., r_{t+k}

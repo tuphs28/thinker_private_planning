@@ -15,7 +15,7 @@ import thinker.util as util
 #_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'gym_env_out')
 _fields = tuple(item for item in ActorOut._fields + EnvOut._fields)
 TrainActorOut = namedtuple('TrainActorOut', _fields)
-TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done'])
+TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done', 'baseline'])
 
 PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
 
@@ -161,7 +161,11 @@ class SelfPlayWorker():
                     if learner_actor_start:
                         self.write_actor_buffer(env_out, actor_out, t+1)       
                     if train_model and (self.policy != PO_NET or env_out.cur_t == 0): 
-                        self.write_send_model_buffer(env_out, actor_out)   
+                        if self.policy == PO_NET:
+                            baseline = self.env.env.last_last_root_max_q
+                        else:
+                            baseline = None
+                        self.write_send_model_buffer(env_out, actor_out, baseline)   
                     if test_eps_n > 0:
                         finish, all_returns = self.write_test_buffer(
                             env_out, actor_out, test_eps_n, verbose)
@@ -241,19 +245,22 @@ class SelfPlayWorker():
             policy_logits=torch.zeros(pre_shape + (self.env.num_actions,), dtype=torch.float32),
             action=torch.zeros(pre_shape, dtype=torch.long),
             reward=torch.zeros(pre_shape, dtype=torch.float32),
-            done=torch.ones(pre_shape, dtype=torch.bool)) 
+            done=torch.ones(pre_shape, dtype=torch.bool),
+            baseline=torch.zeros(pre_shape, dtype=torch.float32)) 
 
-    def write_single_model_buffer(self, n: int, t: int, env_out: EnvOut, actor_out: ActorOut):
+    def write_single_model_buffer(self, n: int, t: int, env_out: EnvOut, actor_out: ActorOut, baseline:torch.tensor):
         self.model_local_buffer[n].gym_env_out[t] = env_out.gym_env_out[0,0]       
         self.model_local_buffer[n].reward[t] = env_out.reward[0,0,0]
         self.model_local_buffer[n].done[t] = env_out.done[0,0]
         self.model_local_buffer[n].policy_logits[t] = actor_out.policy_logits[0,0]
         self.model_local_buffer[n].action[t] = actor_out.action[0,0]
+        if baseline is not None:
+            self.model_local_buffer[n].baseline[t] = baseline
 
-    def write_send_model_buffer(self, env_out: EnvOut, actor_out: ActorOut):
+    def write_send_model_buffer(self, env_out: EnvOut, actor_out: ActorOut, baseline:torch.tensor):
         n, t, cap_t, k = (self.model_n, self.model_t, self.flags.model_unroll_length,
             self.flags.model_k_step_return)
-        self.write_single_model_buffer(n, t, env_out, actor_out)        
+        self.write_single_model_buffer(n, t, env_out, actor_out, baseline)        
 
         if self.flags.model_rnn:   
             # if the learnt model is rnn but not the same as employ_model, 
@@ -274,7 +281,7 @@ class SelfPlayWorker():
 
         if t >= cap_t:
             # write the beginning of another buffer
-            self.write_single_model_buffer(1-n, t-cap_t, env_out, actor_out)
+            self.write_single_model_buffer(1-n, t-cap_t, env_out, actor_out, baseline)      
 
         if t >= cap_t + k - 1:
             # finish writing a buffer, send it

@@ -214,6 +214,7 @@ class ModelWrapper(gym.Wrapper):
         
         self.max_rollout_depth = 0.
         self.thres = None
+        self.last_root_max_q = None
         self.root_max_q = None
         
     def reset(self, model_net, **kwargs):
@@ -224,6 +225,7 @@ class ModelWrapper(gym.Wrapper):
             model_state = model_state, x=x, r=0.,
             a=0, cur_t=self.cur_t, reset=1., term=0., done=False)
         if self.reward_type == 1:
+            self.last_last_root_max_q = self.last_root_max_q
             self.last_root_max_q = self.root_max_q
         return (x, out), model_state
     
@@ -267,6 +269,7 @@ class ModelWrapper(gym.Wrapper):
           else:
             r = np.array([r, 0.], dtype=np.float32)   
         if self.reward_type == 1:
+            self.last_last_root_max_q = self.last_root_max_q
             self.last_root_max_q = self.root_max_q   
         
         return (x, out), r, done, info, model_state
