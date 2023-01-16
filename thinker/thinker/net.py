@@ -428,6 +428,8 @@ class ModelNetRNN(nn.Module):
                 nn.ReLU())
 
         self.debug = flags.model_rnn_debug
+        self.disable_mem = flags.model_disable_mem
+
         if self.debug:
             self.policy = nn.Linear(5*5*32, self.num_actions)        
             self.baseline = nn.Linear(5*5*32, 1)      
@@ -499,7 +501,9 @@ class ModelNetRNN(nn.Module):
         core_input = conv_out
         core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
         core_output_list = []
-        #state = self.init_state(bsz=B, device=x.device)
+
+        if self.disable_mem:
+            state = self.init_state(bsz=B, device=x.device)
         notdone = (~done).float()
         for input, nd in zip(core_input.unbind(), notdone.unbind()):
             for t in range(self.tran_t):                          
