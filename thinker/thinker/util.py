@@ -61,7 +61,7 @@ def parse(args=None):
     parser.add_argument("--model_k_step_return", default=5, type=int, 
                         help="Number of recurrent step when training the model.")    
     parser.add_argument("--priority_alpha", default=0.6, type=float,
-                        help="Alpha used to compute the priority from model buffer.")
+                        help="Alpha used to compute the priority from model buffer; 0. for no priority replay.")
     parser.add_argument("--priority_beta", default=0.4, type=float,
                         help="Initial beta used to compute the priority from model buffer.")
     parser.add_argument("--model_buffer_n", default=200000, type=int, 
