@@ -198,6 +198,7 @@ class ModelLearner():
             while (self.flags.model_max_step_per_transition > 0 and 
                 self.step_per_transition() > self.flags.model_max_step_per_transition):
                 time.sleep(0.1)
+                self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
                 new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
                 self.real_step += new_psteps - last_psteps            
                 last_psteps = new_psteps                
