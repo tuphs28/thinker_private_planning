@@ -214,18 +214,23 @@ class ModelWrapper(gym.Wrapper):
         
         self.max_rollout_depth = 0.
         self.thres = None
-        self.last_root_max_q = None
+        self.baseline_max_q = None
+        self.baseline_mean_q = None
         self.root_max_q = None
         
     def reset(self, model_net, **kwargs):
+        # record the root stat of previous state before move forward
+        rollout_qs = self.root_node.rollout_qs  
+        self.baseline_mean_q = torch.mean(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+        self.baseline_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+
         x = self.env.reset(**kwargs)
         self.cur_t = 0            
-        model_state = model_net.init_state(1) if model_net.rnn else None        
+        model_state = model_net.init_state(1) if model_net.rnn else None                
         out, _, model_state = self.use_model(model_net=model_net, 
             model_state = model_state, x=x, r=0.,
             a=0, cur_t=self.cur_t, reset=1., term=0., done=False)
         if self.reward_type == 1:
-            self.last_last_root_max_q = self.last_root_max_q
             self.last_root_max_q = self.root_max_q
         return (x, out), model_state
     
@@ -239,8 +244,8 @@ class ModelWrapper(gym.Wrapper):
         info["max_rollout_depth"] = self.max_rollout_depth
         if (not self.flex_t and self.cur_t < self.rec_t - 1) or (
             self.flex_t and self.cur_t < self.rec_t - 1 and not term):
+          # imagainary step
           if self.debug and self.cur_t == 1: self.debug_xs = []  
-
           self.cur_t += 1
           out, x, model_state = self.use_model(model_net=model_net, 
             model_state=None, x=None, r=None, a=im_action, 
@@ -256,6 +261,12 @@ class ModelWrapper(gym.Wrapper):
           done = False
           info['cur_t'] = self.cur_t   
         else:
+          # real step
+          # record the root stat of previous state before move forward
+          rollout_qs = self.root_node.rollout_qs  
+          self.baseline_mean_q = torch.mean(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+          self.baseline_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+
           self.cur_t = 0
           if self.perfect_model: self.env.restore_state(self.root_node.encoded["env_state"])
           x, r, done, info_ = self.env.step(re_action)                    
@@ -268,8 +279,7 @@ class ModelWrapper(gym.Wrapper):
             r = np.array([r])
           else:
             r = np.array([r, 0.], dtype=np.float32)   
-        if self.reward_type == 1:
-            self.last_last_root_max_q = self.last_root_max_q
+        if self.reward_type == 1:          
             self.last_root_max_q = self.root_max_q   
         
         return (x, out), r, done, info, model_state

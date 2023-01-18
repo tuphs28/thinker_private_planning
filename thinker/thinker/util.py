@@ -131,6 +131,9 @@ def parse(args=None):
                        help="Multipler to policy vs loss when training the model.")                           
     parser.add_argument("--model_bootstrap_maxq", action="store_true",
                         help="Whether to use the max root value as bootstrapped value in training model.")    
+    parser.add_argument("--model_bootstrap_meanq", action="store_true",
+                        help="Whether to use the mean root value as bootstrapped value in training model.")    
+
 
 
     # Model wrapper settings
