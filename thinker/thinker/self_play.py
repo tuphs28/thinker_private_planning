@@ -257,6 +257,7 @@ class SelfPlayWorker():
         self.model_local_buffer[n].policy_logits[t] = actor_out.policy_logits[0,0]
         self.model_local_buffer[n].action[t] = actor_out.action[0,0]
         if baseline is not None:
+            print("writing baseline", n, t)
             self.model_local_buffer[n].baseline[t] = baseline
 
     def write_send_model_buffer(self, env_out: EnvOut, actor_out: ActorOut, baseline:torch.tensor):
