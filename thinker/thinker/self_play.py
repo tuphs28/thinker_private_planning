@@ -137,7 +137,6 @@ class SelfPlayWorker():
                     self.write_actor_buffer(env_out, actor_out, 0)
 
                 for t in range(self.flags.unroll_length):
-                    print(t)
                     # generate action
                     if self.policy == PO_NET:
                         # policy from applying actor network on the model-wrapped environment

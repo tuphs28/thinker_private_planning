@@ -220,9 +220,10 @@ class ModelWrapper(gym.Wrapper):
         
     def reset(self, model_net, **kwargs):
         # record the root stat of previous state before move forward
-        rollout_qs = self.root_node.rollout_qs  
-        self.baseline_mean_q = torch.mean(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
-        self.baseline_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+        if self.root_node is not None:
+            rollout_qs = self.root_node.rollout_qs  
+            self.baseline_mean_q = torch.mean(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+            self.baseline_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
 
         x = self.env.reset(**kwargs)
         self.cur_t = 0            
