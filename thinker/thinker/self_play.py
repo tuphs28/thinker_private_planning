@@ -137,6 +137,7 @@ class SelfPlayWorker():
                     self.write_actor_buffer(env_out, actor_out, 0)
 
                 for t in range(self.flags.unroll_length):
+                    print(t)
                     # generate action
                     if self.policy == PO_NET:
                         # policy from applying actor network on the model-wrapped environment
@@ -163,13 +164,10 @@ class SelfPlayWorker():
                     if train_model and (self.policy != PO_NET or env_out.cur_t == 0): 
                         baseline = None
                         if self.policy == PO_NET:
-                            print("A")
                             if self.flags.model_bootstrap_maxq:
                                 baseline = self.env.env.baseline_max_q
                             elif self.flags.model_bootstrap_meanq:
-                                print("B")
-                                baseline = self.env.env.baseline_mean_q                            
-                        print("C")
+                                baseline = self.env.env.baseline_mean_q    
                         self.write_send_model_buffer(env_out, actor_out, baseline)   
                     if test_eps_n > 0:
                         finish, all_returns = self.write_test_buffer(
