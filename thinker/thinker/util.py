@@ -50,8 +50,8 @@ def parse(args=None):
                         help="Disable CUDA.")
 
     # Model Training settings. 
-    parser.add_argument("--train_model", action="store_true",
-                        help="Enable training of model.")
+    parser.add_argument("--disable_train_model", action="store_false", dest="train_model",
+                        help="Disable training of model.")
     parser.add_argument("--model_batch_size", default=128, type=int, 
                         help="Model learner batch size.")   
     parser.add_argument("--model_batch_mode", action="store_true",
@@ -70,9 +70,9 @@ def parse(args=None):
                         help="Number of transition accumulated before model start learning.")                        
     parser.add_argument("--test_policy_type", default=1, type=int, 
                         help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
-    parser.add_argument("--model_min_step_per_transition", default=-1, type=int, 
+    parser.add_argument("--model_min_step_per_transition", default=14, type=int, 
                         help="Minimum number of model learning step on one transition")                         
-    parser.add_argument("--model_max_step_per_transition", default=-1, type=int, 
+    parser.add_argument("--model_max_step_per_transition", default=15, type=int, 
                         help="Maximum number of model learning step on one transition")                                                 
                             
   
@@ -91,7 +91,9 @@ def parse(args=None):
                         type=float, help="Bias attention for current position.")        
     parser.add_argument("--actor_see_p", default=0,
                         type=float, help="Probability of allowing actor to see state.")                                
-    
+    parser.add_argument("--actor_drc", action="store_true",
+                        help="Whether to use drc in encoding state")    
+
     # Model architecure settings
     parser.add_argument("--model_type_nn", default=0,
                         type=float, help="Model type.")        
@@ -125,7 +127,7 @@ def parse(args=None):
                        help="Reward clipping.")
     
     # Model loss settings
-    parser.add_argument("--model_logits_loss_cost", default=0.05, type=float,
+    parser.add_argument("--model_logits_loss_cost", default=0.5, type=float,
                        help="Multipler to policy logit loss when training the model.")                            
     parser.add_argument("--model_vs_loss_cost", default=1, type=float,
                        help="Multipler to policy vs loss when training the model.")                           

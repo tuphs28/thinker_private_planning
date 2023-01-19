@@ -28,6 +28,7 @@ class ActorNet(nn.Module):
         self.flex_t = flags.flex_t                   # whether to output the terminate action
         self.flex_t_term_b = flags.flex_t_term_b     # bias added to the logit of terminating
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
+        self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -46,8 +47,11 @@ class ActorNet(nn.Module):
         
         rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
         if self.actor_see_p > 0:
-            down_scale_c = 4
-            rnn_out_size = rnn_out_size + 5 * 5 * (64 //down_scale_c)
+            if not self.actor_drc:
+                down_scale_c = 4
+                rnn_out_size = rnn_out_size + 5 * 5 * (64 //down_scale_c)
+            else:
+                rnn_out_size += 256
 
         self.fc = nn.Linear(rnn_out_size, 256)        
         
@@ -59,21 +63,35 @@ class ActorNet(nn.Module):
         if self.flex_t: self.term = nn.Linear(256, 2)        
 
         if self.actor_see_p > 0:
-            self.gym_frame_encoder = FrameEncoder(num_actions=self.num_actions, 
-                down_scale_c=down_scale_c, concat_action=False)
-            self.gym_frame_conv = torch.nn.Sequential(
-                nn.Conv2d(in_channels=256//down_scale_c, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
-                nn.ReLU(), 
-                nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
-                nn.ReLU())
-        
+            if not self.actor_drc:
+                self.gym_frame_encoder = FrameEncoder(num_actions=self.num_actions, 
+                    down_scale_c=down_scale_c, concat_action=False)
+                self.gym_frame_conv = torch.nn.Sequential(
+                    nn.Conv2d(in_channels=256//down_scale_c, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
+                    nn.ReLU(), 
+                    nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
+                    nn.ReLU())
+            else:
+                self.gym_frame_conv = torch.nn.Sequential(
+                    nn.Conv2d(in_channels=3, out_channels=32, kernel_size=8, stride=4),
+                    nn.ReLU(),
+                    nn.Conv2d(32, 32, kernel_size=4, stride=2),
+                    nn.ReLU()) # output is in shape (8, 8, 32)
+                self.drc_core = ConvAttnLSTM(h=8, w=8,
+                    input_dim=32, hidden_dim=32, kernel_size=3, 
+                    num_layers=3, num_heads=8, mem_n=0, attn=False, attn_mask_b=0.)
+                self.drc_fc = nn.Linear(8*8*32, 256)     
+
         #print("actor size: ", sum(p.numel() for p in self.parameters()))
         #for k, v in self.named_parameters(): print(k, v.numel())   
 
-
+        self.initial_state(1) # just for setting core_state_sep_ind
 
     def initial_state(self, batch_size):
         state = self.core.init_state(batch_size) 
+        self.core_state_sep_ind = len(state)
+        if self.actor_see_p > 0 and self.actor_drc:
+            state = state + self.drc_core.init_state(batch_size)
         return state
 
     def forward(self, obs, core_state=()):
@@ -106,28 +124,22 @@ class ActorNet(nn.Module):
         if len(done.shape) == 1: done = done.unsqueeze(0)  
             
         T, B, *_ = x.shape
-        if False: #B > 1: 
-            print("1", torch.any(torch.isnan(x)), x.dtype, x.shape)
-            print(x[0,0,:,0,0])
         x = torch.flatten(x, 0, 1)  # Merge time and batch.  
         env_input = self.frame_conv(x)                
-        if False: #B > 1: 
-            print("1.1", torch.any(torch.isnan(env_input)), env_input.dtype, env_input.shape)
-            print(env_input[0,:,0,0])
-            assert not torch.any(torch.isnan(env_input))
         core_input = env_input.view(T, B, -1, self.conv_out_hw, self.conv_out_hw)
         core_output_list = []
+        core_state_1 = core_state[:self.core_state_sep_ind]
         notdone = ~(done.bool())
         for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):  
             if self.no_mem and obs.cur_t[n, 0] == 0:
-                core_state = self.initial_state(B)
-                core_state = tuple(v.to(x.device) for v in core_state)
+                core_state_1 = self.initial_state(B)
+                core_state_1 = tuple(v.to(x.device) for v in core_state_1)
                 
             # Input shape: B, self.conv_out + self.num_actions + 1, H, W
             for t in range(self.tran_t):                
                 if t > 0: nd = torch.ones(B).to(x.device).bool()                    
                 nd = nd.view(-1)      
-                output, core_state = self.core(input, core_state, nd, nd) # output shape: 1, B, core_output_size 
+                output, core_state_1 = self.core(input, core_state_1, nd, nd) # output shape: 1, B, core_output_size 
                 
             last_input = input   
             core_output_list.append(output)                             
@@ -139,13 +151,30 @@ class ActorNet(nn.Module):
         if self.actor_see_p > 0:
             gym_x = obs.gym_env_out * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             gym_x = torch.flatten(gym_x, 0, 1)   
-            conv_out = self.gym_frame_encoder(gym_x, actions = None)   
-            conv_out = self.gym_frame_conv(conv_out)
-            conv_out = torch.flatten(conv_out, start_dim=1)
-            core_output = torch.concat([core_output, conv_out], dim=1)
+            if not self.actor_drc:
+                conv_out = self.gym_frame_encoder(gym_x, actions = None)   
+                conv_out = self.gym_frame_conv(conv_out)
+                conv_out = torch.flatten(conv_out, start_dim=1)
+                core_output = torch.concat([core_output, conv_out], dim=1)
+            else:                
+                conv_out = self.gym_frame_conv(gym_x)
+                core_input = conv_out.view(T, B, -1, 8, 8)
+                core_output_list = []
+                core_state_2 = core_state[self.core_state_sep_ind:]
+                for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):
+                    for t in range(3):                
+                        if t > 0: nd = torch.ones(B).to(x.device).bool()                    
+                        nd = nd.view(-1)      
+                        output, core_state_2 = self.drc_core(input, core_state_2, nd, nd) # output shape: 1, B, core_output_size                         
+                    core_output_list.append(output)              
 
-        core_output = F.relu(self.fc(core_output))
-        
+                core_output_2 = torch.cat(core_output_list)   
+                core_output_2 = torch.flatten(core_output_2, 0, 1)        
+                core_output_2 = torch.flatten(core_output_2, start_dim=1)
+                core_output_2 = F.relu(self.drc_fc(core_output_2))
+                core_output = torch.concat([core_output, core_output_2], dim=1)
+
+        core_output = F.relu(self.fc(core_output))        
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)
         reset_policy_logits = self.reset(core_output)
@@ -184,7 +213,12 @@ class ActorNet(nn.Module):
                              reset_action=reset_action,
                              term_action=term_action,
                              baseline=baseline, 
-                             reg_loss=reg_loss,)        
+                             reg_loss=reg_loss,)       
+        
+        if self.actor_see_p > 0 and self.actor_drc:
+            core_state = core_state_1 + core_state_2
+        else:
+            core_state = core_state_1
         return actor_out, core_state
 
     def get_weights(self):
