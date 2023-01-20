@@ -20,7 +20,7 @@ def compute_cross_entropy_loss(logits, target_logits, mask, is_weights):
     loss = is_weights * loss
     return torch.sum(loss)
 
-@ray.remote()
+@ray.remote
 class ModelLearner():
     def __init__(self, param_buffer: GeneralBuffer, model_buffer: ModelBuffer, rank: int, flags: argparse.Namespace): 
         self.param_buffer = param_buffer
