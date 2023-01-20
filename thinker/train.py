@@ -11,7 +11,8 @@ import thinker.util as util
 
 if __name__ == "__main__":
 
-    print("Initializing...")
+    print("Initializing...")    
+
     ray.init()
     st_time = time.time()
     flags = util.parse()
@@ -38,14 +39,20 @@ if __name__ == "__main__":
         rank=n, 
         flags=flags) for n in range(flags.num_actors)]
     r_worker = [x.gen_data.remote() for x in self_play_workers]    
-
     r_learner = []
+
+    num_gpus_available = torch.cuda.device_count()
+    if flags.train_actor and flags.train_model and num_gpus_available == 1:
+        num_gpus = 0
+    else:
+        num_gpus = 1
+
     if flags.train_actor:
-        actor_learner = ActorLearner.remote(param_buffer, actor_buffer, 0, flags)
+        actor_learner = ActorLearner.options(num_cpus=1, num_gpus=num_gpus).remote(param_buffer, actor_buffer, 0, flags)
         r_learner.append(actor_learner.learn_data.remote())
 
     if flags.train_model:
-        model_learner = ModelLearner.remote(param_buffer, model_buffer, 0, flags)
+        model_learner = ModelLearner.options(num_cpus=1, num_gpus=num_gpus).remote(param_buffer, model_buffer, 0, flags)
         r_learner.append(model_learner.learn_data.remote())
 
     if len(r_learner) >= 1: ray.get(r_learner)

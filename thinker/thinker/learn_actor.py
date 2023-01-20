@@ -85,7 +85,7 @@ def from_logits(
         **vtrace_returns._asdict(),
     )  
 
-@ray.remote(num_cpus=1, num_gpus=0.5)
+@ray.remote()
 class ActorLearner():
     def __init__(self, param_buffer: GeneralBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace): 
         self.param_buffer = param_buffer
