@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     num_gpus_available = torch.cuda.device_count()
     if flags.train_actor and flags.train_model and num_gpus_available == 1:
-        num_gpus = 0
+        num_gpus = 0.5
     else:
         num_gpus = 1
 
