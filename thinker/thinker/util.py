@@ -141,7 +141,7 @@ def parse(args=None):
                         help="Auto reset after passing m node since an unexpanded noded")     
     parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",
                         help="Whether to use perfect model.")          
-    parser.add_argument("--rec_t", default=40, type=int, 
+    parser.add_argument("--rec_t", default=20, type=int, 
                         help="Number of planning steps.")
     parser.add_argument("--flex_t", action="store_true",
                         help="Whether to enable flexible planning steps.") 
