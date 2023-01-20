@@ -163,10 +163,12 @@ class SelfPlayWorker():
                     if train_model and (self.policy != PO_NET or env_out.cur_t == 0): 
                         baseline = None
                         if self.policy == PO_NET:
-                            if self.flags.model_bootstrap_maxq:
+                            if self.flags.model_bootstrap_type == 1:
                                 baseline = self.env.env.baseline_max_q
-                            elif self.flags.model_bootstrap_meanq:
+                            elif self.flags.model_bootstrap_type == 2:
                                 baseline = self.env.env.baseline_mean_q    
+                            elif self.flags.model_bootstrap_type == 3:
+                                baseline = actor_out.baseline[:, :, 0] / (self.flags.discounting ** ((self.rec_t - 1)/ self.rec_t))
                         self.write_send_model_buffer(env_out, actor_out, baseline)   
                     if test_eps_n > 0:
                         finish, all_returns = self.write_test_buffer(

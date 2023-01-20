@@ -240,7 +240,7 @@ class ModelLearner():
         target_logits = train_model_out.policy_logits[1:]
 
         target_vs = []
-        if self.flags.model_bootstrap_maxq or self.flags.model_bootstrap_meanq:
+        if self.flags.model_bootstrap_type != 0:
             target_v = train_model_out.baseline[-1]            
         elif not self.flags.perfect_model: 
             target_v = self.model_net(train_model_out.gym_env_out[-1], train_model_out.action[[-1]])[1][0].detach()        
@@ -248,7 +248,7 @@ class ModelLearner():
             target_v = vs[-1]
 
         for t in range(k, 0, -1):
-            if (self.flags.model_bootstrap_maxq or self.flags.model_bootstrap_meanq) and t == k:
+            if (self.flags.model_bootstrap_type != 0) and t == k:
                 new_target_v = target_v
             else:                
                 new_target_v = train_model_out.reward[t] + self.flags.discounting * (
