@@ -202,7 +202,6 @@ class ModelWrapper(gym.Wrapper):
         self.num_actions = env.action_space.n
         self.cur_node = None
         self.root_node = None
-        self.debug = False
             
         if not self.flex_t:
             obs_n = 9 + self.num_actions * 10 + self.rec_t
@@ -246,7 +245,6 @@ class ModelWrapper(gym.Wrapper):
         if (not self.flex_t and self.cur_t < self.rec_t - 1) or (
             self.flex_t and self.cur_t < self.rec_t - 1 and not term):
           # imagainary step
-          if self.debug and self.cur_t == 1: self.debug_xs = []  
           self.cur_t += 1
           out, x, model_state = self.use_model(model_net=model_net, 
             model_state=None, x=None, r=None, a=im_action, 
@@ -345,7 +343,6 @@ class ModelWrapper(gym.Wrapper):
                     self.thres = self.thres_discounting * self.thres + (1 - self.thres_discounting) * vs[-1, 0].item()
                 
                 self.root_node.visit()
-                if self.debug and self.cur_node is not None: self.debug_xs.append(self.cur_node.encoded["x"])
                 self.cur_node = self.root_node
                 
             else:
@@ -448,7 +445,6 @@ class ModelWrapper(gym.Wrapper):
                 self.ret_dict["thres"] = self.thres
             
             if reset:
-                if cur_t > 0 and self.debug: self.debug_xs.append(self.cur_node.encoded["x"])
                 self.rollout_depth = 0
                 self.unexpand_rollout_depth = 0.
                 self.cur_node = self.root_node
