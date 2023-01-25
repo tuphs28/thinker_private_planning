@@ -2,6 +2,7 @@ import time
 import numpy as np
 import argparse
 from collections import namedtuple
+import traceback
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -102,122 +103,126 @@ class SelfPlayWorker():
             and the data will not be sent out to model or actor buffer
             verbose (bool): whether to print output
         """
-        with torch.no_grad():
-            if verbose: print("Actor %d started." % self.rank)
-            n = 0            
+        try:
+            with torch.no_grad():
+                if verbose: print("Actor %d started." % self.rank)
+                n = 0            
 
-            if self.policy == PO_NET:
-                env_out, self.employ_model_state = self.env.initial(self.employ_model_net)      
-            else:
-                env_out = self.env.initial(self.employ_model_net)      
-            if self.policy == PO_NET:      
-                actor_state = self.actor_net.initial_state(batch_size=1)
-                actor_out, _ = self.actor_net(env_out, actor_state)   
-            elif self.policy == PO_MODEL:
-                actor_out = self.po_model(env_out, self.model_net)
-                action = actor_out.action
-                actor_state = None
-            elif self.policy == PO_NSTEP:
-                actor_out = self.po_nstep(self.env, self.model_net)
-                action = actor_out.action
-                actor_state = None                
+                if self.policy == PO_NET:
+                    env_out, self.employ_model_state = self.env.initial(self.employ_model_net)      
+                else:
+                    env_out = self.env.initial(self.employ_model_net)      
+                if self.policy == PO_NET:      
+                    actor_state = self.actor_net.initial_state(batch_size=1)
+                    actor_out, _ = self.actor_net(env_out, actor_state)   
+                elif self.policy == PO_MODEL:
+                    actor_out = self.po_model(env_out, self.model_net)
+                    action = actor_out.action
+                    actor_state = None
+                elif self.policy == PO_NSTEP:
+                    actor_out = self.po_nstep(self.env, self.model_net)
+                    action = actor_out.action
+                    actor_state = None                
 
-            train_actor = self.flags.train_actor and self.policy == PO_NET and test_eps_n == 0
-            train_model = self.flags.train_model and test_eps_n == 0
+                train_actor = self.flags.train_actor and self.policy == PO_NET and test_eps_n == 0
+                train_model = self.flags.train_model and test_eps_n == 0
 
-            # config for preloading before actor network start learning
-            preload_needed = self.flags.train_model and self.flags.load_checkpoint
-            preload = False            
-            learner_actor_start = train_actor and (not preload_needed or preload)
+                # config for preloading before actor network start learning
+                preload_needed = self.flags.train_model and self.flags.load_checkpoint
+                preload = False            
+                learner_actor_start = train_actor and (not preload_needed or preload)
 
-            while (True):      
-                # prepare train_actor_out data to be written
-                initial_actor_state = actor_state
-                if learner_actor_start:
-                    self.write_actor_buffer(env_out, actor_out, 0)
-
-                for t in range(self.flags.unroll_length):
-                    # generate action
-                    if self.policy == PO_NET:
-                        # policy from applying actor network on the model-wrapped environment
-                        actor_out, actor_state = self.actor_net(env_out, actor_state)    
-                        action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
-                        if actor_out.term_action is not None:
-                            action.append(actor_out.term_action)
-                        action = torch.cat(action, dim=-1).unsqueeze(0)
-                    elif self.policy == PO_MODEL:
-                        # policy directly from the model
-                        actor_out = self.po_model(env_out, self.model_net)
-                        action = actor_out.action
-                    elif self.policy == PO_NSTEP:
-                        actor_out = self.po_nstep(self.env, self.model_net)
-                        action = actor_out.action
-                    if self.policy == PO_NET:
-                        env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
-                            self.employ_model_state)
-                    else:
-                        env_out = self.env.step(action, self.employ_model_net)
-                    # write the data to the respective buffers
+                while (True):      
+                    # prepare train_actor_out data to be written
+                    initial_actor_state = actor_state
                     if learner_actor_start:
-                        self.write_actor_buffer(env_out, actor_out, t+1)       
-                    if train_model and (self.policy != PO_NET or env_out.cur_t == 0): 
-                        baseline = None
+                        self.write_actor_buffer(env_out, actor_out, 0)
+
+                    for t in range(self.flags.unroll_length):
+                        # generate action
                         if self.policy == PO_NET:
-                            if self.flags.model_bootstrap_type == 1:
-                                baseline = self.env.env.baseline_max_q
-                            elif self.flags.model_bootstrap_type == 2:
-                                baseline = self.env.env.baseline_mean_q    
-                            elif self.flags.model_bootstrap_type == 3:
-                                baseline = actor_out.baseline[:, :, 0] / (self.flags.discounting ** ((self.flags.rec_t - 1)/ self.flags.rec_t))
-                        self.write_send_model_buffer(env_out, actor_out, baseline)   
-                    if test_eps_n > 0:
-                        finish, all_returns = self.write_test_buffer(
-                            env_out, actor_out, test_eps_n, verbose)
-                        if finish: return all_returns
-                    #if torch.any(env_out.done):            
-                    #    episode_returns = env_out.episode_return[env_out.done][:, 0]  
-                    #    episode_returns = list(episode_returns.detach().cpu().numpy())
-                    #    print(episode_returns)
-                if learner_actor_start:
-                    # send the data to remote actor buffer
-                    train_actor_out = (self.actor_local_buffer, initial_actor_state)
-                    status = 0
-                    while (True):
-                        status = ray.get(self.actor_buffer.get_status.remote())
-                        if status == AB_FULL: time.sleep(0.01) 
-                        else: break
-                    if status == AB_FINISH: break
-                    train_actor_out = ray.put(train_actor_out)
-                    self.actor_buffer.write.remote([train_actor_out])
-                # if preload buffer needed, check if preloaded
-                if train_actor and preload_needed and not preload:
-                    preload, tran_n = ray.get(self.model_buffer.check_preload.remote())
-                    if self.rank == 0: 
-                        if preload:
-                            print("Finish preloading")
-                            ray.get(self.model_buffer.set_preload.remote())
+                            # policy from applying actor network on the model-wrapped environment
+                            actor_out, actor_state = self.actor_net(env_out, actor_state)    
+                            action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
+                            if actor_out.term_action is not None:
+                                action.append(actor_out.term_action)
+                            action = torch.cat(action, dim=-1).unsqueeze(0)
+                        elif self.policy == PO_MODEL:
+                            # policy directly from the model
+                            actor_out = self.po_model(env_out, self.model_net)
+                            action = actor_out.action
+                        elif self.policy == PO_NSTEP:
+                            actor_out = self.po_nstep(self.env, self.model_net)
+                            action = actor_out.action
+                        if self.policy == PO_NET:
+                            env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
+                                self.employ_model_state)
                         else:
-                            print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
-                    learner_actor_start = not preload_needed or preload
-                # update model weight                
-                if n % 1 == 0:
-                    if self.flags.train_actor and self.policy == PO_NET :
-                        weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
-                        self.actor_net.set_weights(weights)
-                    if self.flags.train_model:           
-                        weights = ray.get(self.param_buffer.get_data.remote("model_net"))
-                        self.model_net.set_weights(weights)       
+                            env_out = self.env.step(action, self.employ_model_net)
+                        # write the data to the respective buffers
+                        if learner_actor_start:
+                            self.write_actor_buffer(env_out, actor_out, t+1)       
+                        if train_model and (self.policy != PO_NET or env_out.cur_t == 0): 
+                            baseline = None
+                            if self.policy == PO_NET:
+                                if self.flags.model_bootstrap_type == 0:
+                                    baseline = self.env.env.baseline_mean_q    
+                                elif self.flags.model_bootstrap_type == 1:
+                                    baseline = self.env.env.baseline_max_q
+                                elif self.flags.model_bootstrap_type == 2:
+                                    baseline = actor_out.baseline[:, :, 0] / (self.flags.discounting ** ((self.flags.rec_t - 1)/ self.flags.rec_t))
+                            self.write_send_model_buffer(env_out, actor_out, baseline)   
+                        if test_eps_n > 0:
+                            finish, all_returns = self.write_test_buffer(
+                                env_out, actor_out, test_eps_n, verbose)
+                            if finish: return all_returns
+                        #if torch.any(env_out.done):            
+                        #    episode_returns = env_out.episode_return[env_out.done][:, 0]  
+                        #    episode_returns = list(episode_returns.detach().cpu().numpy())
+                        #    print(episode_returns)
+                    if learner_actor_start:
+                        # send the data to remote actor buffer
+                        train_actor_out = (self.actor_local_buffer, initial_actor_state)
+                        status = 0
+                        while (True):
+                            status = ray.get(self.actor_buffer.get_status.remote())
+                            if status == AB_FULL: time.sleep(0.01) 
+                            else: break
+                        if status == AB_FINISH: break
+                        train_actor_out = ray.put(train_actor_out)
+                        self.actor_buffer.write.remote([train_actor_out])
+                    # if preload buffer needed, check if preloaded
+                    if train_actor and preload_needed and not preload:
+                        preload, tran_n = ray.get(self.model_buffer.check_preload.remote())
+                        if self.rank == 0: 
+                            if preload:
+                                print("Finish preloading")
+                                ray.get(self.model_buffer.set_preload.remote())
+                            else:
+                                print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
+                        learner_actor_start = not preload_needed or preload
+                    # update model weight                
+                    if n % 1 == 0:
+                        if self.flags.train_actor and self.policy == PO_NET :
+                            weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
+                            self.actor_net.set_weights(weights)
+                        if self.flags.train_model:           
+                            weights = ray.get(self.param_buffer.get_data.remote("model_net"))
+                            self.model_net.set_weights(weights)       
 
-                # Signal control for all self-play threads
-                signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
-                while (signals is not None and "halt" in signals and signals["halt"]):
-                    time.sleep(0.1)
+                    # Signal control for all self-play threads
                     signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
-                if (signals is not None and "term" in signals and signals["term"]):
-                    return True               
-                         
-                n += 1
-
+                    while (signals is not None and "halt" in signals and signals["halt"]):
+                        time.sleep(0.1)
+                        signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
+                    if (signals is not None and "term" in signals and signals["term"]):
+                        return True               
+                            
+                    n += 1
+        except:
+            # printing stack trace
+            traceback.print_exc()
+            return False
         return True                          
 
     def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int):
@@ -243,7 +248,7 @@ class SelfPlayWorker():
             self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.cpu())
 
     def empty_model_buffer(self):
-        pre_shape = (self.flags.model_unroll_length + self.flags.model_k_step_return, 1,)
+        pre_shape = (self.flags.model_unroll_length + 2 * self.flags.model_k_step_return, 1,)
         return TrainModelOut(
             gym_env_out=torch.zeros(pre_shape + self.env.gym_env_out_shape, dtype=torch.uint8),
             policy_logits=torch.zeros(pre_shape + (self.env.num_actions,), dtype=torch.float32),
@@ -287,7 +292,7 @@ class SelfPlayWorker():
             # write the beginning of another buffer
             self.write_single_model_buffer(1-n, t-cap_t, env_out, actor_out, baseline)      
 
-        if t >= cap_t + k - 1:
+        if t >= cap_t + 2 * k - 2:
             # finish writing a buffer, send it
             self.model_buffer.write.remote(self.model_local_buffer[n], 
                 self.initial_model_state if self.flags.model_rnn else None, 
@@ -296,7 +301,7 @@ class SelfPlayWorker():
                 self.initial_model_state = self.initial_model_state_ 
             self.model_local_buffer[n] = self.empty_model_buffer()
             self.model_n = 1 - n
-            self.model_t = k
+            self.model_t = t - cap_t + 1
         else:
             self.model_t += 1
 

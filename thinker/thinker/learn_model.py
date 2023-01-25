@@ -213,52 +213,40 @@ class ModelLearner():
         return True
 
     def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor, model_state: tuple):
-        k, b = train_model_out.gym_env_out.shape[0]-1, train_model_out.gym_env_out.shape[1]
+        k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
+        train_len = train_model_out.gym_env_out.shape[0] - k
+        # each elem in train_model_out is in the shape of (train_len + k, b, ...)
+
+        gym_env_out = train_model_out.gym_env_out[:train_len] # the last k elem are not needed
+        action = train_model_out.action[:train_len]
+
         if self.flags.perfect_model:   
             if not self.flags.model_rnn:
                 _, vs, logits, _ = self.model_net(
-                    x=train_model_out.gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
-                    actions=train_model_out.action.reshape(1, -1),
+                    x=gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
+                    actions=action.reshape(1, -1),
                     one_hot=False)
-                vs = vs.reshape(k+1, b)
-                logits = logits.reshape(k+1, b, -1)
+                vs = vs.reshape(k, b)
+                logits = logits.reshape(k, b, -1)
             else:
                 vs, logits, model_state = self.model_net(
-                    x=train_model_out.gym_env_out,                                        
-                    actions=train_model_out.action,
-                    done=train_model_out.done,
+                    x=gym_env_out,                                        
+                    actions=action,
+                    done=train_model_out.done[:train_len],
                     state=model_state,
                     one_hot=False)
         else:        
             rs, vs, logits, _ = self.model_net(
-                x=train_model_out.gym_env_out[0], 
-                actions=train_model_out.action,
+                x=gym_env_out[0], 
+                actions=action,
                 one_hot=False)
 
-        logits = logits[:-1]
-        target_rewards = train_model_out.reward[1:]
-        target_logits = train_model_out.policy_logits[1:]
+        target_rewards = train_model_out.reward[1:train_len+1]
+        target_logits = train_model_out.policy_logits[1:train_len+1]
 
-        target_vs = []
-        if self.flags.model_bootstrap_type != 0:
-            target_v = train_model_out.baseline[-1]            
-        elif not self.flags.perfect_model: 
-            target_v = self.model_net(train_model_out.gym_env_out[-1], train_model_out.action[[-1]])[1][0].detach()        
-        else:
-            target_v = vs[-1]
-
-        for t in range(k, 0, -1):
-            if (self.flags.model_bootstrap_type != 0) and t == k:
-                new_target_v = target_v
-            else:                
-                new_target_v = train_model_out.reward[t] + self.flags.discounting * (
-                    target_v * (~train_model_out.done[t]).float())
-            target_vs.append(new_target_v.unsqueeze(0))
-            target_v = new_target_v
-
-        target_vs.reverse()
-        target_vs = torch.concat(target_vs, dim=0)
-
+        target_vs = train_model_out.baseline[k:train_len+k]
+        for t in range(train_len+k-1, train_len-1, -1):
+            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t]).float() + train_model_out.reward[t]
 
         # if done on step j, r_{j}, v_{j-1}, a_{j-1} has the last valid loss 
         # rs is stored in the form of r_{t+1}, ..., r_{t+k}
@@ -288,7 +276,7 @@ class ModelLearner():
             rs_loss = torch.sum(rs_loss)
             
         #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
-        vs_loss = torch.sum(((vs[:-1] - target_vs) ** 2) * (~done_masks).float(), dim=0)
+        vs_loss = torch.sum(((vs[:train_len] - target_vs) ** 2) * (~done_masks).float(), dim=0)
         vs_loss = vs_loss * is_weights
         vs_loss = self.flags.model_vs_loss_cost * torch.sum(vs_loss)
 
@@ -302,7 +290,14 @@ class ModelLearner():
                    "vs_loss": vs_loss,
                    "logits_loss": logits_loss,
                    "rs_loss": rs_loss }
-        priorities = ((vs[0] - target_vs[0]) ** 2).detach().cpu().numpy()
+
+        # compute priorities
+        if not self.flags.model_batch_mode:
+            priorities = (torch.absolute(vs - target_vs))
+            priorities[done_masks] = torch.nan
+            priorities = priorities.detach().cpu().numpy()
+        else:
+            priorities = (torch.absolute(vs[0] - target_vs[0])).detach().cpu().numpy()
 
         return losses, priorities, model_state
 

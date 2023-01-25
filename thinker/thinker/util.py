@@ -132,7 +132,7 @@ def parse(args=None):
     parser.add_argument("--model_vs_loss_cost", default=1, type=float,
                        help="Multipler to policy vs loss when training the model.")                           
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
-                       help="Type of boostrap value; 0 for model's value, 1 for max root value, 2 for mean root value, 3 for actor'svalue.")     
+                       help="0 for mean root value, 1 for max root value, 2 for actor'svalue.")     
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
