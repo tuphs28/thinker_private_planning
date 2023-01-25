@@ -151,30 +151,35 @@ class ModelBuffer():
             # abs_flat_inds is an array of shape (model_batch_size,)
             # priorities is an array of shape (model_batch_size, k)
             priorities = priorities.transpose()
-            flat_inds = abs_flat_inds - base_ind_pri
-            mask = (flat_inds > 0)
-            flat_inds = flat_inds[mask]
-            inds = np.unravel_index(flat_inds, (len(self.buffer), self.n))
 
-            abs_flat_inds = abs_flat_inds[:, np.newaxis] + np.arange(priorities.shape[1])[np.newaxis, :]
-            done_mask = np.isnan(priorities)
-            abs_flat_inds = abs_flat_inds[~done_mask]
-            priorities = priorities[~done_mask]
-            abs_flat_inds = abs_flat_inds.reshape(-1)
-            priorities = priorities.reshape(-1)
+            flat_inds = abs_flat_inds - base_ind_pri # get the relative index
+            mask = flat_inds >= 0 
+            flat_inds = flat_inds[mask] 
+            priorities = priorities[mask]
 
-            flat_inds = abs_flat_inds - base_ind_pri
-            mask = (flat_inds > 0) & (flat_inds < len(self.priorities))
-            self.priorities[flat_inds[mask]] = priorities[mask]        
+            flat_inds = flat_inds[:, np.newaxis] + np.arange(self.k) # flat_inds now stores uncarried indexes
+            flat_inds_block = flat_inds // (self.t * self.n) # block index of flat_inds
+            carry_mask = ~(flat_inds_block[:,[0]] == flat_inds_block).reshape(-1) 
+            # if first index block is not the same as the later index block, we need to carry it
 
+            flat_inds = flat_inds.reshape(-1)
+            flat_inds_block = flat_inds_block.reshape(-1)
+            carry_inds_block = self.next_inds[flat_inds_block[carry_mask]-1] - self.base_ind // self.n  # the correct index block
 
+            flat_inds = flat_inds.astype(float)
+            flat_inds[carry_mask] = flat_inds[carry_mask] + (-flat_inds_block[carry_mask] + carry_inds_block) * (self.t * self.n) 
+            mask = ~np.isnan(flat_inds)
+            flat_inds = flat_inds[mask].astype(int)
+
+            priorities = priorities.reshape(-1)[mask]            
+            self.priorities[flat_inds] = priorities      
         else:
             flat_inds = abs_flat_inds - base_ind_pri
             mask = (flat_inds > 0) & (flat_inds < len(self.priorities))
             self.priorities[flat_inds[mask]] = priorities[mask]        
 
             if state is not None:
-                mask = (flat_inds > 0)
+                mask = (flat_inds >= 0)
                 if len(mask) > 0:                
                     flat_inds_masked = flat_inds[mask]
                     state_masked = tuple(x[:, mask] for x in state) # assume batch size is in the second dim
