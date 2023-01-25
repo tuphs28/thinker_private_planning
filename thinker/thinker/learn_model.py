@@ -245,8 +245,8 @@ class ModelLearner():
         target_logits = train_model_out.policy_logits[1:train_len+1]
 
         target_vs = train_model_out.baseline[k:train_len+k]
-        for t in range(train_len+k-1, train_len-1, -1):
-            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t]).float() + train_model_out.reward[t]
+        for t in range(k, 0, -1):
+            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]
 
         # if done on step j, r_{j}, v_{j-1}, a_{j-1} has the last valid loss 
         # rs is stored in the form of r_{t+1}, ..., r_{t+k}
