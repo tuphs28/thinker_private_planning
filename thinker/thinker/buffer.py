@@ -65,7 +65,7 @@ class ModelBuffer():
         self.clean_m = 0
     
     def write(self, data, state, rank):
-        # data is a named tuple with elements of size (t+k, n, ...)        
+        # data is a named tuple with elements of size (t+2*k-1, n, ...)        
         self.buffer.append(data)
         self.state.append(state)        
 
@@ -117,7 +117,7 @@ class ModelBuffer():
             elems=[]
             for i in range(self.batch_size):
                 if not self.batch_mode:
-                    elems.append(self.buffer[inds[0][i]][d][inds[1][i]:inds[1][i]+self.k+1, inds[2][i]].unsqueeze(1))
+                    elems.append(self.buffer[inds[0][i]][d][inds[1][i]:inds[1][i]+2*self.k, inds[2][i]].unsqueeze(1))
                 else:
                     elems.append(self.buffer[inds[0][i]][d][:-self.k, inds[1][i]].unsqueeze(1))
             data.append(torch.concat(elems, dim=1))
@@ -145,23 +145,46 @@ class ModelBuffer():
         """ Update priority and states in the buffer; both input 
         are np array of shape (update_size,)"""
         base_ind_pri = self.base_ind * self.t if not self.batch_mode else self.base_ind
-        flat_inds = abs_flat_inds - base_ind_pri
-        mask = (flat_inds > 0)
-        self.priorities[flat_inds[mask]] = priorities[mask]        
 
-        if state is not None:
-            assert self.batch_mode, "can only update state in batch mode"
+        if not self.batch_mode:
+            assert state is None, "can only update state in batch mode"
+            # abs_flat_inds is an array of shape (model_batch_size,)
+            # priorities is an array of shape (model_batch_size, k)
+            priorities = priorities.transpose()
+            flat_inds = abs_flat_inds - base_ind_pri
             mask = (flat_inds > 0)
-            if len(mask) > 0:                
-                flat_inds_masked = flat_inds[mask]
-                state_masked = tuple(x[:, mask] for x in state) # assume batch size is in the second dim
-                inds = np.unravel_index(flat_inds_masked, (len(self.buffer), self.n))
-                for i in range(len(flat_inds_masked)):
-                    next_abs_ind = self.next_inds[inds[0][i]]
-                    if np.isnan(next_abs_ind): continue
-                    next_ind = int(next_abs_ind - self.base_ind / self.n)
-                    for d in range(len(self.state[0])):
-                        self.state[next_ind][d][:, inds[1][i]] = state_masked[d][:, i]
+            flat_inds = flat_inds[mask]
+            inds = np.unravel_index(flat_inds, (len(self.buffer), self.n))
+
+            abs_flat_inds = abs_flat_inds[:, np.newaxis] + np.arange(priorities.shape[1])[np.newaxis, :]
+            done_mask = np.isnan(priorities)
+            abs_flat_inds = abs_flat_inds[~done_mask]
+            priorities = priorities[~done_mask]
+            abs_flat_inds = abs_flat_inds.reshape(-1)
+            priorities = priorities.reshape(-1)
+
+            flat_inds = abs_flat_inds - base_ind_pri
+            mask = (flat_inds > 0) & (flat_inds < len(self.priorities))
+            self.priorities[flat_inds[mask]] = priorities[mask]        
+
+
+        else:
+            flat_inds = abs_flat_inds - base_ind_pri
+            mask = (flat_inds > 0) & (flat_inds < len(self.priorities))
+            self.priorities[flat_inds[mask]] = priorities[mask]        
+
+            if state is not None:
+                mask = (flat_inds > 0)
+                if len(mask) > 0:                
+                    flat_inds_masked = flat_inds[mask]
+                    state_masked = tuple(x[:, mask] for x in state) # assume batch size is in the second dim
+                    inds = np.unravel_index(flat_inds_masked, (len(self.buffer), self.n))
+                    for i in range(len(flat_inds_masked)):
+                        next_abs_ind = self.next_inds[inds[0][i]]
+                        if np.isnan(next_abs_ind): continue
+                        next_ind = int(next_abs_ind - self.base_ind / self.n)
+                        for d in range(len(self.state[0])):
+                            self.state[next_ind][d][:, inds[1][i]] = state_masked[d][:, i]
 
     def clean(self):        
         buffer_n = len(self.buffer)
