@@ -15,8 +15,8 @@ cdef class cSokoban:
 	cdef Sokoban c_sokoban
 	cdef int obs_x, obs_y, obs_n
 
-	def __init__(self, bool small, string level_dir, string img_dir):
-		self.c_sokoban = Sokoban(small, level_dir, img_dir)	
+	def __init__(self, bool small, string level_dir, string img_dir, seed=0):
+		self.c_sokoban = Sokoban(small, level_dir, img_dir, seed)	
 		self.obs_x = self.c_sokoban.obs_x
 		self.obs_y = self.c_sokoban.obs_y
 		self.obs_n = self.c_sokoban.obs_n
@@ -60,6 +60,9 @@ cdef class cSokoban:
 		cdef bool done = state["sokoban_done"]
 		cdef unsigned char[::1] room_status_view = room_status
 		self.c_sokoban.restore_state(&room_status_view[0], step_n, done)
+
+	def seed(self, seed):		
+		self.c_sokoban.set_seed(seed)
 
 	@property
 	def step_n(self):

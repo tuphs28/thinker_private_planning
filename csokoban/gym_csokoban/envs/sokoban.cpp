@@ -94,6 +94,7 @@ void Sokoban::read_spirits() {
 	read_bmp(img_dir, "player" + s, spirites[4]);
 	read_bmp(img_dir, "player_on_target" + s, spirites[5]);
 	read_bmp(img_dir, "box_target" + s, spirites[6]);
+	srand(time(0));
 }
 
 void Sokoban::move_pos(const action a, int& x, int& y) {
@@ -263,16 +264,14 @@ void Sokoban::render(unsigned char* obs) {
 	out.close();*/
 }
 
-void Sokoban::reset(unsigned char* obs) {
-	srand((unsigned)time(nullptr));
-	int room_id = rand() % (900 * 1000 - 1);
+void Sokoban::reset(unsigned char* obs) {	
+	int room_id = rand() % (900 * 1000 - 1);	
 	read_level(room_id);
 	step_n = rand() % 5;
 	render(obs);
 }
 
 void Sokoban::reset_level(unsigned char* obs, const int room_id) {
-	srand((unsigned)time(nullptr));
 	read_level(room_id);
 	step_n = rand() % 5;
 	render(obs);
@@ -315,4 +314,9 @@ void Sokoban::restore_state(const unsigned char* room_status, const int& step_n,
 			}
 
 		}
+}
+
+void Sokoban::set_seed(unsigned int seed){
+	this->seed = seed;
+	srand(this->seed+1);	
 }
