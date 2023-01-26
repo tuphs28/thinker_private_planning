@@ -181,7 +181,7 @@ class AsyncVectorEnv(VectorEnv):
         _, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
         self._raise_if_errors(successes)
 
-    def reset_async(self):
+    def reset_async(self, inds=None):
         self._assert_is_running()
         if self._state != AsyncState.DEFAULT:
             raise AlreadyPendingCallError(
@@ -189,9 +189,12 @@ class AsyncVectorEnv(VectorEnv):
                 "for a pending call to `{0}` to complete".format(self._state.value),
                 self._state.value,
             )
-
-        for pipe in self.parent_pipes:
-            pipe.send(("reset", None))
+        if inds is None:
+            for pipe in self.parent_pipes:
+                pipe.send(("reset", None))
+        else:
+            for n, ind in enumerate(inds):
+                self.parent_pipes[ind].send(("reset", None))            
         self._state = AsyncState.WAITING_RESET
 
     def reset_wait(self, timeout=None):
@@ -501,8 +504,7 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
                 pipe.send((observation, True))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
-                if done:
-                    observation = env.reset()
+                #if done: observation = env.reset()
                 pipe.send(((observation, reward, done, info), True))
             elif command == "clone_state":
                 env_state = env.clone_state()
@@ -547,8 +549,8 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 pipe.send((None, True))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
-                if done:
-                    observation = env.reset()
+                #if done:
+                #    observation = env.reset()
                 write_to_shared_memory(
                     index, observation, shared_memory, observation_space
                 )

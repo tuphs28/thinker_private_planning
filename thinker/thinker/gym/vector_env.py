@@ -50,7 +50,7 @@ class VectorEnv(gym.Env):
     def reset_wait(self, **kwargs):
         raise NotImplementedError()
 
-    def reset(self):
+    def reset(self, inds=None):
         r"""Reset all sub-environments and return a batch of initial observations.
 
         Returns
@@ -58,7 +58,7 @@ class VectorEnv(gym.Env):
         observations : sample from `observation_space`
             A batch of observations from the vectorized environment.
         """
-        self.reset_async()
+        self.reset_async(inds=inds)
         return self.reset_wait()
 
     def step_async(self, actions):
