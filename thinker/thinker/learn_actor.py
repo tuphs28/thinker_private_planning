@@ -168,7 +168,7 @@ class ActorLearner():
             # (train_actor_out_2, initial_actor_state_2) ...]
 
             train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
-                else None for n in range(len(data[0][0])))))
+                else None for n in range(len(data[0][0]))))
             initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
             
             # compute losses
