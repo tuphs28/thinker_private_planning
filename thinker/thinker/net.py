@@ -46,24 +46,20 @@ class ActorNet(nn.Module):
                                 attn_mask_b=self.attn_mask_b)                         
         
         rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
+        self.fc = nn.Linear(rnn_out_size, 256)        
+
+        last_out_size = 256
+        if self.actor_see_p > 0: last_out_size += 256
+        self.im_policy = nn.Linear(last_out_size, self.num_actions)        
+        self.policy = nn.Linear(last_out_size, self.num_actions)        
+        self.baseline = nn.Linear(last_out_size, self.num_rewards)        
+        self.reset = nn.Linear(last_out_size, 2)        
+        
+        if self.flex_t: self.term = nn.Linear(last_out_size, 2)        
+
         if self.actor_see_p > 0:
             if not self.actor_drc:
                 down_scale_c = 4
-                rnn_out_size = rnn_out_size + 5 * 5 * (64 //down_scale_c)
-            else:
-                rnn_out_size += 256
-
-        self.fc = nn.Linear(rnn_out_size, 256)        
-        
-        self.im_policy = nn.Linear(256, self.num_actions)        
-        self.policy = nn.Linear(256, self.num_actions)        
-        self.baseline = nn.Linear(256, self.num_rewards)        
-        self.reset = nn.Linear(256, 2)        
-        
-        if self.flex_t: self.term = nn.Linear(256, 2)        
-
-        if self.actor_see_p > 0:
-            if not self.actor_drc:
                 self.gym_frame_encoder = FrameEncoder(num_actions=self.num_actions, 
                     down_scale_c=down_scale_c, concat_action=False)
                 self.gym_frame_conv = torch.nn.Sequential(
@@ -80,7 +76,7 @@ class ActorNet(nn.Module):
                 self.drc_core = ConvAttnLSTM(h=8, w=8,
                     input_dim=32, hidden_dim=32, kernel_size=3, 
                     num_layers=3, num_heads=8, mem_n=0, attn=False, attn_mask_b=0.)
-                self.drc_fc = nn.Linear(8*8*32, 256)     
+            self.drc_fc = nn.Linear(8*8*32, 256)     
 
         #print("actor size: ", sum(p.numel() for p in self.parameters()))
         #for k, v in self.named_parameters(): print(k, v.numel())   
@@ -143,10 +139,10 @@ class ActorNet(nn.Module):
                 
             last_input = input   
             core_output_list.append(output)                             
-        core_output = torch.cat(core_output_list)  
-            
+        core_output = torch.cat(core_output_list)              
         core_output = torch.flatten(core_output, 0, 1)        
         core_output = torch.flatten(core_output, start_dim=1)
+        core_output = F.relu(self.fc(core_output))
 
         if self.actor_see_p > 0:
             gym_x = obs.gym_env_out.float()
@@ -175,8 +171,7 @@ class ActorNet(nn.Module):
                 core_output_2 = torch.flatten(core_output_2, start_dim=1)
                 core_output_2 = F.relu(self.drc_fc(core_output_2))
                 core_output = torch.concat([core_output, core_output_2], dim=1)
-
-        core_output = F.relu(self.fc(core_output))        
+   
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)
         reset_policy_logits = self.reset(core_output)
