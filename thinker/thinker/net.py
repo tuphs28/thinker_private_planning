@@ -149,7 +149,8 @@ class ActorNet(nn.Module):
         core_output = torch.flatten(core_output, start_dim=1)
 
         if self.actor_see_p > 0:
-            gym_x = obs.gym_env_out * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            gym_x = obs.gym_env_out.float()
+            gym_x = gym_x * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             gym_x = torch.flatten(gym_x, 0, 1)   
             if not self.actor_drc:
                 conv_out = self.gym_frame_encoder(gym_x, actions = None)   
@@ -157,6 +158,7 @@ class ActorNet(nn.Module):
                 conv_out = torch.flatten(conv_out, start_dim=1)
                 core_output = torch.concat([core_output, conv_out], dim=1)
             else:                
+                gym_x = gym_x / 255.0
                 conv_out = self.gym_frame_conv(gym_x)
                 core_input = conv_out.view(T, B, -1, 8, 8)
                 core_output_list = []

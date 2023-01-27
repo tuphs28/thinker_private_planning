@@ -166,8 +166,9 @@ class ActorLearner():
             # batch and move the data to the process device
             # data is in the form [(train_actor_out_1, initial_actor_state_1), 
             # (train_actor_out_2, initial_actor_state_2) ...]
-            train_actor_out = TrainActorOut(*(torch.concat([x[0][n] for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
-                else None for n in range(len(data[0][0]))))
+
+            train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
+                else None for n in range(len(data[0][0])))))
             initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
             
             # compute losses

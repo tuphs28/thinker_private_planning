@@ -36,6 +36,8 @@ class SelfPlayWorker():
         self.flags = flags
 
         self.env = Environment(flags, model_wrap=policy==PO_NET)
+        self.env.env.env.seed(rank)
+        
         if self.policy==PO_NET:
             self.actor_net = ActorNet(obs_shape=self.env.model_out_shape, num_actions=self.env.num_actions, flags=flags)
 
@@ -186,8 +188,10 @@ class SelfPlayWorker():
                         status = 0
                         while (True):
                             status = ray.get(self.actor_buffer.get_status.remote())
-                            if status == AB_FULL: time.sleep(0.01) 
-                            else: break
+                            if status == AB_FULL: 
+                                time.sleep(0.1) 
+                            else: 
+                                break
                         if status == AB_FINISH: break
                         train_actor_out = ray.put(train_actor_out)
                         self.actor_buffer.write.remote([train_actor_out])
@@ -245,7 +249,7 @@ class SelfPlayWorker():
         
         if t == self.flags.unroll_length:
             # post-processing
-            self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.cpu())
+            self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.numpy())
 
     def empty_model_buffer(self):
         pre_shape = (self.flags.model_unroll_length + 2 * self.flags.model_k_step_return, 1,)
