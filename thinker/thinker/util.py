@@ -159,6 +159,8 @@ def parse(args=None):
                         help="Whether to carry planning reward over.")      
     parser.add_argument("--thres_discounting", default=0.9,
                         type=float, help="Threshold discounting factor.")   
+    parser.add_argument("--model_wrapper_ver", default=1,
+                        type=float, help="Model wrapper version.")
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,

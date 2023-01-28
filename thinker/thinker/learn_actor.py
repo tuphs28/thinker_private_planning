@@ -325,8 +325,8 @@ class ActorLearner():
             im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
                 vtrace_returns.vs - new_actor_out.baseline[:, :, 1], masks_ls = [zero_mask], c_ls = [self.flags.im_cost])     
         else:
-            im_pg_loss = 0.
-            im_baseline_loss = 0.
+            im_pg_loss = torch.zeros(self.device)
+            im_baseline_loss = torch.zeros(self.device)
             
         target_logits_ls = [new_actor_out.policy_logits, new_actor_out.im_policy_logits, new_actor_out.reset_policy_logits]
         masks_ls = [real_mask, im_mask, im_mask]    

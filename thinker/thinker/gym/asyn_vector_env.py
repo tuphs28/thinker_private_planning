@@ -194,7 +194,8 @@ class AsyncVectorEnv(VectorEnv):
                 pipe.send(("reset", None))
         else:
             for n, ind in enumerate(inds):
-                self.parent_pipes[ind].send(("reset", None))            
+                self.parent_pipes[ind].send(("reset", None))   
+        self.inds = inds         
         self._state = AsyncState.WAITING_RESET
 
     def reset_wait(self, timeout=None):
@@ -224,7 +225,8 @@ class AsyncVectorEnv(VectorEnv):
                 "{0} second{1}.".format(timeout, "s" if timeout > 1 else "")
             )
 
-        results, successes = zip(*[pipe.recv() for pipe in self.parent_pipes])
+        rec_pipes = self.parent_pipes if self.inds is None else [self.parent_pipes[i] for i in self.inds]
+        results, successes = zip(*[pipe.recv() for pipe in rec_pipes])
         self._raise_if_errors(successes)
         self._state = AsyncState.DEFAULT
 
@@ -232,8 +234,13 @@ class AsyncVectorEnv(VectorEnv):
             self.observations = concatenate(
                 results, self.observations, self.single_observation_space
             )
-
-        return deepcopy(self.observations) if self.copy else self.observations
+        if self.inds is None:
+            ret_observations = deepcopy(self.observations) if self.copy else self.observations
+        else:
+            ret_observations = np.array([self.observations[i] for i in self.inds])        
+            if self.copy: 
+                ret_observations = deepcopy(ret_observations) 
+        return ret_observations
 
     def clone_state_async(self, inds):
         self._assert_is_running()

@@ -117,9 +117,10 @@ class PostWrapper:
         episode_return = self.episode_return.clone()
         if done:
             if self.model_wrap:
-                out = self.env.reset(model_net)
+                out, model_state = self.env.reset(model_net)
+                gym_env_out, model_out = _format(*out)
             else:
-                out = self.env.reset()
+                gym_env_out, model_out = _format(self.env.reset(), None)
             self.episode_return = torch.zeros(1, 1, 1)
             self.episode_step = torch.zeros(1, 1, dtype=torch.int32)        
         
@@ -166,6 +167,9 @@ class PostWrapper:
     def close(self):
         self.env.close()
 
+    def seed(self, seed):
+        self.env.seed(seed)    
+
     def clone_state(self):
         state = self.env.clone_state()
         state["env_episode_return"] = self.episode_return.clone()
@@ -202,6 +206,7 @@ class ModelWrapper(gym.Wrapper):
         self.num_actions = env.action_space.n
         self.cur_node = None
         self.root_node = None
+        self.ver = 0 if not hasattr(flags, "model_wrapper_ver") else flags.model_wrapper_ver
             
         if not self.flex_t:
             obs_n = 9 + self.num_actions * 10 + self.rec_t
@@ -281,6 +286,8 @@ class ModelWrapper(gym.Wrapper):
         if self.reward_type == 1:          
             self.last_root_max_q = self.root_max_q   
         
+        if self.ver > 0:
+            info["max_rollout_depth"] = self.max_rollout_depth
         return (x, out), r, done, info, model_state
         
     def use_model(self, model_net, model_state, x, r, a, cur_t, reset, term, done):     
@@ -405,7 +412,10 @@ class ModelWrapper(gym.Wrapper):
                 if self.reset_m >= 0 and self.unexpand_rollout_depth > self.reset_m:
                     reset = True
             
-            root_node_stat = self.root_node.stat()
+            if self.ver > 0:
+                root_node_stat = self.root_node.stat(detailed=True)
+            else:
+                root_node_stat = self.root_node.stat()
             cur_node_stat = self.cur_node.stat()                        
             reset = torch.tensor([reset], dtype=torch.float32)            
             depc = torch.tensor([self.discounting ** (self.rollout_depth-1)])
@@ -423,10 +433,16 @@ class ModelWrapper(gym.Wrapper):
                 time = torch.tensor([self.discounting ** (self.cur_t)])                    
                 
             if not self.flex_t:
-                ret_list = [root_node_stat, cur_node_stat, reset, time, depc, root_trail_r, root_rollout_q, root_max_q]
+                if self.ver > 0:
+                    ret_list = [root_node_stat, cur_node_stat, reset, time, depc]
+                else:                    
+                    ret_list = [root_node_stat, cur_node_stat, reset, time, depc, root_trail_r, root_rollout_q, root_max_q]
             else:
                 term = torch.tensor([term], dtype=torch.float32)                            
-                ret_list = [root_node_stat, cur_node_stat, root_trail_r, root_rollout_q, root_max_q, reset, depc, term, time]
+                if self.ver > 0:
+                    ret_list = [root_node_stat, cur_node_stat, reset, term, time, depc]
+                else:
+                    ret_list = [root_node_stat, cur_node_stat, root_trail_r, root_rollout_q, root_max_q, reset, depc, term, time]
                 
             out = torch.concat(ret_list, dim=-1)  
             self.last_node = self.cur_node     
@@ -453,7 +469,10 @@ class ModelWrapper(gym.Wrapper):
                 self.pass_unexpand = False
             
             return out, x, self.root_node.encoded["model_state"] if model_net.rnn else None
-                
+
+    def seed(self, seed):
+        self.env.seed(seed)
+
 class Node:
     def __init__(self, parent, action, logit, num_actions, discounting, rec_t):        
         
@@ -512,7 +531,7 @@ class Node:
             self.rollout_n = self.rollout_n + 1
         if self.parent is not None: self.parent.propagate(r, v, new_rollout)
             
-    def stat(self):
+    def stat(self, detailed=False):
         assert self.expanded()
         self.child_logits = torch.concat([x.logit for x in self.children])        
         child_rollout_qs_mean = []
@@ -528,15 +547,23 @@ class Node:
             child_rollout_qs_max.append(q_max)
         self.child_rollout_qs_mean = torch.concat(child_rollout_qs_mean)
         self.child_rollout_qs_max = torch.concat(child_rollout_qs_max)
+
+        if detailed:
+            self.trail_r_undiscount = self.trail_r / self.discounting
+            self.rollout_q_undiscount = self.rollout_q / self.discounting
+            self.max_q = torch.max(torch.concat(self.rollout_qs) - self.r).unsqueeze(-1) / self.discounting            
         
         self.child_rollout_ns = torch.tensor([x.rollout_n for x in self.children]).long()
         self.child_rollout_ns_enc = self.child_rollout_ns / self.rec_t       
             
         ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
                     "child_rollout_qs_max", "child_rollout_ns_enc"]
+        if detailed: ret_list.extend(["trail_r_undiscount", "rollout_q_undiscount", "max_q"])
         self.ret_dict = {x: getattr(self, x) for x in ret_list}
+        #for x in ret_list: print(x, getattr(self, x))
         out = torch.concat(list(self.ret_dict.values()))        
-        return out                
+        return out         
+            
 
 # Standard wrappers
 

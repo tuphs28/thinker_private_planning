@@ -89,7 +89,6 @@ class ModelLearner():
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
         last_psteps = 0
-
         
         r_tester = None
         all_returns = None
