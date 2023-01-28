@@ -88,8 +88,6 @@ class ModelBuffer():
         else:
             self.next_inds = np.concatenate([self.next_inds, np.full((1), fill_value=np.nan)])
         self.cur_inds[rank] = len(self.next_inds) + self.base_ind / self.n - 1
-        
-
         self.abs_tran_n += self.t * self.n                        
 
         # clean periordically
