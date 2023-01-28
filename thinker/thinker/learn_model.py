@@ -114,7 +114,7 @@ class ModelLearner():
                 if timer() - start_time > 5:
                     tran_n = ray.get(self.model_buffer.get_processed_n.remote())
                     print("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
-                    start_time = timer()
+                    start_time = timer()                
 
             # start consume data
             train_model_out, model_state, is_weights, inds, new_psteps = data            

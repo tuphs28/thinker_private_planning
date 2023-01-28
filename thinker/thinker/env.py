@@ -230,17 +230,11 @@ class ModelWrapper(gym.Wrapper):
         
         self.max_rollout_depth = 0.
         self.thres = None
-        self.baseline_max_q = None
-        self.baseline_mean_q = None
+        self.baseline_max_q = torch.zeros(1, dtype=torch.float32)
+        self.baseline_mean_q = torch.zeros(1, dtype=torch.float32)
         self.root_max_q = None
         
     def reset(self, model_net, **kwargs):
-        # record the root stat of previous state before move forward
-        if self.root_node is not None:
-            rollout_qs = self.root_node.rollout_qs  
-            self.baseline_mean_q = torch.zeros(1)
-            self.baseline_max_q = torch.zeros(1)
-
         x = self.env.reset(**kwargs)
         self.cur_t = 0            
         model_state = model_net.init_state(1) if model_net.rnn else None                
@@ -603,6 +597,9 @@ class VecModelWrapper(gym.Wrapper):
         assert not self.thres_carry, "thres_carry not yet supported"
         assert not flags.model_rnn, "model_rnn not yet supported"
         assert flags.reward_type == 1, "only support reward_type 1"
+
+        self.baseline_max_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
+        self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
         
         self.time = time
         if self.time: self.timings = util.Timings()
@@ -615,10 +612,6 @@ class VecModelWrapper(gym.Wrapper):
             self.rollout_depth = torch.zeros(self.env_n, dtype=torch.long)
             self.max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long)
             self.cur_t = torch.zeros(self.env_n, dtype=torch.long)
-
-            # record baseline before moving on
-            self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
-            self.baseline_max_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
 
             # reset obs
             obs = self.env.reset()
@@ -741,8 +734,6 @@ class VecModelWrapper(gym.Wrapper):
 
                     obs[reset_m] = obs_reset
                     pass_action[reset_needed[sel_inds]] = 0    
-                    self.baseline_mean_q[reset_needed] = 0.
-                    self.baseline_max_q[reset_needed] = 0.
 
                 if self.time: self.timings.time("misc_2")
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
