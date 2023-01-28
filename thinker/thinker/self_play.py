@@ -124,7 +124,7 @@ class SelfPlayWorker():
                 else:
                     env_out = self.env.initial(self.employ_model_net)      
                 if self.policy == PO_NET:      
-                    actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)
+                    actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)                    
                     actor_out, _ = self.actor_net(env_out, actor_state)   
                 elif self.policy == PO_MODEL:
                     actor_out = self.po_model(env_out, self.model_net)

@@ -223,7 +223,7 @@ class ModelWrapper(gym.Wrapper):
         if not self.flex_t:
             obs_n = 9 + self.num_actions * 10 + self.rec_t
         else:
-            obs_n = 10 + self.num_actions * 11 
+            obs_n = 11 + self.num_actions * 10 
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
@@ -596,7 +596,7 @@ class VecModelWrapper(gym.Wrapper):
         if not self.flex_t:
             obs_n = 9 + self.num_actions * 10 + self.rec_t
         else:
-            obs_n = 10 + self.num_actions * 11 
+            obs_n = 11 + self.num_actions * 10 
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(env_n, obs_n, 1, 1), dtype=float)
@@ -897,7 +897,7 @@ class VecModelWrapper(gym.Wrapper):
                 if torch.any(reset_needed):
                     term = term.clone()
                     term[reset_needed] = 0.
-            ret_list = [root_nodes_stat, cur_nodes_stat, reset, term, time, depc]
+            ret_list = [root_nodes_stat, cur_nodes_stat, reset, term, time, depc]            
         model_out = torch.concat(ret_list, dim=-1)  
         return model_out
 
