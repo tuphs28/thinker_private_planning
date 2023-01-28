@@ -8,29 +8,31 @@ AB_CAN_WRITE, AB_FULL, AB_FINISH = 0, 1, 2
 
 @ray.remote
 class ActorBuffer():
-    def __init__(self, batch_size=32):
+    def __init__(self, batch_size=32, num_p_actors=1):
         self.batch_size = batch_size
+        self.num_p_actors = num_p_actors
+        self.full_buffer_size = batch_size // num_p_actors
         self.buffer = []
         self.finish = False
     
     def get_status(self):
         if self.finish: return AB_FINISH
-        if len(self.buffer) >= 2 * self.batch_size: return AB_FULL
+        if len(self.buffer) >= 2 * self.full_buffer_size : return AB_FULL
         return AB_CAN_WRITE
 
     def set_finish(self):
         self.finish = True
 
     def available_for_read(self):
-        return len(self.buffer) >= self.batch_size
+        return len(self.buffer) >= self.full_buffer_size
     
     def write(self, data):
         self.buffer.append(data[0])
     
     def read(self):
-        if len(self.buffer) >= self.batch_size: 
-            data = self.buffer[:self.batch_size]  
-            del self.buffer[:self.batch_size]   
+        if len(self.buffer) >= self.full_buffer_size: 
+            data = self.buffer[:self.full_buffer_size]  
+            del self.buffer[:self.full_buffer_size]   
             return data 
             # remotely this becomes a ref of a list of ref; need double ray.get to get value
         else:
@@ -43,7 +45,7 @@ class ModelBuffer():
         
         self.t = flags.model_unroll_length   
         self.k = flags.model_k_step_return
-        self.n = flags.actor_parallel_n             
+        self.n = flags.num_p_actors             
         self.batch_mode = flags.model_batch_mode
         self.model_rnn = flags.model_rnn
 

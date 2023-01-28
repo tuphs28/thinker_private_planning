@@ -4,12 +4,14 @@ import torch
 from torch.nn import functional as F
 import gym
 import gym_csokoban
+from thinker.gym.asyn_vector_env import AsyncVectorEnv
+from thinker import util
 
 EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 
     'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action',
     'max_rollout_depth'])
 
-def Environment(flags, model_wrap=True):
+def Environment(flags, model_wrap=True, env_n=1, device=None):
     """Create an environment using flags.env; first
     wrap the env with basic wrapper, then wrap it
     with a model, and finally wrap it with PosWrapper
@@ -18,13 +20,23 @@ def Environment(flags, model_wrap=True):
     Args:
         flags (namespace): configuration flags
         model_wrap (boolean): whether to wrap the environment with model
+        env_n (int): number of parallel env
+        device (torch.device): device that runs the model 
     Return:
         environment
     """
-    if model_wrap:
-        return PostWrapper(ModelWrapper(PreWrap(gym.make(flags.env), flags.env), flags), True, flags)
+    if env_n == 1:
+        if model_wrap:
+            env = PostWrapper(ModelWrapper(PreWrap(gym.make(flags.env), flags.env), flags), True, flags)
+        else:
+            env = PostWrapper(PreWrap(gym.make(flags.env), flags.env), False, flags)    
     else:
-        return PostWrapper(PreWrap(gym.make(flags.env), flags.env), False, flags)
+        if model_wrap:
+            env = AsyncVectorEnv([lambda: PreWrap(gym.make(flags.env), flags.env) for _ in range(env_n)])
+            env = PostVecModelWrapper(VecModelWrapper(env, env_n, flags, device=device), flags, device=device)
+        else:
+            raise Exception("Parallel run only supports for not model_wrap environments")
+    return env
 
 def PreWrap(env, name):
     if name == "cSokoban-v0":
@@ -168,7 +180,7 @@ class PostWrapper:
         self.env.close()
 
     def seed(self, seed):
-        self.env.seed(seed)    
+        self.env.seed(seed[0])    
 
     def clone_state(self):
         state = self.env.clone_state()
@@ -226,8 +238,8 @@ class ModelWrapper(gym.Wrapper):
         # record the root stat of previous state before move forward
         if self.root_node is not None:
             rollout_qs = self.root_node.rollout_qs  
-            self.baseline_mean_q = torch.mean(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
-            self.baseline_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
+            self.baseline_mean_q = torch.zeros(1)
+            self.baseline_max_q = torch.zeros(1)
 
         x = self.env.reset(**kwargs)
         self.cur_t = 0            
@@ -267,7 +279,7 @@ class ModelWrapper(gym.Wrapper):
         else:
           # real step
           # record the root stat of previous state before move forward
-          rollout_qs = self.root_node.rollout_qs  
+          rollout_qs = self.root_node.rollout_qs 
           self.baseline_mean_q = torch.mean(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
           self.baseline_max_q = torch.max(torch.concat(rollout_qs)).unsqueeze(-1) / self.discounting
 
@@ -473,16 +485,446 @@ class ModelWrapper(gym.Wrapper):
     def seed(self, seed):
         self.env.seed(seed)
 
-class Node:
-    def __init__(self, parent, action, logit, num_actions, discounting, rec_t):        
+
+class PostVecModelWrapper(gym.Wrapper):
+    """The final wrapper for env.; calculates episode return,
+       record last action, and returns EnvOut"""
+
+    def __init__(self, env, flags, device=None):
+        self.device = torch.device("cpu") if device is None else device
+        self.env = env
+        self.env_n = env.env_n
+        self.flags = flags
+        self.num_actions = env.num_actions
+        self.actor_see_p = flags.actor_see_p 
+        self.model_out_shape = env.observation_space.shape[1:]
+        self.gym_env_out_shape = env.env.observation_space.shape[1:]
+
+    def initial(self, model_net):
+        reward_shape = 2 if self.flags.reward_type == 1 else 1
+        action_shape = 4 if self.flags.flex_t else 3
+        self.last_action = torch.zeros(self.env_n, action_shape, dtype=torch.long, device=self.device)
+        self.episode_return = torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device)
+        self.episode_step = torch.zeros(1, self.env_n, dtype=torch.long, device=self.device)
+
+        model_out, gym_env_out = self.env.reset(model_net) 
+        model_out = model_out.unsqueeze(0)
+        gym_env_out = gym_env_out.unsqueeze(0)
+
+        ret = EnvOut(
+            gym_env_out=gym_env_out,
+            model_out=model_out,
+            see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
+            reward=torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device),
+            done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
+            truncated_done=None,
+            episode_return=self.episode_return,
+            episode_step=self.episode_step,
+            cur_t=torch.zeros(1, self.env_n, dtype=torch.long, device=self.device),
+            last_action=self.last_action.unsqueeze(0),
+            max_rollout_depth=torch.zeros(1, self.env_n, dtype=torch.long, device=self.device)
+        )
+        return ret, None
+
+    def step(self, action, model_net=None, model_state=None):
+        action_shape = 4 if self.flags.flex_t else 3
+        assert action.shape == (1, self.env_n, action_shape), (
+            "shape of action should be (1, B, %d)" % action_shape)
+        out, reward, done, info = self.env.step(action[0], model_net)     
+        model_out, gym_env_out = out
+        model_out = model_out.unsqueeze(0)
+        gym_env_out = gym_env_out.unsqueeze(0)
+
+        self.episode_step += 1
+        self.episode_return = self.episode_return + reward.unsqueeze(0)
+
+        episode_step = self.episode_step.clone()
+        episode_return = self.episode_return.clone()
+
+        cur_t = info["cur_t"]
+        self.episode_step[:, done] = 0.
+        self.episode_return[:, done] = 0.
+        self.episode_return[:, cur_t==0, 1] = 0.
+        self.last_action[cur_t==0] = action[0, cur_t==0]
+        self.last_action[:, 1:] = action[0, :, 1:]
+
+        ret = EnvOut(
+            gym_env_out=gym_env_out,
+            model_out=model_out,
+            see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
+            reward=reward.unsqueeze(0),
+            done=done.unsqueeze(0),
+            truncated_done=None,
+            episode_return=episode_return,
+            episode_step=episode_step,
+            cur_t=cur_t.unsqueeze(0),
+            last_action=self.last_action.unsqueeze(0),
+            max_rollout_depth=info["max_rollout_depth"].unsqueeze(0)
+        )
+
+        return (ret, model_state)
+
+    def seed(self, seed):
+        self.env.seed(seed)
+    
+    def close(self):
+        self.env.close()
+
+class VecModelWrapper(gym.Wrapper):
+    """Wrap the gym environment with a model; output for each 
+    step is (out, reward, done, info), where out is a tuple 
+    of (gym_env_out, model_out) that corresponds to underlying 
+    environment frame and output from the model wrapper.
+    """
+
+    def __init__(self, env, env_n, flags, device=None, time=False):
+        gym.Wrapper.__init__(self, env)
         
-        self.action = F.one_hot(torch.tensor(action).long(), num_actions) # shape (1, num_actions)        
+        self.device = torch.device("cpu") if device is None else device
+        self.env = env     
+        self.rec_t = flags.rec_t        
+        self.flex_t = flags.flex_t 
+        self.flex_t_cost = flags.flex_t_cost         
+        self.discounting = flags.discounting
+        self.perfect_model = flags.perfect_model
+        self.tree_carry = flags.tree_carry
+        self.thres_carry = flags.thres_carry        
+        self.thres_discounting = flags.thres_discounting
+        self.num_actions = env.action_space[0].n
+        self.env_n = env_n
+            
+        if not self.flex_t:
+            obs_n = 9 + self.num_actions * 10 + self.rec_t
+        else:
+            obs_n = 10 + self.num_actions * 11 
+        
+        self.observation_space = gym.spaces.Box(
+          low=-np.inf, high=np.inf, shape=(env_n, obs_n, 1, 1), dtype=float)
+        
+        assert self.perfect_model, "imperfect model not yet supported"
+        assert not self.thres_carry, "thres_carry not yet supported"
+        assert not flags.model_rnn, "model_rnn not yet supported"
+        assert flags.reward_type == 1, "only support reward_type 1"
+        
+        self.time = time
+        if self.time: self.timings = util.Timings()
+        
+    def reset(self, model_net):
+        """reset the environment; should only be called in the initial"""
+        with torch.no_grad():
+            # some init.
+            self.root_max_q = [None for _ in range(self.env_n)]
+            self.rollout_depth = torch.zeros(self.env_n, dtype=torch.long)
+            self.max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long)
+            self.cur_t = torch.zeros(self.env_n, dtype=torch.long)
+
+            # record baseline before moving on
+            self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
+            self.baseline_max_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
+
+            # reset obs
+            obs = self.env.reset()
+
+            # obtain output from model
+            obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
+            pass_action = torch.zeros(self.env_n, dtype=torch.long)
+            _, vs, logits, encodeds = model_net(obs_py, 
+                                                pass_action.unsqueeze(0).to(self.device), 
+                                                one_hot=False)  
+            vs = vs.cpu()
+            logits = logits.cpu()
+
+            self._debug = (obs_py, pass_action, logits, obs)
+            encodeds = self.env.clone_state(inds=np.arange(self.env_n))
+
+            # compute and update root node and current node
+            self.root_nodes = []
+            self.cur_nodes = []
+            for n in range(self.env_n):
+                root_node = Node(parent=None, action=pass_action[n].item(), logit=None, 
+                num_actions=self.num_actions, discounting=self.discounting, rec_t=self.rec_t)
+                encoded = {"env_state": encodeds[n], "gym_env_out": obs_py[n]}
+                root_node.expand(r=torch.zeros(1, dtype=torch.float32), 
+                                 v=vs[-1, n].unsqueeze(-1), 
+                                 logits=logits[-1, n],
+                                 encoded=encoded)
+                root_node.visit()
+                self.root_nodes.append(root_node)
+                self.cur_nodes.append(root_node)
+            
+            # compute model_out
+            model_out = self.compute_model_out()
+            gym_env_out = torch.concat([x.encoded["gym_env_out"].unsqueeze(0) for x in self.cur_nodes])
+
+            # record initial root_nodes_qmax 
+            self.root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)
+            
+            return model_out.to(self.device), gym_env_out
+
+
+    def step(self, action, model_net):  
+        # action is tensor of shape (env_n, 3) or (env_n, 4); 
+        # which corresponds to real_action, im_action, reset, term
+        # all tensors in this function are in cpu, except when 
+        # entering the model or outputting from the function
+        
+        with torch.no_grad():
+            if self.time: self.timings.reset()
+
+            action = action.cpu()
+            if not self.flex_t:
+                re_action, im_action, reset = action[:, 0], action[:, 1], action[:, 2]
+                term = None
+            else:
+                re_action, im_action, reset, term = (action[:, 0], action[:, 1], 
+                    action[:, 2], action[:, 3])
+
+            # compute the mask of real / imagination step
+            if not self.flex_t:
+                imagine_b = self.cur_t < self.rec_t - 1
+            else:
+                imagine_b = (self.cur_t < self.rec_t - 1) & ~(term.bool())
+            
+            self.cur_t += 1
+            self.cur_t[~imagine_b] = 0
+            self.rollout_depth += 1
+            self.rollout_depth[~imagine_b] = 0        
+            self.max_rollout_depth[~imagine_b] = 0
+            self.max_rollout_depth = torch.max(self.max_rollout_depth, self.rollout_depth)
+
+            # record baseline before moving on
+            if torch.any(~imagine_b):
+                
+                mean_q = [torch.mean(torch.concat(r.rollout_qs)).unsqueeze(0) for n, r in enumerate(self.root_nodes) if not imagine_b[n]]
+                self.baseline_mean_q[~imagine_b] = (torch.concat(mean_q) / self.discounting).to(self.device)
+                max_q = [torch.max(torch.concat(r.rollout_qs)).unsqueeze(0) for n, r in enumerate(self.root_nodes) if not imagine_b[n]]
+                self.baseline_max_q[~imagine_b] = (torch.concat(max_q) / self.discounting).to(self.device)
+
+            # four status: 
+            # 1. real transition; 
+            # 2. imaginary transition and expanded
+            # 3. imaginary transition and done and unexpanded; 
+            # 4. imagainary transition and not done and unexpanded
+            # compute the status here
+            
+            status = torch.zeros(self.env_n, dtype=torch.long)
+            status[~imagine_b] = 1             
+
+            if torch.any(imagine_b):
+                sl_cur_nodes = [x for n, x in enumerate(self.cur_nodes) if imagine_b[n]]
+                sl_next_nodes = [x.children[im_action[n]] for n, x in enumerate(self.cur_nodes) if imagine_b[n]]            
+                status[imagine_b] = torch.tensor([2 if y.expanded() else (3 if 'done' in x.encoded else 4) for x, y in zip(sl_cur_nodes, sl_next_nodes)],
+                    dtype=torch.long)
+            self._status = status
+            if self.time: self.timings.time("misc_1")
+            # use the model; only status 1 and 4 need to use env and model
+            if torch.any((status == 1) | (status == 4)):
+                sel_inds = torch.arange(self.env_n)[(status == 1) | (status == 4)]
+                real_sel_b = status[(status == 1) | (status == 4)] == 1
+                pass_env_states = [self.root_nodes[n].encoded["env_state"] if s == 1 else 
+                    self.cur_nodes[n].encoded["env_state"] for n, s in enumerate(status) if s in [1, 4]]  
+                self.env.restore_state(pass_env_states, inds=sel_inds.numpy())
+                pass_action = torch.tensor([re_action[n] if s == 1 else 
+                    im_action[n] for n, s in enumerate(status) if s in [1, 4]], dtype=torch.long)
+                obs, reward, done, _ = self.env.step(pass_action.numpy(), inds=sel_inds.numpy()) 
+                if self.time: self.timings.time("step_state")
+                self._done = done
+
+                # reset if done and the transition is real
+                reset_needed = torch.zeros(self.env_n, dtype=torch.bool)
+                reset_needed[sel_inds] = torch.tensor(done, dtype=torch.bool)
+                reset_needed = reset_needed & (status == 1)
+
+                if torch.any(reset_needed):                    
+                    reset_inds = torch.arange(self.env_n)[reset_needed]
+                    reset_m = reset_needed[sel_inds].numpy()                    
+                    obs_reset = self.env.reset(inds=reset_inds.numpy()) 
+
+                    obs[reset_m] = obs_reset
+                    pass_action[reset_needed[sel_inds]] = 0    
+                    self.baseline_mean_q[reset_needed] = 0.
+                    self.baseline_max_q[reset_needed] = 0.
+
+                if self.time: self.timings.time("misc_2")
+                obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
+                _, vs, logits, encodeds = model_net(obs_py, 
+                                                    pass_action.unsqueeze(0).to(self.device), 
+                                                    one_hot=False)  
+                vs = vs.cpu()
+                logits = logits.cpu()
+                if self.time: self.timings.time("model")
+                encodeds = self.env.clone_state(inds=sel_inds.numpy())    
+                if self.time: self.timings.time("clone_state")
+            else:
+                if self.time: 
+                    self.timings.time("restore_state")
+                    self.timings.time("misc_2")
+                    self.timings.time("model")
+                    self.timings.time("clone_state")
+
+                reset_needed = torch.zeros(self.env_n, dtype=torch.bool)
+
+            m_ind = 0
+            root_nodes, cur_nodes = [], []
+
+            # compute the current and root nodes
+            for n in range(self.env_n):
+                if status[n] == 1:
+                    # real transition
+                    new_root = (not self.tree_carry or 
+                        not self.root_nodes[n].children[re_action[n]].expanded() or done[m_ind])
+                    if new_root:
+                        root_node = Node(parent=None, action=pass_action[m_ind].item(), logit=None, 
+                            num_actions=self.num_actions, discounting=self.discounting, rec_t=self.rec_t)
+                        encoded = {"env_state": encodeds[m_ind], "gym_env_out": obs_py[m_ind]}
+                        root_node.expand(r=torch.zeros(1, dtype=torch.float32), 
+                                        v=vs[-1, m_ind].unsqueeze(-1), 
+                                        logits=logits[-1, m_ind],
+                                        encoded=encoded)
+                        root_node.visit()
+                    else:
+                        root_node = self.root_nodes[n].children[re_action[n]]
+                        encoded = {"env_state": encodeds[m_ind], "gym_env_out": obs_py[m_ind]}
+                        root_node.expand(r=torch.zeros(1, dtype=torch.float32), 
+                                            v=vs[-1, m_ind].unsqueeze(-1), 
+                                            logits=logits[-1, m_ind],
+                                            encoded=encoded, 
+                                            override=True)
+                        root_node.parent = None
+                        root_node.visit()
+                    
+                    root_nodes.append(root_node)
+                    cur_nodes.append(root_node)
+                    m_ind += 1
+                
+                elif status[n] == 2:
+                    cur_node = self.cur_nodes[n].children[im_action[n]]
+                    cur_node.visit()
+                    root_nodes.append(self.root_nodes[n])
+                    cur_nodes.append(cur_node)                    
+
+                elif status[n] == 3:
+                    par_logits = torch.concat([ch.logit for ch in self.cur_nodes[n].children])  
+                    cur_node = self.cur_nodes[n].children[im_action[n]]
+                    cur_node.expand(r=torch.zeros(1, dtype=torch.float32), 
+                                    v=torch.zeros(1, dtype=torch.float32),
+                                    logits=par_logits, 
+                                    encoded=self.cur_nodes[n].encoded) 
+                    cur_node.visit()
+                    root_nodes.append(self.root_nodes[n])
+                    cur_nodes.append(cur_node)
+                    
+                elif status[n] == 4:
+                    encoded = {"env_state": encodeds[m_ind], "gym_env_out": obs_py[m_ind]}
+                    if done[m_ind]: encoded["done"] = True
+                    cur_node = self.cur_nodes[n].children[im_action[n]]
+                    cur_node.expand(r=torch.tensor([reward[m_ind]], dtype=torch.float32), 
+                                v=vs[-1, m_ind].unsqueeze(0) if not done[m_ind] else torch.zeros(1, dtype=torch.float32),
+                                logits=logits[-1, m_ind], 
+                                encoded=encoded) 
+                    cur_node.visit()
+                    root_nodes.append(self.root_nodes[n])
+                    cur_nodes.append(cur_node)
+                    
+                    m_ind += 1
+
+            self.root_nodes = root_nodes
+            self.cur_nodes = cur_nodes
+        if self.time: self.timings.time("compute_root_cur_nodes")
+
+        # compute model_out
+        model_out = self.compute_model_out(action, imagine_b, reset_needed)
+        gym_env_out = torch.concat([x.encoded["gym_env_out"].unsqueeze(0) for x in self.cur_nodes])        
+        if self.time: self.timings.time("compute_model_out")
+
+        # compute reward
+        root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)
+        re_reward = torch.zeros(self.env_n,  dtype=torch.float32)
+        im_reward = torch.zeros(self.env_n,  dtype=torch.float32)
+        if torch.any(~imagine_b):            
+            re_reward[~imagine_b] = torch.tensor(reward, dtype=torch.float32)[real_sel_b] # real reward            
+        if torch.any(imagine_b):
+            flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
+            im_reward[imagine_b] = (root_nodes_qmax - self.root_nodes_qmax - flex_t_cost)[imagine_b] # imagine reward
+        full_reward = torch.concat([re_reward.unsqueeze(-1), im_reward.unsqueeze(-1)], dim=-1)
+        self.root_nodes_qmax = root_nodes_qmax
+        if self.time: self.timings.time("compute_reward")
+        full_reward = full_reward.to(self.device)
+
+        # compute done
+        full_done = torch.zeros(self.env_n, dtype=torch.bool)
+        if torch.any(~imagine_b):
+            full_done[~imagine_b] = torch.tensor(done, dtype=torch.bool)[real_sel_b]
+        full_done = full_done.to(self.device)
+
+        # compute reset
+        self.compute_reset(reset)
+
+        # some info
+        info = {"cur_t": self.cur_t.to(self.device),
+                "max_rollout_depth": self.max_rollout_depth.to(self.device)}
+        if self.time: self.timings.time("end")
+
+        return (model_out.to(self.device), gym_env_out), full_reward, full_done, info
+
+    def compute_model_out(self, action=None, imagine_b=None, reset_needed=None):
+        root_nodes_stat = []
+        cur_nodes_stat = []
+        for n in range(self.env_n):
+            root_nodes_stat.append(self.root_nodes[n].stat(detailed=True).unsqueeze(0))
+            cur_nodes_stat.append(self.cur_nodes[n].stat(detailed=False).unsqueeze(0))     
+        root_nodes_stat = torch.concat(root_nodes_stat)
+        cur_nodes_stat = torch.concat(cur_nodes_stat)
+        if action is None: 
+            reset = torch.ones(self.env_n, 1, dtype=torch.float32)    
+        else:
+            reset = action[:, 2].unsqueeze(1)
+            reset = reset.clone()
+            reset[~imagine_b] = 1.
+        depc = (self.discounting ** (self.rollout_depth-1)).unsqueeze(-1)
+        if not self.flex_t:
+            time = F.one_hot(self.cur_t, self.rec_t).float()
+        else:
+            time = (self.discounting ** (self.cur_t)).unsqueeze(-1)
+        
+        if not self.flex_t:
+            ret_list = [root_nodes_stat, cur_nodes_stat, reset, time, depc]
+        else:
+            if action is None: 
+                term = torch.zeros(self.env_n, 1, dtype=torch.float32)    
+            else:
+                term = action[:, 3].unsqueeze(1)   
+                if torch.any(reset_needed):
+                    term = term.clone()
+                    term[reset_needed] = 0.
+            ret_list = [root_nodes_stat, cur_nodes_stat, reset, term, time, depc]
+        model_out = torch.concat(ret_list, dim=-1)  
+        return model_out
+
+    def compute_reset(self, reset):
+        reset_b = (reset == 1)
+        self.rollout_depth[reset_b] = 0
+        for n in torch.arange(self.env_n)[reset_b]:
+            self.cur_nodes[n] = self.root_nodes[n]
+            self.cur_nodes[n].visit()
+
+    def close(self):
+        self.env.close()
+
+    def seed(self, seed):
+        self.env.seed(seed)
+
+class Node:
+    def __init__(self, parent, action, logit, num_actions, discounting, rec_t, device=None):        
+        self.device = torch.device("cpu") if device is None else device
+
+        self.action = F.one_hot(torch.tensor(action, dtype=torch.long), num_actions) # shape (1, num_actions)        
         self.r = torch.tensor([0.], dtype=torch.float32)    
         self.v = torch.tensor([0.], dtype=torch.float32)            
         self.logit = logit # shape (1,)        
         
         self.rollout_qs = []  # list of tensors of shape (1,)
-        self.rollout_n = torch.tensor([0.], dtype=torch.float32)    
+        self.rollout_n = 0
         self.parent = parent
         self.children = []
         self.encoded = None 
@@ -492,6 +934,7 @@ class Node:
         self.rec_t = rec_t        
         
         self.visited = False
+        
 
     def expanded(self):
         return len(self.children) > 0
@@ -517,7 +960,7 @@ class Node:
                 self.children[a].logit = logits[[a]]        
             
     def visit(self):
-        self.trail_r = torch.tensor([0.], dtype=torch.float32)    
+        self.trail_r = torch.zeros(1, dtype=torch.float32)    
         self.trail_discount = 1.
         self.propagate(self.r, self.v, not self.visited)        
         self.visited = True
@@ -553,7 +996,7 @@ class Node:
             self.rollout_q_undiscount = self.rollout_q / self.discounting
             self.max_q = torch.max(torch.concat(self.rollout_qs) - self.r).unsqueeze(-1) / self.discounting            
         
-        self.child_rollout_ns = torch.tensor([x.rollout_n for x in self.children]).long()
+        self.child_rollout_ns = torch.tensor([x.rollout_n for x in self.children], dtype=torch.long)
         self.child_rollout_ns_enc = self.child_rollout_ns / self.rec_t       
             
         ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
@@ -563,7 +1006,6 @@ class Node:
         #for x in ret_list: print(x, getattr(self, x))
         out = torch.concat(list(self.ret_dict.values()))        
         return out         
-            
 
 # Standard wrappers
 
@@ -582,3 +1024,22 @@ class TransposeWrap(gym.ObservationWrapper):
 
     def observation(self, observation):
         return np.transpose(observation, axes=(2, 0, 1))
+
+# Misc.
+
+
+def align(model_out, flex_t):    
+    """A function that converts v1 model_out to v0 model_out"""
+
+    num_actions = 5
+    new_model_out = torch.clone(model_out)
+    s = 5 * num_actions + 2
+    if flex_t:        
+        new_model_out[s:2*s] = model_out[s+3:2*s+3]
+        new_model_out[2*s:2*s+3] = model_out[s:s+3]     
+        new_model_out[-3] = model_out[-1]  
+        new_model_out[-2:] = model_out[-3:-1]  
+    else:
+        new_model_out[-3:] = model_out[s:s+3]
+        new_model_out[s:-3] = model_out[s+3:]
+    return new_model_out

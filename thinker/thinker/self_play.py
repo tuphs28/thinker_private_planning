@@ -24,7 +24,13 @@ PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
 class SelfPlayWorker():
     def __init__(self, param_buffer:GeneralBuffer, actor_buffer: ActorBuffer, 
             model_buffer:ModelBuffer, test_buffer:GeneralBuffer,
-            policy:int, policy_params:dict, rank: int, flags:argparse.Namespace):                
+            policy:int, policy_params:dict, rank: int, num_p_actors: int, flags:argparse.Namespace):                
+
+        if not flags.disable_cuda and torch.cuda.is_available() and num_p_actors > 1:
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
+        print("Initalizing actor %d with device %s" % (rank, "cuda" if self.device == torch.device("cuda") else "cpu"))
 
         self.param_buffer = param_buffer
         self.actor_buffer = actor_buffer
@@ -33,16 +39,19 @@ class SelfPlayWorker():
         self.policy = policy
         self.policy_params = policy_params
         self.rank = rank
+        self.num_p_actors = num_p_actors
         self.flags = flags
 
-        self.env = Environment(flags, model_wrap=policy==PO_NET)
-        self.env.env.env.seed(rank)
-        
+        self.env = Environment(flags, model_wrap=policy==PO_NET, env_n=num_p_actors, device=self.device)
+        self.env.seed([i + num_p_actors * rank for i in range(num_p_actors)])
+
         if self.policy==PO_NET:
             self.actor_net = ActorNet(obs_shape=self.env.model_out_shape, num_actions=self.env.num_actions, flags=flags)
+            self.actor_net.to(self.device)
 
         self.model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, num_actions=self.env.num_actions, flags=flags)
         self.model_net.train(False)
+        self.model_net.to(self.device)
 
         # the networks weight are set by the respective learner; but if the respective
         # learner does not exist, then rank 0 worker will set the weights
@@ -94,8 +103,8 @@ class SelfPlayWorker():
             self.model_n = 0
             self.model_t = 0
             if self.flags.model_rnn:
-                self.initial_model_state = self.model_net.init_state(1)
-                self.model_state = self.model_net.init_state(1)          
+                self.initial_model_state = self.model_net.init_state(self.num_p_actors, device=self.device)
+                self.model_state = self.model_net.init_state(self.num_p_actors, device=self.device)          
 
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
@@ -115,7 +124,7 @@ class SelfPlayWorker():
                 else:
                     env_out = self.env.initial(self.employ_model_net)      
                 if self.policy == PO_NET:      
-                    actor_state = self.actor_net.initial_state(batch_size=1)
+                    actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)
                     actor_out, _ = self.actor_net(env_out, actor_state)   
                 elif self.policy == PO_MODEL:
                     actor_out = self.po_model(env_out, self.model_net)
@@ -148,7 +157,7 @@ class SelfPlayWorker():
                             action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
                             if actor_out.term_action is not None:
                                 action.append(actor_out.term_action)
-                            action = torch.cat(action, dim=-1).unsqueeze(0)
+                            action = torch.cat([a.unsqueeze(-1) for a in action], dim=-1)     
                         elif self.policy == PO_MODEL:
                             # policy directly from the model
                             actor_out = self.po_model(env_out, self.model_net)
@@ -164,7 +173,7 @@ class SelfPlayWorker():
                         # write the data to the respective buffers
                         if learner_actor_start:
                             self.write_actor_buffer(env_out, actor_out, t+1)       
-                        if train_model and (self.policy != PO_NET or env_out.cur_t == 0): 
+                        if train_model and (self.policy != PO_NET or env_out.cur_t[:,0] == 0): 
                             baseline = None
                             if self.policy == PO_NET:
                                 if self.flags.model_bootstrap_type == 0:
@@ -184,6 +193,8 @@ class SelfPlayWorker():
                         #    print(episode_returns)
                     if learner_actor_start:
                         # send the data to remote actor buffer
+                        if self.device != torch.device("cpu"):
+                            initial_actor_state = util.tuple_map(initial_actor_state, lambda x: x.cpu())
                         train_actor_out = (self.actor_local_buffer, initial_actor_state)
                         status = 0
                         while (True):
@@ -206,14 +217,13 @@ class SelfPlayWorker():
                                 print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                         learner_actor_start = not preload_needed or preload
                     # update model weight                
-                    if n % 1 == 0:
+                    if n % 10 == 0:
                         if self.flags.train_actor and self.policy == PO_NET :
                             weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                             self.actor_net.set_weights(weights)
                         if self.flags.train_model:           
                             weights = ray.get(self.param_buffer.get_data.remote("model_net"))
-                            self.model_net.set_weights(weights)       
-
+                            self.model_net.set_weights(weights)     
                     # Signal control for all self-play threads
                     signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
                     while (signals is not None and "halt" in signals and signals["halt"]):
@@ -235,8 +245,9 @@ class SelfPlayWorker():
             fields = {}
             for field in TrainActorOut._fields:
                 out = getattr(env_out if field in EnvOut._fields else actor_out, field)
-                if out is not None:
-                    fields[field] = torch.empty(size=(self.flags.unroll_length+1, 1)+out.shape[2:], dtype=out.dtype)
+                if out is not None and (self.flags.actor_see_p > 0 or field != "gym_env_out"):
+                    fields[field] = torch.empty(size=(self.flags.unroll_length+1, self.num_p_actors)+out.shape[2:], 
+                        dtype=out.dtype, device=self.device)
                     # each is in the shape of (T x B xdim_1 x dim_2 ...)
                 else:
                     fields[field] = None
@@ -245,21 +256,21 @@ class SelfPlayWorker():
         for field in TrainActorOut._fields:
             v = getattr(self.actor_local_buffer, field)            
             if v is not None:
-                v[t] = getattr(env_out if field in EnvOut._fields else actor_out, field)[0,0]
+                v[t] = getattr(env_out if field in EnvOut._fields else actor_out, field)[0]
         
         if t == self.flags.unroll_length:
             # post-processing
-            self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.numpy())
+            self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.cpu().numpy())
 
     def empty_model_buffer(self):
-        pre_shape = (self.flags.model_unroll_length + 2 * self.flags.model_k_step_return, 1,)
+        pre_shape = (self.flags.model_unroll_length + 2 * self.flags.model_k_step_return, self.num_p_actors,)
         return TrainModelOut(
-            gym_env_out=torch.zeros(pre_shape + self.env.gym_env_out_shape, dtype=torch.uint8),
-            policy_logits=torch.zeros(pre_shape + (self.env.num_actions,), dtype=torch.float32),
-            action=torch.zeros(pre_shape, dtype=torch.long),
-            reward=torch.zeros(pre_shape, dtype=torch.float32),
-            done=torch.ones(pre_shape, dtype=torch.bool),
-            baseline=torch.zeros(pre_shape, dtype=torch.float32)) 
+            gym_env_out=torch.zeros(pre_shape + self.env.gym_env_out_shape, dtype=torch.uint8, device=self.device),
+            policy_logits=torch.zeros(pre_shape + (self.env.num_actions,), dtype=torch.float32, device=self.device),
+            action=torch.zeros(pre_shape, dtype=torch.long, device=self.device),
+            reward=torch.zeros(pre_shape, dtype=torch.float32, device=self.device),
+            done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
+            baseline=torch.zeros(pre_shape, dtype=torch.float32, device=self.device)) 
 
     def write_single_model_buffer(self, n: int, t: int, env_out: EnvOut, actor_out: ActorOut, baseline:torch.tensor):
         self.model_local_buffer[n].gym_env_out[t] = env_out.gym_env_out[0,0]       
@@ -298,7 +309,11 @@ class SelfPlayWorker():
 
         if t >= cap_t + 2 * k - 2:
             # finish writing a buffer, send it
-            self.model_buffer.write.remote(self.model_local_buffer[n], 
+            if self.device != torch.device("cpu"):
+                send_model_local_buffer = util.tuple_map(self.model_local_buffer[n], lambda x: x.cpu())
+            else:
+                send_model_local_buffer = self.model_local_buffer[n]
+            self.model_buffer.write.remote(send_model_local_buffer, 
                 self.initial_model_state if self.flags.model_rnn else None, 
                 self.rank)            
             if self.flags.model_rnn: 

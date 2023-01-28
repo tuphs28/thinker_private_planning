@@ -83,11 +83,11 @@ class ActorNet(nn.Module):
 
         self.initial_state(1) # just for setting core_state_sep_ind
 
-    def initial_state(self, batch_size):
-        state = self.core.init_state(batch_size) 
+    def initial_state(self, batch_size, device=None):
+        state = self.core.init_state(batch_size, device=device) 
         self.core_state_sep_ind = len(state)
         if self.actor_see_p > 0 and self.actor_drc:
-            state = state + self.drc_core.init_state(batch_size)
+            state = state + self.drc_core.init_state(batch_size, device=device)
         return state
 
     def forward(self, obs, core_state=()):
@@ -426,6 +426,9 @@ class ModelNetBase(nn.Module):
         return {k: v.cpu() for k, v in self.state_dict().items()}
 
     def set_weights(self, weights):
+        device = next(self.parameters()).device
+        if device != torch.device("cpu"):
+            weights = {k: v.to(device) for k, v in weights.items()}
         self.load_state_dict(weights)        
 
 

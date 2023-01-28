@@ -30,6 +30,13 @@ def parse(args=None):
     parser.add_argument("--employ_model_rnn",  action="store_true",
                         help="Whether to use ConvLSTM in the employed model (only support perfect model).")                        
 
+    # Resources settings.
+    parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
+                        help="Number of gpu per actor learning.") 
+    parser.add_argument("--gpu_learn_model", default=0.5, type=float,
+                        help="Number of gpu per model learning.") 
+    parser.add_argument("--gpu_self_play", default=0.25, type=float,
+                        help="Number of gpu per self-play worker.")     
 
     # Actor Training settings.            
     parser.add_argument("--policy_type", default=0, type=int, 
@@ -38,7 +45,7 @@ def parse(args=None):
                         help="Disable training of actor.")   
     parser.add_argument("--num_actors", default=48, type=int, 
                         help="Number of actors (default: 48).")
-    parser.add_argument("--actor_parallel_n", default=1, type=int, 
+    parser.add_argument("--num_p_actors", default=1, type=int, 
                         help="Number of parallel env. per actor")
     parser.add_argument("--total_steps", default=50000000, type=int, 
                         help="Total environment steps to train for.")
@@ -196,6 +203,8 @@ def parse(args=None):
     if flags.model_rnn:
         assert flags.model_batch_mode, "rnn model can only be equipped with batch model mode"
 
+    assert not (flags.flex_t and flags.num_p_actors > 1), "flex_t not supported for parallel actor"
+
     return flags
 
 def tuple_map(x, f):
@@ -223,9 +232,6 @@ def optimizer_to(optim, device):
                     subparam.data = subparam.data.to(device)
                     if subparam._grad is not None:
                         subparam._grad.data = subparam._grad.data.to(device)
-
-
-
 
 class Timings:
 

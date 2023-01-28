@@ -80,6 +80,7 @@ class ModelLearner():
             policy=self.flags.test_policy_type, 
             policy_params=None, 
             rank=n+1, 
+            num_p_actors=1,
             flags=flags) for n in range(5)]
 
     def learn_data(self):
@@ -97,7 +98,7 @@ class ModelLearner():
                 self.flags.model_k_step_return if not self.flags.model_batch_mode else 
                 self.flags.model_unroll_length)
 
-        max_diff = self.flags.model_unroll_length * self.flags.num_actors * self.flags.actor_parallel_n
+        max_diff = self.flags.model_unroll_length * self.flags.batch_size
         # in case the actor learner stops before model learner
 
         n = 0
