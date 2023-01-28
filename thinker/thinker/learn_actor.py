@@ -216,7 +216,7 @@ class ActorLearner():
             if timer() - start_time > 5:
                 sps = (self.step - start_step) / (timer() - start_time)                
                 print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Eps %i. Return %f (%f). Loss %.2f" % (
-                    n, self.real_step, self.step, self.step/self.real_step, sps, self.tot_eps, 
+                    n, self.real_step, self.step, float(self.step)/float(self.real_step), sps, self.tot_eps, 
                     stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
                 print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
                                "baseline_loss", "im_pg_loss", "im_baseline_loss", 
