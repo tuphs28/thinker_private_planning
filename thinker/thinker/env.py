@@ -298,8 +298,6 @@ class ModelWrapper(gym.Wrapper):
         if self.reward_type == 1:          
             self.last_root_max_q = self.root_max_q   
         
-        if self.ver > 0:
-            info["max_rollout_depth"] = self.max_rollout_depth
         return (x, out), r, done, info, model_state
         
     def use_model(self, model_net, model_state, x, r, a, cur_t, reset, term, done):     
@@ -689,6 +687,7 @@ class VecModelWrapper(gym.Wrapper):
             self.cur_t[~imagine_b] = 0
             self.rollout_depth += 1
             self.rollout_depth[~imagine_b] = 0        
+            max_rollout_depth = self.max_rollout_depth.clone()
             self.max_rollout_depth[~imagine_b] = 0
             self.max_rollout_depth = torch.max(self.max_rollout_depth, self.rollout_depth)
 
@@ -862,7 +861,7 @@ class VecModelWrapper(gym.Wrapper):
 
         # some info
         info = {"cur_t": self.cur_t.to(self.device),
-                "max_rollout_depth": self.max_rollout_depth.to(self.device)}
+                "max_rollout_depth": max_rollout_depth.to(self.device)}
         if self.time: self.timings.time("end")
 
         return (model_out.to(self.device), gym_env_out), full_reward, full_done, info
