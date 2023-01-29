@@ -43,7 +43,8 @@ class SelfPlayWorker():
         self.flags = flags
 
         self.env = Environment(flags, model_wrap=policy==PO_NET, env_n=num_p_actors, device=self.device)
-        self.env.seed([i + num_p_actors * rank for i in range(num_p_actors)])
+        seed = [i + num_p_actors * rank for i in range(num_p_actors)]
+        self.env.seed(seed)
 
         if self.policy==PO_NET:
             self.actor_net = ActorNet(obs_shape=self.env.model_out_shape, num_actions=self.env.num_actions, flags=flags)
@@ -122,7 +123,7 @@ class SelfPlayWorker():
                 if self.policy == PO_NET:
                     env_out, self.employ_model_state = self.env.initial(self.employ_model_net)      
                 else:
-                    env_out = self.env.initial(self.employ_model_net)      
+                    env_out = self.env.initial(self.employ_model_net)   
                 if self.policy == PO_NET:      
                     actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)                    
                     actor_out, _ = self.actor_net(env_out, actor_state)   
@@ -217,7 +218,7 @@ class SelfPlayWorker():
                                 print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                         learner_actor_start = not preload_needed or preload
                     # update model weight                
-                    if n % 10 == 0:
+                    if n % 1 == 0:
                         if self.flags.train_actor and self.policy == PO_NET :
                             weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                             self.actor_net.set_weights(weights)

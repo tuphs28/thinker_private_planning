@@ -36,7 +36,7 @@ if __name__ == "__main__":
         
     print("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
     self_play_workers = [SelfPlayWorker.options(
-        num_cpus=1, num_gpus=flags.gpu_self_play if n < num_self_play_gpu else 0).remote(
+        num_cpus=0, num_gpus=flags.gpu_self_play if n < num_self_play_gpu else 0).remote(
         param_buffer=param_buffer, 
         actor_buffer=actor_buffer, 
         model_buffer=model_buffer, 
