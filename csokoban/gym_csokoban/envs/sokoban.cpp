@@ -154,19 +154,24 @@ float Sokoban::move_box(roomStatus& old_r, roomStatus& new_r) {
 }
 
 float Sokoban::move(const action a) {
-	if (done) 
+	if (done) {
 		return 0.;
-	else if (a == action::noop) 
+	}
+	else if (a == action::noop) {
 		return reward_step;	
+	}
 	else{
 		roomStatus& old_r = room_status[player_pos_y][player_pos_x];
 		int new_pos_x = player_pos_x, new_pos_y = player_pos_y;
 		move_pos(a, new_pos_x, new_pos_y);
-		if (new_pos_x < 0 || new_pos_x >= room_x || new_pos_y < 0 || new_pos_y >= room_y)
+		if (new_pos_x < 0 || new_pos_x >= room_x || new_pos_y < 0 || new_pos_y >= room_y){
 			return reward_step;
+		}
 		else{
 			roomStatus& new_r = room_status[new_pos_y][new_pos_x];
-			if (new_r == roomStatus::wall) return reward_step;
+			if (new_r == roomStatus::wall) {
+				return reward_step;
+			} 
 			else if (new_r == roomStatus::empty || new_r == roomStatus::tar)
 			{
 				move_player(old_r, new_r);
@@ -178,17 +183,25 @@ float Sokoban::move(const action a) {
 			{
 				int new_box_pos_x = new_pos_x, new_box_pos_y = new_pos_y;
 				move_pos(a, new_box_pos_x, new_box_pos_y);
-				if (new_box_pos_x < 0 || new_box_pos_x >= room_x || new_box_pos_y < 0 || new_box_pos_y >= room_y) return reward_step;
-				roomStatus& new_box_r = room_status[new_box_pos_y][new_box_pos_x];
-				if (new_box_r == roomStatus::empty || new_box_r == roomStatus::tar) {
-					float reward = move_box(new_r, new_box_r);
-					move_player(old_r, new_r);
-					player_pos_x = new_pos_x;
-					player_pos_y = new_pos_y;
-					return reward_step + reward;
+				if (new_box_pos_x < 0 || new_box_pos_x >= room_x || new_box_pos_y < 0 || new_box_pos_y >= room_y) {
+					return reward_step;
+					}
+				else{
+					roomStatus& new_box_r = room_status[new_box_pos_y][new_box_pos_x];
+					if (new_box_r == roomStatus::empty || new_box_r == roomStatus::tar) {
+						float reward = move_box(new_r, new_box_r);
+						move_player(old_r, new_r);
+						player_pos_x = new_pos_x;
+						player_pos_y = new_pos_y;
+						return reward_step + reward;
+			 		} else {
+						return reward_step;
+					}
 				}
 			}
-			else return reward_step;
+			else {
+				return reward_step;
+			}
 		}
 	}
 }
