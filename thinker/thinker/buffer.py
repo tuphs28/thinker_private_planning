@@ -59,7 +59,7 @@ class ModelBuffer():
 
         self.priorities = None
         self.next_inds = None
-        self.cur_inds = np.full((flags.num_actors), fill_value=-1, dtype=np.int)
+        self.cur_inds = np.full((flags.num_actors), fill_value=-1, dtype=int)
 
         self.base_ind = 0
         self.abs_tran_n = 0
@@ -71,7 +71,7 @@ class ModelBuffer():
         self.buffer.append(data)
         self.state.append(state)        
 
-        p_shape = self.t*self.n if not self.batch_mode else self.n
+        p_shape = self.t*self.n if not self.batch_mode else self.n        
 
         if self.priorities is None:
             self.priorities = np.ones((p_shape), dtype=float)
@@ -82,12 +82,12 @@ class ModelBuffer():
         # to record a table for chaining entry
         last_ind = int(self.cur_inds[rank] - self.base_ind / self.n)
         if last_ind >= 0:            
-            self.next_inds[last_ind] = len(self.next_inds) + self.base_ind / self.n
+            self.next_inds[last_ind] = len(self.next_inds) + self.base_ind // self.n
         if self.next_inds is None:
             self.next_inds = np.full((1), fill_value=np.nan,)
         else:
             self.next_inds = np.concatenate([self.next_inds, np.full((1), fill_value=np.nan)])
-        self.cur_inds[rank] = len(self.next_inds) + self.base_ind / self.n - 1
+        self.cur_inds[rank] = len(self.next_inds) + self.base_ind // self.n - 1
         self.abs_tran_n += self.t * self.n                        
 
         # clean periordically
