@@ -24,13 +24,13 @@ PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
 class SelfPlayWorker():
     def __init__(self, param_buffer:GeneralBuffer, actor_buffer: ActorBuffer, 
             model_buffer:ModelBuffer, test_buffer:GeneralBuffer,
-            policy:int, policy_params:dict, rank: int, num_p_actors: int, flags:argparse.Namespace):                
-
+            policy:int, policy_params:dict, rank: int, num_p_actors: int, flags:argparse.Namespace):                        
+        self._logger = util.logger()
         if not flags.disable_cuda and torch.cuda.is_available() and num_p_actors > 1:
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
-        print("Initalizing actor %d with device %s" % (rank, "cuda" if self.device == torch.device("cuda") else "cpu"))
+        self._logger.info("Initalizing actor %d with device %s" % (rank, "cuda" if self.device == torch.device("cuda") else "cpu"))
 
         self.param_buffer = param_buffer
         self.actor_buffer = actor_buffer
@@ -54,13 +54,14 @@ class SelfPlayWorker():
         self.model_net.train(False)
         self.model_net.to(self.device)
 
+
         # the networks weight are set by the respective learner; but if the respective
         # learner does not exist, then rank 0 worker will set the weights
         if rank == 0 and not self.flags.train_actor and self.policy==PO_NET:
             if self.flags.preload_actor:
                 checkpoint = torch.load(self.flags.preload_actor, map_location=torch.device('cpu'))
                 self.actor_net.set_weights(checkpoint["actor_net_state_dict"])  
-                print("Loadded actor network from %s" % self.flags.preload_actor)
+                self._logger.info("Loadded actor network from %s" % self.flags.preload_actor)
             self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
 
         if rank == 0 and not self.flags.train_model:
@@ -68,7 +69,7 @@ class SelfPlayWorker():
                 checkpoint = torch.load(self.flags.preload_model, map_location=torch.device('cpu'))
                 self.model_net.set_weights(checkpoint["model_state_dict"] if "model_state_dict" in 
                     checkpoint else checkpoint["model_net_state_dict"])  
-                print("Loadded model network from %s" % self.flags.preload_model)
+                self._logger.info("Loadded model network from %s" % self.flags.preload_model)
             self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
         
         # synchronize weight before start
@@ -95,7 +96,7 @@ class SelfPlayWorker():
             self.employ_model_net.set_weights(checkpoint["model_state_dict"] if "model_state_dict" in 
                     checkpoint else checkpoint["model_net_state_dict"])            
             if rank == 0:  
-                print("Override model network from %s" % self.flags.employ_model)
+                self._logger.info("Override model network from %s" % self.flags.employ_model)
         else:
             self.employ_model_net = self.model_net
 
@@ -105,7 +106,7 @@ class SelfPlayWorker():
             self.model_t = 0
             if self.flags.model_rnn:
                 self.initial_model_state = self.model_net.init_state(self.num_p_actors, device=self.device)
-                self.model_state = self.model_net.init_state(self.num_p_actors, device=self.device)          
+                self.model_state = self.model_net.init_state(self.num_p_actors, device=self.device)                        
 
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
@@ -117,7 +118,7 @@ class SelfPlayWorker():
         """
         try:
             with torch.no_grad():
-                if verbose: print("Actor %d started." % self.rank)
+                if verbose: self._logger.info("Actor %d started." % self.rank)
                 n = 0            
 
                 if self.policy == PO_NET:
@@ -212,10 +213,10 @@ class SelfPlayWorker():
                         preload, tran_n = ray.get(self.model_buffer.check_preload.remote())
                         if self.rank == 0: 
                             if preload:
-                                print("Finish preloading")
+                                self._logger.info("Finish preloading")
                                 ray.get(self.model_buffer.set_preload.remote())
                             else:
-                                print("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
+                                self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                         learner_actor_start = not preload_needed or preload
                     # update model weight                
                     if n % 1 == 0:
@@ -334,7 +335,7 @@ class SelfPlayWorker():
                 all_returns = ray.get(self.test_buffer.extend_data.remote("episode_returns", [r]))  
                 all_returns = np.array(all_returns)         
                 if verbose:       
-                    print("%d Mean (Std.) : %.4f (%.4f) - %.4f" % (len(all_returns),
+                    self._logger.info("%d Mean (Std.) : %.4f (%.4f) - %.4f" % (len(all_returns),
                         np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns)), r))
                 if len(all_returns) > test_eps_n: return True, all_returns
                 

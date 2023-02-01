@@ -92,6 +92,7 @@ class ActorLearner():
         self.actor_buffer = actor_buffer
         self.rank = rank
         self.flags = flags
+        self._logger = util.logger()
 
         env = Environment(flags, model_wrap=True)        
         self.actor_net = ActorNet(obs_shape=env.model_out_shape, num_actions=env.num_actions, flags=flags)
@@ -99,10 +100,10 @@ class ActorLearner():
         # initialize learning setting
 
         if not self.flags.disable_cuda and torch.cuda.is_available():
-            print("Actor-learning: Using CUDA.")
+            self._logger.info("Actor-learning: Using CUDA.")
             self.device = torch.device("cuda")
         else:
-            print("Actor-learning: Not using CUDA.")
+            self._logger.info("Actor-learning: Not using CUDA.")
             self.device = torch.device("cpu")
 
         self.step = 0
@@ -122,7 +123,7 @@ class ActorLearner():
         if self.flags.preload_actor and not flags.load_checkpoint:
             checkpoint = torch.load(self.flags.preload_actor, map_location=torch.device('cpu'))
             self.actor_net.set_weights(checkpoint["actor_net_state_dict"])  
-            print("Loadded actor network from %s" % self.flags.preload_actor)
+            self._logger.info("Loadded actor network from %s" % self.flags.preload_actor)
 
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_actor.tar"))
@@ -222,7 +223,7 @@ class ActorLearner():
                                "baseline_loss", "im_pg_loss", "im_baseline_loss", 
                                "entropy_loss", "reg_loss", "total_norm"]
                 for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
-                print(print_str)
+                self._logger.info(print_str)
                 start_step = self.step
                 start_time = timer()     
             
@@ -392,7 +393,7 @@ class ActorLearner():
         return stats
 
     def save_checkpoint(self):
-        print("Saving actor checkpoint to %s" % self.check_point_path)
+        self._logger.info("Saving actor checkpoint to %s" % self.check_point_path)
         torch.save(
             { "step": self.step,
               "real_step": self.real_step,
@@ -417,4 +418,4 @@ class ActorLearner():
         self.optimizer.load_state_dict(train_checkpoint["actor_net_optimizer_state_dict"])         
         self.scheduler.load_state_dict(train_checkpoint["actor_net_scheduler_state_dict"])       
         self.actor_net.set_weights(train_checkpoint["actor_net_state_dict"])        
-        print("Loaded actor checkpoint from %s" % check_point_path)   
+        self._logger.info("Loaded actor checkpoint from %s" % check_point_path)   

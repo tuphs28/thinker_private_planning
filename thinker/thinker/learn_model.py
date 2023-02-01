@@ -27,6 +27,7 @@ class ModelLearner():
         self.model_buffer = model_buffer
         self.rank = rank
         self.flags = flags
+        self._logger = util.logger()
 
         env = Environment(flags)        
         self.model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags)
@@ -35,10 +36,10 @@ class ModelLearner():
         # initialize learning setting
 
         if not self.flags.disable_cuda and torch.cuda.is_available():
-            print("Model-learning: Using CUDA.")
+            self._logger.info("Model-learning: Using CUDA.")
             self.device = torch.device("cuda")
         else:
-            print("Model-learning: Not using CUDA.")
+            self._logger.info("Model-learning: Not using CUDA.")
             self.device = torch.device("cpu")
 
         self.step = 0
@@ -51,7 +52,7 @@ class ModelLearner():
         if self.flags.preload_model and not flags.load_checkpoint:
             checkpoint = torch.load(self.flags.preload_model, map_location=torch.device('cpu'))
             self.model_net.set_weights(checkpoint["model_state_dict" if "model_state_dict" in checkpoint else "model_net_state_dict"])  
-            print("Loadded model network from %s" % self.flags.preload_model)
+            self._logger.info("Loadded model network from %s" % self.flags.preload_model)
 
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_model.tar"))
@@ -113,7 +114,7 @@ class ModelLearner():
                 time.sleep(0.01)
                 if timer() - start_time > 5:
                     tran_n = ray.get(self.model_buffer.get_processed_n.remote())
-                    print("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
+                    self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
                     start_time = timer()                
 
             # start consume data
@@ -162,7 +163,7 @@ class ModelLearner():
                 for k in print_stats: 
                     if losses[k] is not None:
                         print_str += " %s %.2f" % (k, losses[k].item() / numel_per_step)
-                print(print_str)
+                self._logger.info(print_str)
                 start_step = self.step
                 start_time = timer()      
 
@@ -190,7 +191,7 @@ class ModelLearner():
                 if r_tester is not None: 
                     all_returns = ray.get(r_tester)[0]
                     self.test_buffer.set_data.remote("episode_returns", [])
-                    #print("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
+                    #self._logger.info("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                     #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
                 r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                        
 
@@ -307,10 +308,10 @@ class ModelLearner():
     def save_checkpoint(self):
         basepath = os.path.split(self.check_point_path)[0]
         if not os.path.exists(basepath):
-            print("Creating log directory: %s" % basepath)
+            self._logger.info("Creating log directory: %s" % basepath)
             os.makedirs(basepath, exist_ok=True)
 
-        print("Saving model checkpoint to %s" % self.check_point_path)
+        self._logger.info("Saving model checkpoint to %s" % self.check_point_path)
         torch.save(
             { "step": self.step,
               "real_step": self.real_step,
@@ -329,4 +330,4 @@ class ModelLearner():
         self.optimizer.load_state_dict(train_checkpoint["model_net_optimizer_state_dict"])         
         self.scheduler.load_state_dict(train_checkpoint["model_net_scheduler_state_dict"])       
         self.model_net.set_weights(train_checkpoint["model_net_state_dict"])        
-        print("Loaded model checkpoint from %s" % check_point_path)   
+        self._logger.info("Loaded model checkpoint from %s" % check_point_path)   

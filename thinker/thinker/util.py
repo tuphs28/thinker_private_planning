@@ -4,6 +4,7 @@ import timeit
 import argparse
 import subprocess
 import os 
+import logging
 import torch
 
 def parse(args=None):
@@ -232,6 +233,12 @@ def optimizer_to(optim, device):
                     subparam.data = subparam.data.to(device)
                     if subparam._grad is not None:
                         subparam._grad.data = subparam._grad.data.to(device)
+
+def logger():
+    formatter = logging.Formatter("%(message)s")
+    logger = logging.getLogger("logs/out")
+    logger.setLevel(logging.INFO)  
+    return logger
 
 class Timings:
 
