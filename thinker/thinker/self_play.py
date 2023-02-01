@@ -43,7 +43,7 @@ class SelfPlayWorker():
         self.flags = flags
 
         self.env = Environment(flags, model_wrap=policy==PO_NET, env_n=num_p_actors, device=self.device)
-        seed = [i + num_p_actors * rank for i in range(num_p_actors)]
+        seed = [1 + i + num_p_actors * rank for i in range(num_p_actors)]
         self.env.seed(seed)
 
         if self.policy==PO_NET:

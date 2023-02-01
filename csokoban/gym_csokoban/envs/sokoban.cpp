@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <cstdlib>
 #include <stdexcept>
+#include <random>
 
 constexpr float reward_step = -0.01f, reward_box_off = -1.f, reward_box_on = +1.f, reward_finish = +10.f;
 constexpr int max_step_n = 120;
@@ -94,7 +95,7 @@ void Sokoban::read_spirits() {
 	read_bmp(img_dir, "player" + s, spirites[4]);
 	read_bmp(img_dir, "player_on_target" + s, spirites[5]);
 	read_bmp(img_dir, "box_target" + s, spirites[6]);
-	srand(time(0));
+	defEngine = default_random_engine(seed);
 }
 
 void Sokoban::move_pos(const action a, int& x, int& y) {
@@ -284,15 +285,18 @@ void Sokoban::render(unsigned char* obs) {
 }
 
 void Sokoban::reset(unsigned char* obs) {	
-	int room_id = rand() % (900 * 1000 - 1);	
+	uniform_int_distribution<int> roomDist(0, 900 * 1000 - 1);
+	uniform_int_distribution<int> stepDist(0, 5);
+	int room_id = roomDist(defEngine);	
 	read_level(room_id);
-	step_n = rand() % 5;
+	step_n = stepDist(defEngine);
 	render(obs);
 }
 
 void Sokoban::reset_level(unsigned char* obs, const int room_id) {
 	read_level(room_id);
-	step_n = rand() % 5;
+	uniform_int_distribution<int> stepDist(0, 5);
+	step_n = stepDist(defEngine);
 	render(obs);
 }
 
@@ -337,5 +341,5 @@ void Sokoban::restore_state(const unsigned char* room_status, const int& step_n,
 
 void Sokoban::set_seed(unsigned int seed){
 	this->seed = seed;
-	srand(this->seed+1);	
+	defEngine.seed(seed);	
 }

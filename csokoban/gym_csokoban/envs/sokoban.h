@@ -2,6 +2,8 @@
 #include <vector>
 #include <string>
 #include <iostream>
+#include <random>
+
 using namespace std;
 
 enum class roomStatus : unsigned char { wall, empty, box_not_on_tar, box_on_tar, player_not_on_tar, player_on_tar, tar };
@@ -54,6 +56,7 @@ private:
 	int player_pos_x, player_pos_y, box_left;
 	bool done, small;
 	string level_dir, img_dir;
+	default_random_engine defEngine;
 	roomStatus room_status[room_y][room_x];
 	vector<unsigned char> spirites[7];
 };
