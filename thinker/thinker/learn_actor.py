@@ -192,6 +192,7 @@ class ActorLearner():
             if self.flags.float16: scaler.unscale_(self.optimizer)
             if self.flags.grad_norm_clipping > 0:                
                 total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
+                total_norm = total_norm.detach().cpu().item()
             else:
                 total_norm = 0.            
 
