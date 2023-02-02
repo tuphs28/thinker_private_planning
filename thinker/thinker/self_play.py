@@ -30,7 +30,9 @@ class SelfPlayWorker():
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
-        self._logger.info("Initalizing actor %d with device %s" % (rank, "cuda" if self.device == torch.device("cuda") else "cpu"))
+        self._logger.info("Initalizing actor %d with device %s %s" % (
+            rank, "cuda" if self.device == torch.device("cuda") else "cpu",
+            "(test mode)" if test_buffer is not None else ""))
 
         self.param_buffer = param_buffer
         self.actor_buffer = actor_buffer
@@ -118,7 +120,7 @@ class SelfPlayWorker():
         """
         try:
             with torch.no_grad():
-                if verbose: self._logger.info("Actor %d started." % self.rank)
+                if verbose: self._logger.info("Actor %d started. %s" % (self.rank, "(test mode)" if test_eps_n > 0 else ""))
                 n = 0            
 
                 if self.policy == PO_NET:
@@ -226,13 +228,14 @@ class SelfPlayWorker():
                         if self.flags.train_model:           
                             weights = ray.get(self.param_buffer.get_data.remote("model_net"))
                             self.model_net.set_weights(weights)     
-                    # Signal control for all self-play threads
-                    signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
-                    while (signals is not None and "halt" in signals and signals["halt"]):
-                        time.sleep(0.1)
+                    # Signal control for all self-play threads (only when it is not in testing mode)
+                    if test_eps_n == 0:
                         signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
-                    if (signals is not None and "term" in signals and signals["term"]):
-                        return True               
+                        while (signals is not None and "halt" in signals and signals["halt"]):
+                            time.sleep(0.1)
+                            signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
+                        if (signals is not None and "term" in signals and signals["term"]):
+                            return True               
                             
                     n += 1
         except:

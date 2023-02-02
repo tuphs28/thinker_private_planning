@@ -11,7 +11,9 @@ import thinker.util as util
 
 if __name__ == "__main__":
 
-    print("Initializing...")    
+    logger = util.logger()
+
+    logger.info("Initializing...")    
 
     ray.init()
     st_time = time.time()
@@ -32,9 +34,9 @@ if __name__ == "__main__":
     num_gpus_self_play = (num_gpus_available - flags.gpu_learn_actor * float(flags.train_actor) - 
         flags.gpu_learn_model * float(flags.train_model))
     num_self_play_gpu = num_gpus_self_play // flags.gpu_self_play
-    print("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.num_actors))
+    logger.info("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.num_actors))
         
-    print("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
+    logger.info("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
     self_play_workers = [SelfPlayWorker.options(
         num_cpus=0, num_gpus=flags.gpu_self_play if n < num_self_play_gpu else 0).remote(
         param_buffer=param_buffer, 
@@ -61,6 +63,6 @@ if __name__ == "__main__":
     actor_buffer.set_finish.remote()    
     ray.get(r_worker)
 
-    print("time required: %fs" % (time.time()-st_time))
+    logger.info("time required: %fs" % (time.time()-st_time))
 
     

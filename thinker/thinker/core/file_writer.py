@@ -76,10 +76,11 @@ class FileWriter:
         self._logger = logging.getLogger("logs/out")
 
         # To stdout handler.
-        shandle = logging.StreamHandler()
-        shandle.setFormatter(formatter)
-        self._logger.addHandler(shandle)
-        self._logger.setLevel(logging.INFO)
+        if not self._logger.hasHandlers():
+            shandle = logging.StreamHandler()
+            shandle.setFormatter(formatter)
+            self._logger.addHandler(shandle)
+            self._logger.setLevel(logging.INFO)
 
         rootdir = os.path.expandvars(os.path.expanduser(rootdir))
         # To file handler.

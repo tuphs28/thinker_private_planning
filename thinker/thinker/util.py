@@ -239,6 +239,10 @@ def optimizer_to(optim, device):
 def logger():
     formatter = logging.Formatter("%(message)s")
     logger = logging.getLogger("logs/out")
+    if not logger.hasHandlers():
+        shandle = logging.StreamHandler()
+        shandle.setFormatter(formatter)
+        logger.addHandler(shandle)    
     logger.setLevel(logging.INFO)  
     return logger
 
