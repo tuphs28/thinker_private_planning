@@ -245,7 +245,7 @@ class SelfPlayWorker():
                         learner_actor_start = not preload_needed or preload
                     if self.rank == 0: self.timing.time("mics3")                    
                     # update model weight                
-                    if n % 1 == 0:
+                    if n % 10000 == 0:
                         if self.flags.train_actor and self.policy == PO_NET :
                             weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                             self.actor_net.set_weights(weights)
