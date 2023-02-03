@@ -18,7 +18,7 @@ def parse(args=None):
     # Environment settings
     parser.add_argument("--env", type=str, default="cSokoban-v0",
                         help="Gym environment.")
-    parser.add_argument("--reward_clipping", default=-1, type=int, 
+    parser.add_argument("--reward_clipping", default=-1, type=float, 
                        help="Reward clipping.")
     parser.add_argument("--reward_transform", action="store_true",
                         help="Whether to transform the reward as MuZero.")                       
