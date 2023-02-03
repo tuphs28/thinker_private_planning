@@ -1,4 +1,4 @@
-import time
+import time, timeit
 import numpy as np
 import argparse
 from collections import namedtuple
@@ -43,6 +43,7 @@ class SelfPlayWorker():
         self.rank = rank
         self.num_p_actors = num_p_actors
         self.flags = flags
+        self.timing = util.Timings()
 
         self.env = Environment(flags, model_wrap=policy==PO_NET, env_n=num_p_actors, device=self.device)
         seed = [1 + i + num_p_actors * rank for i in range(num_p_actors)]
@@ -150,12 +151,16 @@ class SelfPlayWorker():
                 preload = False            
                 learner_actor_start = train_actor and (not preload_needed or preload)
 
+                timer = timeit.default_timer
+                start_time = timer()
+
                 while (True):      
+                    if self.rank == 0: self.timing.reset()
                     # prepare train_actor_out data to be written
                     initial_actor_state = actor_state
                     if learner_actor_start:
                         self.write_actor_buffer(env_out, actor_out, 0)
-
+                    if self.rank == 0: self.timing.time("misc1")
                     for t in range(self.flags.unroll_length):
                         # generate action
                         if self.policy == PO_NET:
@@ -165,6 +170,7 @@ class SelfPlayWorker():
                                     actor_out, actor_state = self.actor_net(env_out, actor_state)    
                             else:
                                 actor_out, actor_state = self.actor_net(env_out, actor_state)    
+                            if self.rank == 0: self.timing.time("actor_net")
                             action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
                             if actor_out.term_action is not None:
                                 action.append(actor_out.term_action)
@@ -184,11 +190,13 @@ class SelfPlayWorker():
                             else:
                                 env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
                                         self.employ_model_state)
+                            if self.rank == 0: self.timing.time("step env")
                         else:
                             env_out = self.env.step(action, self.employ_model_net)
                         # write the data to the respective buffers
                         if learner_actor_start:
                             self.write_actor_buffer(env_out, actor_out, t+1)       
+                        if self.rank == 0: self.timing.time("write_actor_buffer")
                         if train_model and (self.policy != PO_NET or env_out.cur_t[:,0] == 0): 
                             baseline = None
                             if self.policy == PO_NET:
@@ -199,6 +207,7 @@ class SelfPlayWorker():
                                 elif self.flags.model_bootstrap_type == 2:
                                     baseline = actor_out.baseline[:, :, 0] / (self.flags.discounting ** ((self.flags.rec_t - 1)/ self.flags.rec_t))
                             self.write_send_model_buffer(env_out, actor_out, baseline)   
+                        if self.rank == 0: self.timing.time("write_send_model_buffer")
                         if test_eps_n > 0:
                             finish, all_returns = self.write_test_buffer(
                                 env_out, actor_out, test_eps_n, verbose)
@@ -213,6 +222,7 @@ class SelfPlayWorker():
                             initial_actor_state = util.tuple_map(initial_actor_state, lambda x: x.cpu())
                         train_actor_out = (self.actor_local_buffer, initial_actor_state)
                         status = 0
+                        if self.rank == 0: self.timing.time("mics2")
                         while (True):
                             status = ray.get(self.actor_buffer.get_status.remote())
                             if status == AB_FULL: 
@@ -222,6 +232,7 @@ class SelfPlayWorker():
                         if status == AB_FINISH: break
                         train_actor_out = ray.put(train_actor_out)
                         self.actor_buffer.write.remote([train_actor_out])
+                        if self.rank == 0: self.timing.time("send actor_buffer")
                     # if preload buffer needed, check if preloaded
                     if train_actor and preload_needed and not preload:
                         preload, tran_n = ray.get(self.model_buffer.check_preload.remote())
@@ -232,6 +243,7 @@ class SelfPlayWorker():
                             else:
                                 self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                         learner_actor_start = not preload_needed or preload
+                    if self.rank == 0: self.timing.time("mics3")                    
                     # update model weight                
                     if n % 1 == 0:
                         if self.flags.train_actor and self.policy == PO_NET :
@@ -240,6 +252,7 @@ class SelfPlayWorker():
                         if self.flags.train_model:           
                             weights = ray.get(self.param_buffer.get_data.remote("model_net"))
                             self.model_net.set_weights(weights)     
+                    if self.rank == 0: self.timing.time("update model weight")                    
                     # Signal control for all self-play threads (only when it is not in testing mode)
                     if test_eps_n == 0:
                         signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
@@ -248,8 +261,12 @@ class SelfPlayWorker():
                             signals = ray.get(self.param_buffer.get_data.remote("self_play_signals"))
                         if (signals is not None and "term" in signals and signals["term"]):
                             return True               
-                            
+                    if self.rank == 0: self.timing.time("signal control")                                                
                     n += 1
+                    if self.rank == 0 and timer() - start_time > 5: 
+                        self._logger.info(self.timing.summary())
+                        start_time = timer()
+
         except:
             # printing stack trace
             traceback.print_exc()

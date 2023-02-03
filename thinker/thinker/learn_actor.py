@@ -147,6 +147,8 @@ class ActorLearner():
         self.actor_net.to(self.device)
         util.optimizer_to(self.optimizer, self.device)
 
+        self.timing = util.Timings()
+
     def learn_data(self):
         timer = timeit.default_timer
         start_step = self.step
@@ -159,12 +161,14 @@ class ActorLearner():
         if self.flags.im_cost_anneal: self.anneal_c = 1
 
         while (self.real_step < self.flags.total_steps):   
+            self.timing.reset()            
             # get data remotely    
             while (True):
                 data = ray.get(self.actor_buffer.read.remote())
                 if data is not None: break                
                 time.sleep(0.01)
             data = ray.get(data)
+            self.timing.time("get data")
 
             # start consume data
 
@@ -175,14 +179,14 @@ class ActorLearner():
             train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
                 else None for n in range(len(data[0][0]))))
             initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
-            
+            self.timing.time("convert data")
             # compute losses
             if self.flags.float16:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):                
                     losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
             else:
                 losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
-
+            self.timing.time("compute loss")
             total_loss = losses["total_loss"]
             
             # gradient descent on loss
@@ -191,7 +195,7 @@ class ActorLearner():
                 scaler.scale(total_loss).backward()
             else:
                 total_loss.backward()
-            
+            self.timing.time("compute gradient")
             optimize_params = self.optimizer.param_groups[0]['params']
             if self.flags.float16: scaler.unscale_(self.optimizer)
             if self.flags.grad_norm_clipping > 0:                
@@ -199,26 +203,30 @@ class ActorLearner():
                 total_norm = total_norm.detach().cpu().item()
             else:
                 total_norm = 0.            
-
+            self.timing.time("compute norm")
             if self.flags.float16:
                 scaler.step(self.optimizer)
                 scaler.update()
             else:
-                self.optimizer.step()
+                self.optimizer.step()            
+            self.timing.time("grad descent")
 
             if not self.flags.flex_t:
                 self.scheduler.step()
             else:
                 self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
-                self.scheduler.step()            
+                self.scheduler.step()       
+            self.timing.time("scheduler step")                 
 
             if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
             
             # statistic output
             stats = self.compute_stat(train_actor_out, losses, total_norm)                      
+            self.timing.time("copmute stat")  
 
             # write to log file
             self.plogger.log(stats)
+            self.timing.time("write log")  
 
             # print statistics
             if timer() - start_time > 5:
@@ -232,19 +240,23 @@ class ActorLearner():
                 for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
                 self._logger.info(print_str)
                 start_step = self.step
-                start_time = timer()     
+                start_time = timer()    
+                print(self.timing.summary()) 
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
                 ckp_start_time = int(time.strftime("%M")) // 10
 
+            self.timing.time("misc")  
             del train_actor_out, losses, total_loss, stats, total_norm
             torch.cuda.empty_cache()
-            
+
+            self.timing.time("empty cache")              
             # update shared buffer's weights
             if n % 1 == 0:
                 self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
             n += 1
+            self.timing.time("set weight")  
             
         self.plogger.close()
         return True
