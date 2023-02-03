@@ -49,7 +49,10 @@ class SelfPlayWorker():
         self.env.seed(seed)
 
         if self.policy==PO_NET:
-            self.actor_net = ActorNet(obs_shape=self.env.model_out_shape, num_actions=self.env.num_actions, flags=flags)
+            self.actor_net = ActorNet(obs_shape=self.env.model_out_shape, 
+                                      gym_obs_shape=self.env.gym_env_out_shape,
+                                      num_actions=self.env.num_actions, 
+                                      flags=flags)
             self.actor_net.to(self.device)
 
         self.model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, num_actions=self.env.num_actions, flags=flags)
@@ -127,7 +130,7 @@ class SelfPlayWorker():
                     env_out, self.employ_model_state = self.env.initial(self.employ_model_net)      
                 else:
                     env_out = self.env.initial(self.employ_model_net)   
-                if self.policy == PO_NET:      
+                if self.policy == PO_NET:                          
                     actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)                    
                     actor_out, _ = self.actor_net(env_out, actor_state)   
                 elif self.policy == PO_MODEL:
@@ -157,7 +160,11 @@ class SelfPlayWorker():
                         # generate action
                         if self.policy == PO_NET:
                             # policy from applying actor network on the model-wrapped environment
-                            actor_out, actor_state = self.actor_net(env_out, actor_state)    
+                            if self.flags.float16 and self.device == torch.device("cuda"):
+                                with torch.autocast(device_type='cuda', dtype=torch.float16):    
+                                    actor_out, actor_state = self.actor_net(env_out, actor_state)    
+                            else:
+                                actor_out, actor_state = self.actor_net(env_out, actor_state)    
                             action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
                             if actor_out.term_action is not None:
                                 action.append(actor_out.term_action)
@@ -170,8 +177,13 @@ class SelfPlayWorker():
                             actor_out = self.po_nstep(self.env, self.model_net)
                             action = actor_out.action
                         if self.policy == PO_NET:
-                            env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
-                                self.employ_model_state)
+                            if self.flags.float16 and self.device == torch.device("cuda"):
+                                with torch.autocast(device_type='cuda', dtype=torch.float16): 
+                                    env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
+                                        self.employ_model_state)
+                            else:
+                                env_out, self.employ_model_state = self.env.step(action, self.employ_model_net,
+                                        self.employ_model_state)
                         else:
                             env_out = self.env.step(action, self.employ_model_net)
                         # write the data to the respective buffers

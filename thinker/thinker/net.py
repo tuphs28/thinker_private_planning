@@ -11,10 +11,11 @@ def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h,w))
 
 class ActorNet(nn.Module):    
-    def __init__(self, obs_shape, num_actions, flags):
+    def __init__(self, obs_shape, gym_obs_shape, num_actions, flags):
 
         super(ActorNet, self).__init__()
         self.obs_shape = obs_shape
+        self.gym_obs_shape = gym_obs_shape
         self.num_actions = num_actions  
         
         self.tran_t = flags.tran_t                   # number of recurrence of RNN        
@@ -69,14 +70,18 @@ class ActorNet(nn.Module):
                     nn.ReLU())
             else:
                 self.gym_frame_conv = torch.nn.Sequential(
-                    nn.Conv2d(in_channels=3, out_channels=32, kernel_size=8, stride=4),
+                    nn.Conv2d(in_channels=gym_obs_shape[0], out_channels=32, kernel_size=8, stride=4),
                     nn.ReLU(),
                     nn.Conv2d(32, 32, kernel_size=4, stride=2),
-                    nn.ReLU()) # output is in shape (8, 8, 32)
-                self.drc_core = ConvAttnLSTM(h=8, w=8,
+                    nn.ReLU())
+                compute_hw_out = lambda hw_in, kernel_size, stride: (hw_in - (kernel_size-1) - 1) // stride + 1
+                hw_out_1 = compute_hw_out(gym_obs_shape[1], 8, 4)
+                hw_out_2 = compute_hw_out(hw_out_1, 4, 2)
+                self.conv_out_hw_2 = hw_out_2
+                self.drc_core = ConvAttnLSTM(h=hw_out_2, w=hw_out_2,
                     input_dim=32, hidden_dim=32, kernel_size=3, 
                     num_layers=3, num_heads=8, mem_n=0, attn=False, attn_mask_b=0.)
-            self.drc_fc = nn.Linear(8*8*32, 256)     
+            self.drc_fc = nn.Linear(hw_out_2*hw_out_2*32, 256)     
 
         #print("actor size: ", sum(p.numel() for p in self.parameters()))
         #for k, v in self.named_parameters(): print(k, v.numel())   
@@ -156,7 +161,7 @@ class ActorNet(nn.Module):
             else:                
                 gym_x = gym_x / 255.0
                 conv_out = self.gym_frame_conv(gym_x)
-                core_input = conv_out.view(T, B, -1, 8, 8)
+                core_input = conv_out.view(T, B, -1, self.conv_out_hw_2, self.conv_out_hw_2)
                 core_output_list = []
                 core_state_2 = core_state[self.core_state_sep_ind:]
                 for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):

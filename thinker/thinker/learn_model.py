@@ -103,6 +103,9 @@ class ModelLearner():
         # in case the actor learner stops before model learner
 
         n = 0
+        if self.flags.float16:
+            scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
+
         while (self.real_step < self.flags.total_steps - max_diff):                    
             c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
             beta = self.flags.priority_beta * (1 - c) + 1. * c
@@ -131,19 +134,33 @@ class ModelLearner():
             is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
                         
             # compute losses
-            losses, priorities, model_state = self.compute_losses(train_model_out, is_weights, model_state)
+            if self.flags.float16:
+                with torch.autocast(device_type='cuda', dtype=torch.float16):      
+                    losses, priorities, model_state = self.compute_losses(train_model_out, is_weights, model_state)
+            else:
+                losses, priorities, model_state = self.compute_losses(train_model_out, is_weights, model_state)
             total_loss = losses["total_loss"]
             if model_state is not None: model_state = util.tuple_map(model_state, lambda x:x.cpu())
             self.model_buffer.update_priority.remote(inds, priorities, model_state)
             
             # gradient descent on loss
             self.optimizer.zero_grad()
-            total_loss.backward()
+            if self.flags.float16:
+                scaler.scale(total_loss).backward()
+            else:
+                total_loss.backward()
+
             optimize_params = self.optimizer.param_groups[0]['params']
+            if self.flags.float16: scaler.unscale_(self.optimizer)
             if self.flags.model_grad_norm_clipping > 0:
                 torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
             
-            self.optimizer.step()
+            if self.flags.float16:
+                scaler.step(self.optimizer)
+                scaler.update()
+            else:
+                self.optimizer.step()
+                
             self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
             self.scheduler.step()                 
             

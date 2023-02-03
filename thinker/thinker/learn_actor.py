@@ -94,9 +94,11 @@ class ActorLearner():
         self.flags = flags
         self._logger = util.logger()
 
-        env = Environment(flags, model_wrap=True)        
-        self.actor_net = ActorNet(obs_shape=env.model_out_shape, num_actions=env.num_actions, flags=flags)
-
+        env = Environment(flags, model_wrap=True)                
+        self.actor_net = ActorNet(obs_shape=env.model_out_shape, 
+                                      gym_obs_shape=env.gym_env_out_shape,
+                                      num_actions=env.num_actions, 
+                                      flags=flags)
         # initialize learning setting
 
         if not self.flags.disable_cuda and torch.cuda.is_available():
