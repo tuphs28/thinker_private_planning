@@ -263,11 +263,6 @@ class ActorLearner():
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
 
         rewards = train_actor_out.reward
-        if self.flags.reward_clipping > 0:
-            clipped_rewards = torch.clamp(rewards, - self.flags.reward_clipping, self.flags.reward_clipping)
-        else:
-            clipped_rewards = rewards            
-
         # compute advantage w.r.t real rewards     
         discounts = (~train_actor_out.done).float() * self.im_discounting     
 
@@ -290,7 +285,7 @@ class ActorLearner():
         vtrace_returns = from_logits(
             behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
             discounts=discounts,
-            rewards=clipped_rewards[:, :, 0],
+            rewards=rewards[:, :, 0],
             values=new_actor_out.baseline[:, :, 0],
             bootstrap_value=bootstrap_value[:, 0],
             lamb=self.flags.lamb
@@ -327,7 +322,7 @@ class ActorLearner():
             vtrace_returns = from_logits(
                 behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
                 discounts=discounts,
-                rewards=clipped_rewards[:, :, 1],
+                rewards=rewards[:, :, 1],
                 values=new_actor_out.baseline[:, :, 1],
                 bootstrap_value=bootstrap_value[:, 1],
                 lamb=self.flags.lamb

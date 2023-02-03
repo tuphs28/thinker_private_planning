@@ -9,15 +9,33 @@ import torch
 
 def parse(args=None):
     parser = argparse.ArgumentParser(description="Thinker v1")
-
-    parser.add_argument("--env", type=str, default="cSokoban-v0",
-                        help="Gym environment.")
+    
     parser.add_argument("--xpid", default=None,
                         help="Experiment id (default: None).")
     parser.add_argument("--savedir", default="~/RS/thinker/logs/thinker",
                         help="Root dir where experiment data will be saved.")
+
+    # Environment settings
+    parser.add_argument("--env", type=str, default="cSokoban-v0",
+                        help="Gym environment.")
+    parser.add_argument("--reward_clipping", default=-1, type=int, 
+                       help="Reward clipping.")
+    parser.add_argument("--reward_transform", action="store_true",
+                        help="Whether to transform the reward as MuZero.")                       
+
+    # Resources settings.
+    parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
+                        help="Number of gpu per actor learning.") 
+    parser.add_argument("--gpu_learn_model", default=0.5, type=float,
+                        help="Number of gpu per model learning.") 
+    parser.add_argument("--gpu_self_play", default=0.25, type=float,
+                        help="Number of gpu per self-play worker.")     
     parser.add_argument("--float16",  action="store_true",
-                        help="Whether to use float 16 precision in training.")                               
+                        help="Whether to use float 16 precision in training.")                                                     
+    parser.add_argument("--num_actors", default=48, type=int, 
+                        help="Number of actors (default: 48).")
+    parser.add_argument("--num_p_actors", default=1, type=int, 
+                        help="Number of parallel env. per actor")                          
 
     # Preload settings.
     parser.add_argument("--load_checkpoint", default="",
@@ -31,23 +49,11 @@ def parse(args=None):
     parser.add_argument("--employ_model_rnn",  action="store_true",
                         help="Whether to use ConvLSTM in the employed model (only support perfect model).")                        
 
-    # Resources settings.
-    parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
-                        help="Number of gpu per actor learning.") 
-    parser.add_argument("--gpu_learn_model", default=0.5, type=float,
-                        help="Number of gpu per model learning.") 
-    parser.add_argument("--gpu_self_play", default=0.25, type=float,
-                        help="Number of gpu per self-play worker.")     
-
     # Actor Training settings.            
     parser.add_argument("--policy_type", default=0, type=int, 
                         help="Policy used for self-play worker; 0 for actor net, 1 for model policy, 2 for 1-step greedy") 
     parser.add_argument("--disable_train_actor", action="store_false", dest="train_actor",
                         help="Disable training of actor.")   
-    parser.add_argument("--num_actors", default=48, type=int, 
-                        help="Number of actors (default: 48).")
-    parser.add_argument("--num_p_actors", default=1, type=int, 
-                        help="Number of parallel env. per actor")
     parser.add_argument("--total_steps", default=50000000, type=int, 
                         help="Total environment steps to train for.")
     parser.add_argument("--batch_size", default=32, type=int, 
@@ -133,8 +139,6 @@ def parse(args=None):
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=1,
                         type=float, help="Lambda when computing trace.")
-    parser.add_argument("--reward_clipping", default=10, type=int, 
-                       help="Reward clipping.")
     
     # Model loss settings
     parser.add_argument("--model_logits_loss_cost", default=0.5, type=float,

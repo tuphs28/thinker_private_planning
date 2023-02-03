@@ -175,6 +175,9 @@ class PostWrapper:
             self.last_action = action
         see_mask = torch.rand(size=(1, 1)) > (1 - self.actor_see_p)
 
+        if self.flags.reward_clipping > 0:
+            reward = torch.clamp(reward, - self.flags.reward_clipping, self.flags.reward_clipping)
+
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
@@ -553,6 +556,9 @@ class PostVecModelWrapper(gym.Wrapper):
         self.episode_return[:, cur_t==0, 1] = 0.
         self.last_action[cur_t==0] = action[0, cur_t==0]
         self.last_action[:, 1:] = action[0, :, 1:]
+
+        if self.flags.reward_clipping > 0:
+            reward = torch.clamp(reward, - self.flags.reward_clipping, self.flags.reward_clipping)
 
         ret = EnvOut(
             gym_env_out=gym_env_out,
