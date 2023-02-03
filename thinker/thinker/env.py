@@ -50,8 +50,14 @@ def PreWrap(env, name):
         env = TimeLimit_(env, max_episode_steps=120)
         env = TransposeWrap(env)
     else:        
-        raise ValueError("Environment not supported")
-
+        env = StateWrapper(env)
+        env = NoopResetEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
+        env = wrap_deepmind(env,
+            clip_rewards=False,
+            frame_stack=True,
+            scale=False,)
+        env = TransposeWrap(env)
     return env
 
 def _format(gym_env_out, model_out):
@@ -1090,7 +1096,7 @@ class TimeLimit_(gym.Wrapper):
         return 
 
 class WarpFrame(gym.ObservationWrapper):
-    def __init__(self, env, width=84, height=84, grayscale=True, dict_space_key=None):
+    def __init__(self, env, width=84, height=84, grayscale=False, dict_space_key=None):
         """
         Warp frames to 84x84 as done in the Nature paper and later work.
 
@@ -1265,61 +1271,6 @@ class ClipRewardEnv(gym.RewardWrapper):
         """Bin reward to {+1, 0, -1} by its sign."""
         return np.sign(reward)
 
-
-class WarpFrame(gym.ObservationWrapper):
-    def __init__(self, env, width=84, height=84, grayscale=True, dict_space_key=None):
-        """
-        Warp frames to 84x84 as done in the Nature paper and later work.
-
-        If the environment uses dictionary observations, `dict_space_key` can be specified which indicates which
-        observation should be warped.
-        """
-        super().__init__(env)
-        self._width = width
-        self._height = height
-        self._grayscale = grayscale
-        self._key = dict_space_key
-        if self._grayscale:
-            num_colors = 1
-        else:
-            num_colors = 3
-
-        new_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(self._height, self._width, num_colors),
-            dtype=np.uint8,
-        )
-        if self._key is None:
-            original_space = self.observation_space
-            self.observation_space = new_space
-        else:
-            original_space = self.observation_space.spaces[self._key]
-            self.observation_space.spaces[self._key] = new_space
-        assert original_space.dtype == np.uint8 and len(original_space.shape) == 3
-
-    def observation(self, obs):
-        if self._key is None:
-            frame = obs
-        else:
-            frame = obs[self._key]
-
-        if self._grayscale:
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(
-            frame, (self._width, self._height), interpolation=cv2.INTER_AREA
-        )
-        if self._grayscale:
-            frame = np.expand_dims(frame, -1)
-
-        if self._key is None:
-            obs = frame
-        else:
-            obs = obs.copy()
-            obs[self._key] = frame
-        return obs
-
-
 class FrameStack(gym.Wrapper):
     def __init__(self, env, k):
         """Stack k last frames.
@@ -1350,6 +1301,17 @@ class FrameStack(gym.Wrapper):
     def _get_ob(self):
         assert len(self.frames) == self.k
         return LazyFrames(list(self.frames))
+
+    def clone_state(self):
+        state = self.env.clone_state()
+        state["frameStack"] = self.frames.copy()
+        return state
+    
+    def restore_state(self, state):
+        self.frames = state["frameStack"]
+        self.env.restore_state(state)
+
+
 
 class ScaledFloatFrame(gym.ObservationWrapper):
     def __init__(self, env):
@@ -1398,13 +1360,26 @@ class LazyFrames(object):
     def frame(self, i):
         return self._force()[..., i]
 
-def make_atari(env_id, max_episode_steps=None):
-    env = gym.make(env_id)
-    assert 'NoFrameskip' in env.spec.id
-    env = NoopResetEnv(env, noop_max=30)
-    env = MaxAndSkipEnv(env, skip=4)
-    assert max_episode_steps is None
-    return env
+class StateWrapper(gym.Wrapper):
+    def __init__(self, env):
+        gym.Wrapper.__init__(self, env)
+
+    def clone_state(self):
+        state = self.env.clone_state()
+        return {"ale_state": state}
+    
+    def restore_state(self, state):
+        self.env.restore_state(state["ale_state"])  
+
+class ScaledFloatFrame(gym.ObservationWrapper):
+    def __init__(self, env):
+        gym.ObservationWrapper.__init__(self, env)
+        self.observation_space = gym.spaces.Box(low=0, high=1, shape=env.observation_space.shape, dtype=np.float32)
+
+    def observation(self, observation):
+        # careful! This undoes the memory optimization, use
+        # with smaller replay buffers only.
+        return np.array(observation).astype(np.float32) / 255.0
 
 def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, scale=False):
     """Configure environment for DeepMind-style Atari.
@@ -1413,7 +1388,7 @@ def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, 
         env = EpisodicLifeEnv(env)
     if 'FIRE' in env.unwrapped.get_action_meanings():
         env = FireResetEnv(env)
-    env = WarpFrame(env)
+    env = WarpFrame(env, width=96, height=96, grayscale=False)
     if scale:
         env = ScaledFloatFrame(env)
     if clip_rewards:
