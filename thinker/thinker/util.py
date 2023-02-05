@@ -175,6 +175,8 @@ def parse(args=None):
                         type=float, help="Threshold discounting factor.")   
     parser.add_argument("--model_wrapper_ver", default=1,
                         type=float, help="Model wrapper version.")
+    parser.add_argument("--depth_discounting", default=1.,
+                        type=float, help="Discounting factor for planning reward based on search depth.")                           
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,
