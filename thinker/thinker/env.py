@@ -225,6 +225,7 @@ class ModelWrapper(gym.Wrapper):
         self.flex_t = flags.flex_t 
         self.flex_t_cost = flags.flex_t_cost         
         self.discounting = flags.discounting
+        self.depth_discounting = flags.depth_discounting
         self.reward_type = flags.reward_type    
         self.no_mem = flags.no_mem
         self.perfect_model = flags.perfect_model
@@ -246,14 +247,16 @@ class ModelWrapper(gym.Wrapper):
           low=-np.inf, high=np.inf, shape=(obs_n, 1, 1), dtype=float)
         
         self.max_rollout_depth = 0.
+        self.rollout_depth = 0.
         self.thres = None
         self.baseline_max_q = torch.zeros(1, dtype=torch.float32)
         self.baseline_mean_q = torch.zeros(1, dtype=torch.float32)
-        self.root_max_q = None
+        self.root_max_q = None        
         
     def reset(self, model_net, **kwargs):
         x = self.env.reset(**kwargs)
-        self.cur_t = 0            
+        self.cur_t = 0        
+        self.rollout_depth = 0.    
         model_state = model_net.init_state(1) if model_net.rnn else None                
         out, _, model_state = self.use_model(model_net=model_net, 
             model_state = model_state, x=x, r=0.,
@@ -284,7 +287,11 @@ class ModelWrapper(gym.Wrapper):
                 flex_t_cost = self.flex_t_cost
             else:                
                 flex_t_cost = 0.
-            r = np.array([0., (self.root_max_q - self.last_root_max_q - flex_t_cost).item()], dtype=np.float32)
+            if self.depth_discounting < 1.:
+                dc = self.depth_discounting ** self.last_rollout_depth
+            else:
+                dc = 1.
+            r = np.array([0., ((self.root_max_q - self.last_root_max_q - flex_t_cost)*dc).item()], dtype=np.float32)
           done = False
           info['cur_t'] = self.cur_t   
         else:
@@ -313,6 +320,8 @@ class ModelWrapper(gym.Wrapper):
         
     def use_model(self, model_net, model_state, x, r, a, cur_t, reset, term, done):     
         with torch.no_grad():
+            self.last_rollout_depth = self.rollout_depth
+
             if cur_t == 0:
                 self.rollout_depth = 0.
                 self.unexpand_rollout_depth = 0.
@@ -598,6 +607,7 @@ class VecModelWrapper(gym.Wrapper):
         self.flex_t = flags.flex_t 
         self.flex_t_cost = flags.flex_t_cost         
         self.discounting = flags.discounting
+        self.depth_discounting = flags.depth_discounting
         self.perfect_model = flags.perfect_model
         self.tree_carry = flags.tree_carry
         self.thres_carry = flags.thres_carry        
@@ -698,6 +708,7 @@ class VecModelWrapper(gym.Wrapper):
             
             self.cur_t += 1
             self.cur_t[~imagine_b] = 0
+            self.depth_delta = torch.pow(self.depth_discounting, self.rollout_depth)
             self.rollout_depth += 1
             self.rollout_depth[~imagine_b] = 0        
             max_rollout_depth = self.max_rollout_depth.clone()
@@ -855,7 +866,7 @@ class VecModelWrapper(gym.Wrapper):
             re_reward[~imagine_b] = torch.tensor(reward, dtype=torch.float32)[real_sel_b] # real reward            
         if torch.any(imagine_b):
             flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
-            im_reward[imagine_b] = (root_nodes_qmax - self.root_nodes_qmax - flex_t_cost)[imagine_b] # imagine reward
+            im_reward[imagine_b] = ((root_nodes_qmax - self.root_nodes_qmax - flex_t_cost)*self.depth_delta)[imagine_b] # imagine reward
         full_reward = torch.concat([re_reward.unsqueeze(-1), im_reward.unsqueeze(-1)], dim=-1)
         self.root_nodes_qmax = root_nodes_qmax
         if self.time: self.timings.time("compute_reward")
