@@ -291,7 +291,7 @@ class ModelWrapper(gym.Wrapper):
                 dc = self.depth_discounting ** self.last_rollout_depth
             else:
                 dc = 1.
-            r = np.array([0., ((self.root_max_q - self.last_root_max_q - flex_t_cost)*dc).item()], dtype=np.float32)
+            r = np.array([0., ((self.root_max_q - self.last_root_max_q)*dc - flex_t_cost).item()], dtype=np.float32)
           done = False
           info['cur_t'] = self.cur_t   
         else:
@@ -613,6 +613,7 @@ class VecModelWrapper(gym.Wrapper):
         self.thres_carry = flags.thres_carry        
         self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space[0].n
+        self.reward_type = flags.reward_type
         self.env_n = env_n
             
         if not self.flex_t:
@@ -626,7 +627,6 @@ class VecModelWrapper(gym.Wrapper):
         assert self.perfect_model, "imperfect model not yet supported"
         assert not self.thres_carry, "thres_carry not yet supported"
         assert not flags.model_rnn, "model_rnn not yet supported"
-        assert flags.reward_type == 1, "only support reward_type 1"
 
         self.baseline_max_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
         self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
@@ -859,16 +859,23 @@ class VecModelWrapper(gym.Wrapper):
         if self.time: self.timings.time("compute_model_out")
 
         # compute reward
-        root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)
+        if self.reward_type == 1:
+            root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)        
+            im_reward = torch.zeros(self.env_n,  dtype=torch.float32)        
+            if torch.any(imagine_b):
+                flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
+                im_reward[imagine_b] = ((root_nodes_qmax - self.root_nodes_qmax)*self.depth_delta - flex_t_cost)[imagine_b] # imagine reward
+
         re_reward = torch.zeros(self.env_n,  dtype=torch.float32)
-        im_reward = torch.zeros(self.env_n,  dtype=torch.float32)
         if torch.any(~imagine_b):            
             re_reward[~imagine_b] = torch.tensor(reward, dtype=torch.float32)[real_sel_b] # real reward            
-        if torch.any(imagine_b):
-            flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
-            im_reward[imagine_b] = ((root_nodes_qmax - self.root_nodes_qmax - flex_t_cost)*self.depth_delta)[imagine_b] # imagine reward
-        full_reward = torch.concat([re_reward.unsqueeze(-1), im_reward.unsqueeze(-1)], dim=-1)
-        self.root_nodes_qmax = root_nodes_qmax
+
+        if self.reward_type == 1:
+            full_reward = torch.concat([re_reward.unsqueeze(-1), im_reward.unsqueeze(-1)], dim=-1)
+            self.root_nodes_qmax = root_nodes_qmax
+        else:
+            full_reward = re_reward.unsqueeze(-1)
+        
         if self.time: self.timings.time("compute_reward")
         full_reward = full_reward.to(self.device)
 
