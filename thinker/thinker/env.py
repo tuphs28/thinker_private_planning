@@ -562,7 +562,8 @@ class PostVecModelWrapper(gym.Wrapper):
         cur_t = info["cur_t"]
         self.episode_step[:, done] = 0.
         self.episode_return[:, done] = 0.
-        self.episode_return[:, cur_t==0, 1] = 0.
+        if self.reward_type == 1:
+            self.episode_return[:, cur_t==0, 1] = 0.
         self.last_action[cur_t==0] = action[0, cur_t==0]
         self.last_action[:, 1:] = action[0, :, 1:]
 
