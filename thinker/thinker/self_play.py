@@ -342,6 +342,7 @@ class SelfPlayWorker():
             self.model_t += 1
 
     def write_test_buffer(self, env_out: EnvOut, actor_out: ActorOut, 
+        #TODO: use real_done instead of done
         test_eps_n:int=0, verbose:bool=False):
         if torch.any(env_out.done):            
             episode_returns = env_out.episode_return[env_out.done][:, 0]  
