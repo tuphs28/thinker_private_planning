@@ -10,9 +10,8 @@ from gym import spaces
 from thinker.gym.asyn_vector_env import AsyncVectorEnv
 from thinker import util
 
-EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 
-    'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action',
-    'max_rollout_depth'])
+EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 'real_done',
+    'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
 def Environment(flags, model_wrap=True, env_n=1, device=None):
     """Create an environment using flags.env; first
@@ -107,6 +106,7 @@ class PostWrapper:
         self.episode_return = torch.zeros(1, 1, reward_shape)
         self.episode_step = torch.zeros(1, 1, dtype=torch.int32)
         initial_done = torch.ones(1, 1, dtype=torch.bool)
+        initial_real_done = torch.ones(1, 1, dtype=torch.bool)
 
         if self.model_wrap:
             out, model_state = self.env.reset(model_net)
@@ -121,6 +121,7 @@ class PostWrapper:
             see_mask=see_mask,
             reward=initial_reward,
             done=initial_done,
+            real_done=initial_real_done,
             truncated_done=torch.tensor(0).view(1, 1).bool(),
             episode_return=self.episode_return,
             episode_step=self.episode_step,
@@ -152,7 +153,8 @@ class PostWrapper:
         real_done = info["real_done"] if "real_done" in info else done
         if real_done:
             self.episode_return = torch.zeros(1, 1, 1)
-            self.episode_step = torch.zeros(1, 1, dtype=torch.int32)        
+            self.episode_step = torch.zeros(1, 1, dtype=torch.int32)     
+        real_done = torch.tensor(real_done).view(1, 1)
         
         reward = torch.tensor(reward).view(1, 1, -1)
         done = torch.tensor(done).view(1, 1)
@@ -188,6 +190,7 @@ class PostWrapper:
             see_mask=see_mask,
             reward=reward,
             done=done,
+            real_done=real_done,
             truncated_done=truncated_done,          
             episode_return=episode_return,
             episode_step=episode_step,
@@ -539,6 +542,7 @@ class PostVecModelWrapper(gym.Wrapper):
             see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device),
             done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
+            real_done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
             truncated_done=None,
             episode_return=self.episode_return,
             episode_step=self.episode_step,
@@ -581,6 +585,7 @@ class PostVecModelWrapper(gym.Wrapper):
             see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=reward.unsqueeze(0),
             done=done.unsqueeze(0),
+            real_done=real_done.unsqueeze(0),
             truncated_done=None,
             episode_return=episode_return,
             episode_step=episode_step,

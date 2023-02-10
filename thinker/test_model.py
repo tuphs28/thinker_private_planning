@@ -1,41 +1,56 @@
-from collections import deque
+
 import time
-import timeit
 import numpy as np
 import argparse
 import ray
 import torch
-from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL, PO_NSTEP
-from thinker.self_play import TrainActorOut
+from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL
+from thinker.learn_actor import ActorLearner
+from thinker.learn_model import ModelLearner
 from thinker.buffer import ActorBuffer, ModelBuffer, GeneralBuffer
 import thinker.util as util
 
 if __name__ == "__main__":
 
-    print("Initializing...")
+    logger = util.logger()
+
+    logger.info("Initializing...")    
+
     ray.init()
     st_time = time.time()
-    flags = util.parse() 
-    flags.train_actor = False
-    flags.train_model = False    
+    flags = util.parse()
     
     param_buffer = GeneralBuffer.remote()        
-    test_buffer = GeneralBuffer.remote()        
+    test_buffer = GeneralBuffer.remote()      
 
-    self_play_workers = [SelfPlayWorker.remote(
-      param_buffer=param_buffer, 
-      actor_buffer=None, 
-      model_buffer=None, 
-      test_buffer=test_buffer, 
-      policy=PO_NSTEP, 
-      policy_params={"n":2, "temp": 1/5},
-      rank=n, 
-      flags=flags) for n in range(flags.num_actors)]
-    r_worker = [x.gen_data.remote(test_eps_n=1000) for x in self_play_workers]    
-    ray.get(r_worker)
+    if flags.policy_type == PO_NET:
+        policy_str = "actor network"
+    elif flags.policy_type == PO_MODEL:
+        policy_str = "base model network"
+    else:
+        raise Exception("policy not supported")
+
+    flags.num_actors = 4
+    flags.num_p_actors = 16
+    flags.train_actor = False
+    flags.train_model = False
+    flags.preload_actor = flags.load_checkpoint+"/ckp_actor.tar"
+    flags.preload_model = flags.load_checkpoint+"/ckp_model.tar"    
         
-    print("time required: %fs" % (time.time()-st_time))
+    logger.info("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
+    self_play_workers = [SelfPlayWorker.options(
+        num_cpus=0, num_gpus=0.25).remote(
+        param_buffer=param_buffer, 
+        actor_buffer=None, 
+        model_buffer=None, 
+        test_buffer=test_buffer,
+        policy=flags.policy_type, 
+        policy_params=None, 
+        rank=n, 
+        num_p_actors=flags.num_p_actors,
+        flags=flags) for n in range(flags.num_actors)]
+    r_worker = [x.gen_data.remote(test_eps_n=1000) for x in self_play_workers]   
+    ray.get(r_worker)
 
-
-
+    logger.info("time required: %fs" % (time.time()-st_time))
     
