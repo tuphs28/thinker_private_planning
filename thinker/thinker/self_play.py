@@ -60,7 +60,6 @@ class SelfPlayWorker():
         self.model_net.train(False)
         self.model_net.to(self.device)
 
-
         # the networks weight are set by the respective learner; but if the respective
         # learner does not exist, then rank 0 worker will set the weights
         if rank == 0 and not self.flags.train_actor and self.policy==PO_NET:
@@ -359,9 +358,9 @@ class SelfPlayWorker():
             self.model_t += 1
 
     def write_test_buffer(self, env_out: EnvOut, actor_out: ActorOut, 
-        test_eps_n:int=0, verbose:bool=False):
-        if torch.any(env_out.done):            
-            episode_returns = env_out.episode_return[env_out.done][:, 0]  
+        test_eps_n:int=0, verbose:bool=True):
+        if torch.any(env_out.real_done):            
+            episode_returns = env_out.episode_return[env_out.real_done][:, 0]  
             episode_returns = list(episode_returns.detach().cpu().numpy())
             for r in episode_returns:
                 all_returns = ray.get(self.test_buffer.extend_data.remote("episode_returns", [r]))  

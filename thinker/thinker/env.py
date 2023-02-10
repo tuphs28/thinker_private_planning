@@ -10,9 +10,8 @@ from gym import spaces
 from thinker.gym.asyn_vector_env import AsyncVectorEnv
 from thinker import util
 
-EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 
-    'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action',
-    'max_rollout_depth'])
+EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 'real_done',
+    'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
 def Environment(flags, model_wrap=True, env_n=1, device=None):
     """Create an environment using flags.env; first
@@ -54,6 +53,7 @@ def PreWrap(env, name):
         env = NoopResetEnv(env, noop_max=30)
         env = MaxAndSkipEnv(env, skip=4)
         env = wrap_deepmind(env,
+            episode_life=True,
             clip_rewards=False,
             frame_stack=True,
             scale=False,)
@@ -106,6 +106,7 @@ class PostWrapper:
         self.episode_return = torch.zeros(1, 1, reward_shape)
         self.episode_step = torch.zeros(1, 1, dtype=torch.int32)
         initial_done = torch.ones(1, 1, dtype=torch.bool)
+        initial_real_done = torch.ones(1, 1, dtype=torch.bool)
 
         if self.model_wrap:
             out, model_state = self.env.reset(model_net)
@@ -120,6 +121,7 @@ class PostWrapper:
             see_mask=see_mask,
             reward=initial_reward,
             done=initial_done,
+            real_done=initial_real_done,
             truncated_done=torch.tensor(0).view(1, 1).bool(),
             episode_return=self.episode_return,
             episode_step=self.episode_step,
@@ -132,10 +134,10 @@ class PostWrapper:
     def step(self, action, model_net=None, model_state=None):
         assert len(action.shape) == 3, "dim of action should be 3"
         if self.model_wrap:            
-            out, reward, done, unused_info, model_state = self.env.step(action[0,0].cpu().detach().numpy(), model_net, model_state)     
+            out, reward, done, info, model_state = self.env.step(action[0,0].cpu().detach().numpy(), model_net, model_state)     
             gym_env_out, model_out = _format(*out)
         else:
-            out, reward, done, unused_info = self.env.step(action[0,0,0].cpu().detach().numpy())     
+            out, reward, done, info = self.env.step(action[0,0,0].cpu().detach().numpy())     
             gym_env_out, model_out = _format(out, None)
         self.episode_step += 1
         self.episode_return = self.episode_return + torch.tensor(reward).unsqueeze(0).unsqueeze(0)
@@ -147,19 +149,23 @@ class PostWrapper:
                 gym_env_out, model_out = _format(*out)
             else:
                 gym_env_out, model_out = _format(self.env.reset(), None)
+
+        real_done = info["real_done"] if "real_done" in info else done
+        if real_done:
             self.episode_return = torch.zeros(1, 1, 1)
-            self.episode_step = torch.zeros(1, 1, dtype=torch.int32)        
+            self.episode_step = torch.zeros(1, 1, dtype=torch.int32)     
+        real_done = torch.tensor(real_done).view(1, 1)
         
         reward = torch.tensor(reward).view(1, 1, -1)
         done = torch.tensor(done).view(1, 1)
-        truncated_done = 'TimeLimit.truncated' in unused_info and unused_info['TimeLimit.truncated']
+        truncated_done = 'TimeLimit.truncated' in info and info['TimeLimit.truncated']
         truncated_done = torch.tensor(truncated_done).view(1, 1)
         if self.model_wrap:
-            cur_t = torch.tensor(unused_info["cur_t"]).view(1, 1)
+            cur_t = torch.tensor(info["cur_t"]).view(1, 1)
             if cur_t == 0 and self.episode_return.shape[2] > 1:
                 self.episode_return[:, :, 1] = 0.
-            if 'max_rollout_depth' in unused_info:
-                max_rollout_depth = torch.tensor(unused_info["max_rollout_depth"]).view(1, 1)
+            if 'max_rollout_depth' in info:
+                max_rollout_depth = torch.tensor(info["max_rollout_depth"]).view(1, 1)
             else:
                 max_rollout_depth = torch.tensor(0.).view(1, 1)
         else:
@@ -184,6 +190,7 @@ class PostWrapper:
             see_mask=see_mask,
             reward=reward,
             done=done,
+            real_done=real_done,
             truncated_done=truncated_done,          
             episode_return=episode_return,
             episode_step=episode_step,
@@ -291,7 +298,7 @@ class ModelWrapper(gym.Wrapper):
                 dc = self.depth_discounting ** self.last_rollout_depth
             else:
                 dc = 1.
-            r = np.array([0., ((self.root_max_q - self.last_root_max_q - flex_t_cost)*dc).item()], dtype=np.float32)
+            r = np.array([0., ((self.root_max_q - self.last_root_max_q)*dc - flex_t_cost).item()], dtype=np.float32)
           done = False
           info['cur_t'] = self.cur_t   
         else:
@@ -535,6 +542,7 @@ class PostVecModelWrapper(gym.Wrapper):
             see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device),
             done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
+            real_done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
             truncated_done=None,
             episode_return=self.episode_return,
             episode_step=self.episode_step,
@@ -549,6 +557,7 @@ class PostVecModelWrapper(gym.Wrapper):
         assert action.shape == (1, self.env_n, action_shape), (
             "shape of action should be (1, B, %d)" % action_shape)
         out, reward, done, info = self.env.step(action[0], model_net)     
+        real_done = info["real_done"]
         model_out, gym_env_out = out
         model_out = model_out.unsqueeze(0)
         gym_env_out = gym_env_out.unsqueeze(0)
@@ -560,9 +569,10 @@ class PostVecModelWrapper(gym.Wrapper):
         episode_return = self.episode_return.clone()
 
         cur_t = info["cur_t"]
-        self.episode_step[:, done] = 0.
-        self.episode_return[:, done] = 0.
-        self.episode_return[:, cur_t==0, 1] = 0.
+        self.episode_step[:, real_done] = 0.
+        self.episode_return[:, real_done] = 0.
+        if self.reward_type == 1:
+            self.episode_return[:, cur_t==0, 1] = 0.
         self.last_action[cur_t==0] = action[0, cur_t==0]
         self.last_action[:, 1:] = action[0, :, 1:]
 
@@ -575,6 +585,7 @@ class PostVecModelWrapper(gym.Wrapper):
             see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=reward.unsqueeze(0),
             done=done.unsqueeze(0),
+            real_done=real_done.unsqueeze(0),
             truncated_done=None,
             episode_return=episode_return,
             episode_step=episode_step,
@@ -613,6 +624,7 @@ class VecModelWrapper(gym.Wrapper):
         self.thres_carry = flags.thres_carry        
         self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space[0].n
+        self.reward_type = flags.reward_type
         self.env_n = env_n
             
         if not self.flex_t:
@@ -626,7 +638,6 @@ class VecModelWrapper(gym.Wrapper):
         assert self.perfect_model, "imperfect model not yet supported"
         assert not self.thres_carry, "thres_carry not yet supported"
         assert not flags.model_rnn, "model_rnn not yet supported"
-        assert flags.reward_type == 1, "only support reward_type 1"
 
         self.baseline_max_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
         self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
@@ -716,8 +727,7 @@ class VecModelWrapper(gym.Wrapper):
             self.max_rollout_depth = torch.max(self.max_rollout_depth, self.rollout_depth)
 
             # record baseline before moving on
-            if torch.any(~imagine_b):
-                
+            if torch.any(~imagine_b):                
                 mean_q = [torch.mean(torch.concat(r.rollout_qs)).unsqueeze(0) for n, r in enumerate(self.root_nodes) if not imagine_b[n]]
                 self.baseline_mean_q[~imagine_b] = (torch.concat(mean_q) / self.discounting).to(self.device)
                 max_q = [torch.max(torch.concat(r.rollout_qs)).unsqueeze(0) for n, r in enumerate(self.root_nodes) if not imagine_b[n]]
@@ -749,9 +759,9 @@ class VecModelWrapper(gym.Wrapper):
                 self.env.restore_state(pass_env_states, inds=sel_inds.numpy())
                 pass_action = torch.tensor([re_action[n] if s == 1 else 
                     im_action[n] for n, s in enumerate(status) if s in [1, 4]], dtype=torch.long)
-                obs, reward, done, _ = self.env.step(pass_action.numpy(), inds=sel_inds.numpy()) 
+                obs, reward, done, info = self.env.step(pass_action.numpy(), inds=sel_inds.numpy()) 
+                real_done = [i["real_done"] if "real_done" in i else done[n] for n, i in enumerate(info)]
                 if self.time: self.timings.time("step_state")
-                self._done = done
 
                 # reset if done and the transition is real
                 reset_needed = torch.zeros(self.env_n, dtype=torch.bool)
@@ -859,16 +869,23 @@ class VecModelWrapper(gym.Wrapper):
         if self.time: self.timings.time("compute_model_out")
 
         # compute reward
-        root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)
+        if self.reward_type == 1:
+            root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)        
+            im_reward = torch.zeros(self.env_n,  dtype=torch.float32)        
+            if torch.any(imagine_b):
+                flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
+                im_reward[imagine_b] = ((root_nodes_qmax - self.root_nodes_qmax)*self.depth_delta - flex_t_cost)[imagine_b] # imagine reward
+
         re_reward = torch.zeros(self.env_n,  dtype=torch.float32)
-        im_reward = torch.zeros(self.env_n,  dtype=torch.float32)
         if torch.any(~imagine_b):            
             re_reward[~imagine_b] = torch.tensor(reward, dtype=torch.float32)[real_sel_b] # real reward            
-        if torch.any(imagine_b):
-            flex_t_cost = 0. if not self.flex_t else self.flex_t_cost
-            im_reward[imagine_b] = ((root_nodes_qmax - self.root_nodes_qmax - flex_t_cost)*self.depth_delta)[imagine_b] # imagine reward
-        full_reward = torch.concat([re_reward.unsqueeze(-1), im_reward.unsqueeze(-1)], dim=-1)
-        self.root_nodes_qmax = root_nodes_qmax
+
+        if self.reward_type == 1:
+            full_reward = torch.concat([re_reward.unsqueeze(-1), im_reward.unsqueeze(-1)], dim=-1)
+            self.root_nodes_qmax = root_nodes_qmax
+        else:
+            full_reward = re_reward.unsqueeze(-1)
+        
         if self.time: self.timings.time("compute_reward")
         full_reward = full_reward.to(self.device)
 
@@ -881,9 +898,16 @@ class VecModelWrapper(gym.Wrapper):
         # compute reset
         self.compute_reset(reset)
 
-        # some info
+        # some info        
+        full_real_done = torch.zeros(self.env_n, dtype=torch.bool)
+        if torch.any(~imagine_b):
+            full_real_done[~imagine_b] = torch.tensor(real_done, dtype=torch.bool)[real_sel_b]
+        full_real_done = full_real_done.to(self.device)
         info = {"cur_t": self.cur_t.to(self.device),
-                "max_rollout_depth": max_rollout_depth.to(self.device)}
+                "max_rollout_depth": max_rollout_depth.to(self.device),
+                "real_done": full_real_done}
+
+
         if self.time: self.timings.time("end")
 
         return (model_out.to(self.device), gym_env_out), full_reward, full_done, info
@@ -1230,13 +1254,14 @@ class EpisodicLifeEnv(gym.Wrapper):
         self.was_real_done = done
         # check current lives, make loss of life terminal,
         # then update lives to handle bonus lives
+        info["real_done"] = done
         lives = self.env.unwrapped.ale.lives()
         if lives < self.lives and lives > 0:
             # for Qbert sometimes we stay in lives == 0 condition for a few frames
             # so it's important to keep lives > 0, so that we only reset once
             # the environment advertises done.
             done = True
-        self.lives = lives
+        self.lives = lives        
         return obs, reward, done, info
 
     def reset(self, **kwargs):
@@ -1251,6 +1276,16 @@ class EpisodicLifeEnv(gym.Wrapper):
             obs, _, _, _ = self.env.step(0)
         self.lives = self.env.unwrapped.ale.lives()
         return obs
+
+    def clone_state(self):
+        state = self.env.clone_state()
+        state["eps_life_vars"] = [self.lives, self.was_real_done]
+        return state
+
+    def restore_state(self, state):
+        self.lives, self.was_real_done = state["eps_life_vars"] 
+        self.env.restore_state(state)
+        return state
 
 class MaxAndSkipEnv(gym.Wrapper):
     def __init__(self, env, skip=4):
@@ -1317,15 +1352,16 @@ class FrameStack(gym.Wrapper):
 
     def _get_ob(self):
         assert len(self.frames) == self.k
+        #return np.concatenate(list(self.frames), axis=-1)
         return LazyFrames(list(self.frames))
 
     def clone_state(self):
         state = self.env.clone_state()
-        state["frameStack"] = self.frames.copy()
+        state["frameStack"] = [np.copy(i) for i in self.frames]
         return state
     
     def restore_state(self, state):
-        self.frames = state["frameStack"]
+        for i in state["frameStack"]: self.frames.append(i)
         self.env.restore_state(state)
 
 
@@ -1382,10 +1418,12 @@ class StateWrapper(gym.Wrapper):
         gym.Wrapper.__init__(self, env)
 
     def clone_state(self):
-        state = self.env.clone_state()
+        #state = self.env.clone_state()
+        state = self.env.clone_state(include_rng=True)  
         return {"ale_state": state}
     
     def restore_state(self, state):
+        #self.env.restore_state(state["ale_state"])  
         self.env.restore_state(state["ale_state"])  
 
 class ScaledFloatFrame(gym.ObservationWrapper):

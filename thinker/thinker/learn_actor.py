@@ -376,7 +376,7 @@ class ActorLearner():
 
     def compute_stat(self, train_actor_out: TrainActorOut, losses: dict, total_norm: float):
         """Update step, real_step and tot_eps; return training stat for printing"""
-        episode_returns = train_actor_out.episode_return[train_actor_out.done][:, 0]  
+        episode_returns = train_actor_out.episode_return[train_actor_out.real_done][:, 0]  
         episode_returns = tuple(episode_returns.detach().cpu().numpy())
         self.last_returns.extend(episode_returns)
         rmean_episode_return = np.average(self.last_returns) if len(self.last_returns) > 0 else 0.
@@ -394,7 +394,7 @@ class ActorLearner():
 
         self.step += self.flags.unroll_length * self.flags.batch_size
         self.real_step += cur_real_step
-        self.tot_eps += torch.sum(train_actor_out.done).item()
+        self.tot_eps += torch.sum(train_actor_out.real_done).item()
 
         stats = {"step": self.step,
                     "real_step": self.real_step,

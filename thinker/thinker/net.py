@@ -158,7 +158,7 @@ class ActorNet(nn.Module):
                 conv_out = self.gym_frame_conv(conv_out)
                 conv_out = torch.flatten(conv_out, start_dim=1)
                 core_output = torch.concat([core_output, conv_out], dim=1)
-            else:                
+            else:       
                 gym_x = gym_x / 255.0
                 conv_out = self.gym_frame_conv(gym_x)
                 core_input = conv_out.view(T, B, -1, self.conv_out_hw_2, self.conv_out_hw_2)
