@@ -12,3 +12,4 @@ test/
 csokoban/build
 csokoban/gym_csokoban.egg-info
 *__pycache__
+.idea/

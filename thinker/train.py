@@ -65,4 +65,3 @@ if __name__ == "__main__":
 
     logger.info("time required: %fs" % (time.time()-st_time))
 
-    

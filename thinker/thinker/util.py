@@ -16,6 +16,8 @@ def parse(args=None):
                         help="Root dir where experiment data will be saved.")
 
     # Environment settings
+    parser.add_argument("--use_wandb", action="store_true",
+                        help="Whether to use wandb logging")
     parser.add_argument("--env", type=str, default="cSokoban-v0",
                         help="Gym environment.")
     parser.add_argument("--reward_clipping", default=-1, type=float, 
@@ -303,3 +305,20 @@ class Timings:
             )
         result += "\nTotal: %.6fms" % (1000 * total)
         return result
+
+class Wandb():
+    def __init__(self, flags, subname=''):
+        import wandb
+        self.wandb = wandb
+        exp_name = flags.xpid + subname
+        self.wandb.init(
+            project='thinker',
+            config=flags,
+            entity=os.getenv('WANDB_USER', 'thinker'),
+            reinit=True,
+            # Restore parameters
+            resume="allow",
+            id=exp_name,
+            name=exp_name,
+        )
+        self.wandb.config.update(flags, allow_val_change=True)

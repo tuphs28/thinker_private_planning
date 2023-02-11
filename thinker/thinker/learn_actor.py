@@ -7,6 +7,7 @@ import argparse
 import ray
 import torch
 import torch.nn.functional as F
+
 from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns
 from thinker.core.file_writer import FileWriter
 from thinker.buffer import ActorBuffer, GeneralBuffer
@@ -83,18 +84,19 @@ def from_logits(
         behavior_action_log_probs=None,
         target_action_log_probs=None,
         **vtrace_returns._asdict(),
-    )  
+    )
 
 @ray.remote
 class ActorLearner():
-    def __init__(self, param_buffer: GeneralBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace): 
+    def __init__(self, param_buffer: GeneralBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace):
         self.param_buffer = param_buffer
         self.actor_buffer = actor_buffer
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
+        self.wlogger = util.Wandb(flags, subname='_actor') if flags.use_wandb else None
 
-        env = Environment(flags, model_wrap=True)                
+        env = Environment(flags, model_wrap=True)
         self.actor_net = ActorNet(obs_shape=env.model_out_shape, 
                                       gym_obs_shape=env.gym_env_out_shape,
                                       num_actions=env.num_actions, 
@@ -132,7 +134,7 @@ class ActorLearner():
             self.flags.savedir = os.path.split(self.flags.load_checkpoint)[0]
             self.flags.xpid = os.path.split(self.flags.load_checkpoint)[-1]    
 
-        self.im_discounting = self.flags.discounting ** (1/self.flags.rec_t)      
+        self.im_discounting = self.flags.discounting ** (1/self.flags.rec_t)
 
         # initialize file logs                        
         self.flags.git_revision = util.get_git_revision_hash()
@@ -219,6 +221,8 @@ class ActorLearner():
 
             # write to log file
             self.plogger.log(stats)
+            if self.flags.use_wandb:
+                self.wlogger.wandb.log(stats, step=stats['step'])
 
             # print statistics
             if timer() - start_time > 5:

@@ -22,12 +22,13 @@ def compute_cross_entropy_loss(logits, target_logits, mask, is_weights):
 
 @ray.remote
 class ModelLearner():
-    def __init__(self, param_buffer: GeneralBuffer, model_buffer: ModelBuffer, rank: int, flags: argparse.Namespace): 
+    def __init__(self, param_buffer: GeneralBuffer, model_buffer: ModelBuffer, rank: int, flags: argparse.Namespace):
         self.param_buffer = param_buffer
         self.model_buffer = model_buffer
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
+        self.wlogger = util.Wandb(flags, subname='_model') if flags.use_wandb else None
 
         env = Environment(flags)        
         self.model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags)
@@ -192,7 +193,9 @@ class ModelLearner():
                 for k in print_stats: 
                     stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
 
-                self.plogger.log(stats)                
+                self.plogger.log(stats)
+                if self.flags.use_wandb:
+                    self.wlogger.wandb.log(stats, step=stats['step'])
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
