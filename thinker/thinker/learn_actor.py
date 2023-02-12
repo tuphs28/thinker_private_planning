@@ -165,7 +165,7 @@ class ActorLearner():
         if self.flags.im_cost_anneal: self.anneal_c = 1
 
         while (self.real_step < self.flags.total_steps):   
-            self.timing.reset()            
+            if self.time: self.timing.reset()            
             # get data remotely    
             while (True):
                 data = ray.get(self.actor_buffer.read.remote())
