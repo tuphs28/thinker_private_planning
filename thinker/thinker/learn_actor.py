@@ -255,16 +255,15 @@ class ActorLearner():
                 self.save_checkpoint()
                 ckp_start_time = int(time.strftime("%M")) // 10
 
-            self.timing.time("misc")  
+            if self.time: self.timing.time("misc")  
             del train_actor_out, losses, total_loss, stats, total_norm
             torch.cuda.empty_cache()
 
-            self.timing.time("empty cache")              
             # update shared buffer's weights
             if n % 1 == 0:
                 self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
             n += 1
-            self.timing.time("set weight")  
+            if self.time: self.timing.time("set weight")  
             
         self.plogger.close()
         return True
