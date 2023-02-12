@@ -455,7 +455,7 @@ class ModelWrapper(gym.Wrapper):
                 root_node_stat = self.root_node.stat()
             cur_node_stat = self.cur_node.stat()                        
             reset = torch.tensor([reset], dtype=torch.float32)            
-            depc = torch.tensor([self.discounting ** (self.rollout_depth-1)])
+            depc = torch.tensor([self.discounting ** (self.rollout_depth)])
             
             root_trail_r = self.root_node.trail_r / self.discounting
             root_rollout_q = self.root_node.rollout_q / self.discounting
@@ -926,7 +926,7 @@ class VecModelWrapper(gym.Wrapper):
             reset = action[:, 2].unsqueeze(1)
             reset = reset.clone()
             reset[~imagine_b] = 1.
-        depc = (self.discounting ** (self.rollout_depth-1)).unsqueeze(-1)
+        depc = (self.discounting ** (self.rollout_depth)).unsqueeze(-1)
         if not self.flex_t:
             time = F.one_hot(self.cur_t, self.rec_t).float()
         else:
@@ -1042,8 +1042,7 @@ class Node:
             self.max_q = torch.max(torch.concat(self.rollout_qs) - self.r).unsqueeze(-1) / self.discounting            
         
         self.child_rollout_ns = torch.tensor([x.rollout_n for x in self.children], dtype=torch.long)
-        self.child_rollout_ns_enc = self.child_rollout_ns / self.rec_t       
-            
+        self.child_rollout_ns_enc = self.child_rollout_ns / self.rec_t     
         ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
                     "child_rollout_qs_max", "child_rollout_ns_enc"]
         if detailed: ret_list.extend(["trail_r_undiscount", "rollout_q_undiscount", "max_q"])
