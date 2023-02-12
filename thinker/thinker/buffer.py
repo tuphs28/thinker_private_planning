@@ -11,7 +11,7 @@ class ActorBuffer():
     def __init__(self, batch_size=32, num_p_actors=1):
         self.batch_size = batch_size
         self.num_p_actors = num_p_actors
-        self.full_buffer_size = batch_size // num_p_actors
+        self.full_buffer_size = max(batch_size // num_p_actors, 1)
         self.buffer = []
         self.finish = False
     

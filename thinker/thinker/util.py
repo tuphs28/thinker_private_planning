@@ -20,6 +20,8 @@ def parse(args=None):
                         help="Whether to use wandb logging")
     parser.add_argument("--env", type=str, default="cSokoban-v0",
                         help="Gym environment.")
+    parser.add_argument("--cwrapper", action="store_true",
+                        help="Whether to use C++ version of model wrapper")                                                
     parser.add_argument("--reward_clipping", default=-1, type=float, 
                        help="Reward clipping.")
     parser.add_argument("--reward_transform", action="store_true",
@@ -141,6 +143,9 @@ def parse(args=None):
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=1,
                         type=float, help="Lambda when computing trace.")
+    parser.add_argument("--rnn_grad_scale", default=1.,
+                        type=float, help="Gradient scale for RNN in actor network.")
+                        
     
     # Model loss settings
     parser.add_argument("--model_logits_loss_cost", default=0.5, type=float,

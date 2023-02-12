@@ -125,6 +125,7 @@ class SelfPlayWorker():
             with torch.no_grad():
                 if verbose: self._logger.info("Actor %d started. %s" % (self.rank, "(test mode)" if test_eps_n > 0 else ""))
                 n = 0            
+                if test_eps_n > 0: self.test_eps_done_n = torch.zeros(self.num_p_actors, device=self.device)
 
                 if self.policy == PO_NET:
                     env_out, self.employ_model_state = self.env.initial(self.employ_model_net)      
@@ -244,7 +245,7 @@ class SelfPlayWorker():
                         learner_actor_start = not preload_needed or preload
                     #if self.rank == 0: self.timing.time("mics3")                    
                     # update model weight                
-                    if n % 5 == 0:
+                    if n % 2 == 0:
                         if self.flags.train_actor and self.policy == PO_NET :
                             weights = ray.get(self.param_buffer.get_data.remote("actor_net"))
                             self.actor_net.set_weights(weights)
@@ -359,16 +360,18 @@ class SelfPlayWorker():
 
     def write_test_buffer(self, env_out: EnvOut, actor_out: ActorOut, 
         test_eps_n:int=0, verbose:bool=True):
-        if torch.any(env_out.real_done):            
-            episode_returns = env_out.episode_return[env_out.real_done][:, 0]  
+        mask = env_out.real_done[0] & (self.test_eps_done_n < test_eps_n)
+        if torch.any(mask):            
+            episode_returns = env_out.episode_return[0, mask, 0]
             episode_returns = list(episode_returns.detach().cpu().numpy())
+            self.test_eps_done_n += mask.float()
             for r in episode_returns:
                 all_returns = ray.get(self.test_buffer.extend_data.remote("episode_returns", [r]))  
                 all_returns = np.array(all_returns)         
                 if verbose:       
                     self._logger.info("%d Mean (Std.) : %.4f (%.4f) - %.4f" % (len(all_returns),
                         np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns)), r))
-                if len(all_returns) > test_eps_n: return True, all_returns
+                if torch.all(self.test_eps_done_n >= test_eps_n): return True, all_returns
                 
         return False, None
 

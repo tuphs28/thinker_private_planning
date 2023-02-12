@@ -30,6 +30,7 @@ class ActorNet(nn.Module):
         self.flex_t_term_b = flags.flex_t_term_b     # bias added to the logit of terminating
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
+        self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -44,7 +45,7 @@ class ActorNet(nn.Module):
                                 input_dim=d_in-self.d_model, hidden_dim=self.d_model,
                                 kernel_size=1, num_layers=self.tran_layer_n,
                                 num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
-                                attn_mask_b=self.attn_mask_b)                         
+                                attn_mask_b=self.attn_mask_b, grad_scale=self.rnn_grad_scale)                         
         
         rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
         self.fc = nn.Linear(rnn_out_size, 256)        
@@ -79,8 +80,9 @@ class ActorNet(nn.Module):
                 hw_out_2 = compute_hw_out(hw_out_1, 4, 2)
                 self.conv_out_hw_2 = hw_out_2
                 self.drc_core = ConvAttnLSTM(h=hw_out_2, w=hw_out_2,
-                    input_dim=32, hidden_dim=32, kernel_size=3, 
-                    num_layers=3, num_heads=8, mem_n=0, attn=False, attn_mask_b=0.)
+                        input_dim=32, hidden_dim=32, kernel_size=3, num_layers=3, 
+                        num_heads=8, mem_n=0, attn=False, attn_mask_b=0.,
+                        grad_scale=self.rnn_grad_scale)
             self.drc_fc = nn.Linear(hw_out_2*hw_out_2*32, 256)     
 
         #print("actor size: ", sum(p.numel() for p in self.parameters()))
@@ -482,7 +484,7 @@ class ModelNetRNN(nn.Module):
                                     input_dim=d_in-self.d_model, hidden_dim=self.d_model,
                                     kernel_size=3, num_layers=self.tran_layer_n,
                                     num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
-                                    attn_mask_b=self.attn_mask_b)                         
+                                    attn_mask_b=self.attn_mask_b, grad_scale=1)                         
             
             rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
             self.fc = nn.Linear(rnn_out_size, 256)        

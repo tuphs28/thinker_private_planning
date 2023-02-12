@@ -4,16 +4,13 @@ import cv2
 import torch
 from torch.nn import functional as F
 import gym
-import gym_sokoban
-import gym_csokoban
-from gym import spaces
-from thinker.gym.asyn_vector_env import AsyncVectorEnv
+from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
 from thinker import util
 
 EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 'real_done',
     'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
-def Environment(flags, model_wrap=True, env_n=1, device=None):
+def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
     """Create an environment using flags.env; first
     wrap the env with basic wrapper, then wrap it
     with a model, and finally wrap it with PosWrapper
@@ -27,6 +24,10 @@ def Environment(flags, model_wrap=True, env_n=1, device=None):
     Return:
         environment
     """
+    if flags.env == "Sokoban-v0": import gym_sokoban
+    if flags.env == "cSokoban-v0": import gym_csokoban
+    if flags.cwrapper: from thinker.cenv import cVecModelWrapper
+
     if env_n == 1:
         if model_wrap:
             env = PostWrapper(ModelWrapper(PreWrap(gym.make(flags.env), flags.env), flags), True, flags)
@@ -35,7 +36,9 @@ def Environment(flags, model_wrap=True, env_n=1, device=None):
     else:
         if model_wrap:
             env = AsyncVectorEnv([lambda: PreWrap(gym.make(flags.env), flags.env) for _ in range(env_n)])
-            env = PostVecModelWrapper(VecModelWrapper(env, env_n, flags, device=device), flags, device=device)
+            num_actions = env.action_space[0].n
+            uVecModelWrapper = cVecModelWrapper if flags.cwrapper else VecModelWrapper
+            env = PostVecModelWrapper(uVecModelWrapper(env, env_n, flags, device=device, time=time), env_n, num_actions, flags, device=device)
         else:
             raise Exception("Parallel run only supports for not model_wrap environments")
     return env
@@ -515,15 +518,16 @@ class PostVecModelWrapper(gym.Wrapper):
     """The final wrapper for env.; calculates episode return,
        record last action, and returns EnvOut"""
 
-    def __init__(self, env, flags, device=None):
+    def __init__(self, env, env_n, num_actions, flags, device=None):
         self.device = torch.device("cpu") if device is None else device
         self.env = env
-        self.env_n = env.env_n
+        self.env_n = env_n
         self.flags = flags
-        self.num_actions = env.num_actions
+        self.num_actions = num_actions
         self.actor_see_p = flags.actor_see_p 
-        self.model_out_shape = env.observation_space.shape[1:]
-        self.gym_env_out_shape = env.env.observation_space.shape[1:]
+        self.model_out_shape = env.model_out_shape
+        self.gym_env_out_shape = env.gym_env_out_shape
+        self.reward_type = flags.reward_type
 
     def initial(self, model_net):
         reward_shape = 2 if self.flags.reward_type == 1 else 1
@@ -634,6 +638,8 @@ class VecModelWrapper(gym.Wrapper):
         
         self.observation_space = gym.spaces.Box(
           low=-np.inf, high=np.inf, shape=(env_n, obs_n, 1, 1), dtype=float)
+        self.model_out_shape = (obs_n, 1, 1)
+        self.gym_env_out_shape = env.observation_space.shape[1:]
         
         assert self.perfect_model, "imperfect model not yet supported"
         assert not self.thres_carry, "thres_carry not yet supported"
@@ -958,6 +964,9 @@ class VecModelWrapper(gym.Wrapper):
 
     def seed(self, seed):
         self.env.seed(seed)
+
+    def print_time(self):
+        print(self.timings.summary())        
 
 class Node:
     def __init__(self, parent, action, logit, num_actions, discounting, rec_t, device=None):        
@@ -1336,7 +1345,7 @@ class FrameStack(gym.Wrapper):
         self.k = k
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
-        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[:-1] + (shp[-1] * k,)), dtype=env.observation_space.dtype)
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(shp[:-1] + (shp[-1] * k,)), dtype=env.observation_space.dtype)
 
     def reset(self):
         ob = self.env.reset()

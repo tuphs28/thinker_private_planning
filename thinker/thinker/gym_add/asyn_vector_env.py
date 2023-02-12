@@ -4,7 +4,7 @@ import time
 import sys
 from enum import Enum
 from copy import deepcopy
-from thinker.gym.vector_env import VectorEnv
+from thinker.gym_add.vector_env import VectorEnv
 
 from gym import logger
 #from gym.vector.vector_env import VectorEnv

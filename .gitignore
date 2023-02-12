@@ -13,3 +13,5 @@ csokoban/build
 csokoban/gym_csokoban.egg-info
 *__pycache__
 .idea/
+thinker/build
+thinker/thinker/cenv.cpp

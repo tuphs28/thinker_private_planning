@@ -195,7 +195,7 @@ class ModelLearner():
 
                 self.plogger.log(stats)
                 if self.flags.use_wandb:
-                    self.wlogger.wandb.log(stats, step=stats['step'])
+                    self.wlogger.wandb.log(stats, step=stats['real_step'])
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
@@ -206,14 +206,14 @@ class ModelLearner():
                 self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
             # test the model policy returns
-            if self.step - start_step_test > 500000:
+            if self.step - start_step_test > 500000 * self.flags.rec_t:
                 start_step_test = self.step
                 if r_tester is not None: 
                     all_returns = ray.get(r_tester)[0]
                     self.test_buffer.set_data.remote("episode_returns", [])
                     #self._logger.info("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                     #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
-                r_tester = [x.gen_data.remote(test_eps_n=100, verbose=False) for x in self.model_tester]                                        
+                r_tester = [x.gen_data.remote(test_eps_n=20, verbose=False) for x in self.model_tester]                                        
 
             # control the number of learning step per transition
             while (self.flags.model_max_step_per_transition > 0 and 

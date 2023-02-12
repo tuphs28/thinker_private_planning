@@ -145,7 +145,7 @@ class ConvAttnLSTMCell(nn.Module):
 class ConvAttnLSTM(nn.Module):
 
     def __init__(self, h, w, input_dim, hidden_dim, kernel_size, 
-            num_layers, num_heads, mem_n, attn, attn_mask_b):
+            num_layers, num_heads, mem_n, attn, attn_mask_b, grad_scale):
     
         super(ConvAttnLSTM, self).__init__()
         
@@ -157,8 +157,9 @@ class ConvAttnLSTM(nn.Module):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.mem_n = mem_n
+        self.grad_scale = grad_scale
         self.attn = attn
-        self.tot_head_dim = h * w * hidden_dim // num_heads
+        self.tot_head_dim = h * w * hidden_dim // num_heads        
 
         layers = []
         
@@ -208,6 +209,13 @@ class ConvAttnLSTM(nn.Module):
 
             h_next, c_next, concat_k, concat_v = cell(cell_input, h_cur, c_cur, 
                                                       concat_k_cur, concat_v_cur, src_mask_reshape)
+            if self.grad_scale < 1 and h_next.requires_grad:
+                h_next.register_hook(lambda grad: grad * self.grad_scale)
+                c_next.register_hook(lambda grad: grad * self.grad_scale)
+            if self.grad_scale < 1 and self.attn and concat_k.requires_grad:    
+                concat_k.register_hook(lambda grad: grad * self.grad_scale)
+                concat_v.register_hook(lambda grad: grad * self.grad_scale)
+
             new_core_state[0].append(h_next)
             new_core_state[1].append(c_next)     
             if self.attn:

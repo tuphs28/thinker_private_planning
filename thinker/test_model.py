@@ -36,6 +36,9 @@ if __name__ == "__main__":
     flags.train_model = False
     flags.preload_actor = flags.load_checkpoint+"/ckp_actor.tar"
     flags.preload_model = flags.load_checkpoint+"/ckp_model.tar"    
+    flags.cwrapper = True
+
+    test_eps_n = 200 // (flags.num_actors * flags.num_p_actors)
         
     logger.info("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
     self_play_workers = [SelfPlayWorker.options(
@@ -49,7 +52,7 @@ if __name__ == "__main__":
         rank=n, 
         num_p_actors=flags.num_p_actors,
         flags=flags) for n in range(flags.num_actors)]
-    r_worker = [x.gen_data.remote(test_eps_n=1000) for x in self_play_workers]   
+    r_worker = [x.gen_data.remote(test_eps_n=test_eps_n) for x in self_play_workers]   
     ray.get(r_worker)
 
     logger.info("time required: %fs" % (time.time()-st_time))
