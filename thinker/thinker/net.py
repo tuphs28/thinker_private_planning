@@ -51,7 +51,8 @@ class ActorNet(nn.Module):
         self.fc = nn.Linear(rnn_out_size, 256)        
 
         last_out_size = 256
-        if self.actor_see_p > 0: last_out_size += 256
+        if self.actor_see_p > 0: 
+            last_out_size = last_out_size + (256 if self.actor_drc else 16*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16))
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
         self.policy = nn.Linear(last_out_size, self.num_actions)        
         self.baseline = nn.Linear(last_out_size, self.num_rewards)        
@@ -62,7 +63,7 @@ class ActorNet(nn.Module):
         if self.actor_see_p > 0:
             if not self.actor_drc:
                 down_scale_c = 4
-                self.gym_frame_encoder = FrameEncoder(num_actions=self.num_actions, 
+                self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
                     down_scale_c=down_scale_c, concat_action=False)
                 self.gym_frame_conv = torch.nn.Sequential(
                     nn.Conv2d(in_channels=256//down_scale_c, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
@@ -83,7 +84,7 @@ class ActorNet(nn.Module):
                         input_dim=32, hidden_dim=32, kernel_size=3, num_layers=3, 
                         num_heads=8, mem_n=0, attn=False, attn_mask_b=0.,
                         grad_scale=self.rnn_grad_scale)
-            self.drc_fc = nn.Linear(hw_out_2*hw_out_2*32, 256)     
+                self.drc_fc = nn.Linear(hw_out_2*hw_out_2*32, 256)     
 
         #print("actor size: ", sum(p.numel() for p in self.parameters()))
         #for k, v in self.named_parameters(): print(k, v.numel())   
