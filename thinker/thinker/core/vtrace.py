@@ -96,6 +96,8 @@ def from_importance_weights(
     discounts,    
     rewards,
     values,
+    values_enc_s,
+    reward_tran,
     bootstrap_value,
     clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0,
@@ -136,7 +138,10 @@ def from_importance_weights(
             clipped_pg_rhos = torch.clamp(rhos, max=clip_pg_rho_threshold)
         else:
             clipped_pg_rhos = rhos
-        pg_advantages = clipped_pg_rhos * (rewards + discounts * vs_t_plus_1 - values)
+        if reward_tran is None:
+            pg_advantages = clipped_pg_rhos * (rewards + discounts * vs_t_plus_1 - values)
+        else:
+            pg_advantages = clipped_pg_rhos * (reward_tran.encode(rewards + discounts * vs_t_plus_1) - values_enc_s)
 
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, pg_advantages=pg_advantages)

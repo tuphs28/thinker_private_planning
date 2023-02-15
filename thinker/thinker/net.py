@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from thinker.core.rnn import ConvAttnLSTM
 
 ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_policy_logits', 'term_policy_logits', 
-    'action', 'im_action', 'reset_action', 'term_action', 'baseline', 'reg_loss'])
+    'action', 'im_action', 'reset_action', 'term_action', 'baseline', 'baseline_enc_s', 'reg_loss'])
 
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h,w))
@@ -31,6 +31,7 @@ class ActorNet(nn.Module):
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
+        self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -54,8 +55,12 @@ class ActorNet(nn.Module):
         if self.actor_see_p > 0: 
             last_out_size = last_out_size + (256 if self.actor_drc else 16*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16))
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
-        self.policy = nn.Linear(last_out_size, self.num_actions)        
+        self.policy = nn.Linear(last_out_size, self.num_actions)       
         self.baseline = nn.Linear(last_out_size, self.num_rewards)        
+
+        if self.reward_transform:
+            self.reward_tran = RewardTran(vec=False)
+
         self.reset = nn.Linear(last_out_size, 2)        
         
         if self.flex_t: self.term = nn.Linear(last_out_size, 2)        
@@ -191,8 +196,12 @@ class ActorNet(nn.Module):
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
         reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
         if self.flex_t: term_action = torch.multinomial(F.softmax(term_policy_logits, dim=1), num_samples=1)
-                
-        baseline = self.baseline(core_output)
+        
+        if not self.reward_transform:
+            baseline = self.baseline(core_output)
+        else:            
+            baseline_enc_s = self.baseline(core_output)
+            baseline = self.reward_tran.decode(baseline_enc_s)
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
                     1e-5 * torch.sum(core_output**2, dim=-1) / 2)
@@ -206,9 +215,11 @@ class ActorNet(nn.Module):
         action = action.view(T, B)      
         im_action = im_action.view(T, B)      
         reset_action = reset_action.view(T, B)             
-        term_action = term_action.view(T, B) if self.flex_t else None
-        baseline = baseline.view(T, B, self.num_rewards)
-        
+        term_action = term_action.view(T, B) if self.flex_t else None        
+
+        baseline_enc_s = baseline_enc_s.view(T, B, self.num_rewards) if self.reward_transform else None
+        baseline = baseline.view(T, B, self.num_rewards)        
+
         actor_out = ActorOut(policy_logits=policy_logits,                         
                              im_policy_logits=im_policy_logits,                         
                              reset_policy_logits=reset_policy_logits,     
@@ -217,6 +228,7 @@ class ActorNet(nn.Module):
                              im_action=im_action,
                              reset_action=reset_action,
                              term_action=term_action,
+                             baseline_enc_s=baseline_enc_s,
                              baseline=baseline, 
                              reg_loss=reg_loss,)       
         
@@ -356,35 +368,52 @@ class DynamicModel(nn.Module):
         return out
     
 class Output_rvpi(nn.Module):   
-    def __init__(self, num_actions, input_shape):         
+    def __init__(self, num_actions, input_shape, reward_transform):         
         super(Output_rvpi, self).__init__()        
         c, h, w = input_shape
         self.conv1 = nn.Conv2d(in_channels=c, out_channels=c//2, kernel_size=3, padding='same') 
         self.conv2 = nn.Conv2d(in_channels=c//2, out_channels=c//4, kernel_size=3, padding='same') 
         fc_in = h * w * (c // 4)
-        self.fc_r = nn.Linear(fc_in, 1) 
-        self.fc_v = nn.Linear(fc_in, 1) 
+        self.fc_r = nn.Linear(fc_in, 1)         
         self.fc_logits = nn.Linear(fc_in, num_actions)         
+
+        self.reward_transform = reward_transform
+        if self.reward_transform:
+            self.reward_tran = RewardTran(vec=True)
+            self.fc_v = nn.Linear(fc_in, self.reward_tran.encoded_n) 
+        else:
+            self.fc_v = nn.Linear(fc_in, 1) 
         
     def forward(self, x):    
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = torch.flatten(x, start_dim=1)
-        r, v, logits = self.fc_r(x), self.fc_v(x), self.fc_logits(x)
-        return r, v, logits
+        r, logits = self.fc_r(x), self.fc_logits(x)
+        r = r.squeeze(-1)
+        if self.reward_transform:
+            v_enc_logits = self.fc_v(x)
+            v_enc_v = F.softmax(v_enc_logits, dim=-1)
+            v_enc_s, v = self.reward_tran.decode(v_enc_v)
+        else:
+            v_enc_logits = None
+            v = self.fc_v(x).squeeze(-1)
+        return r, v, v_enc_logits, logits
 
 class ModelNetBase(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        
         super(ModelNetBase, self).__init__()      
         self.rnn = False
-        self.flags = flags
+        self.flags = flags        
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
+        self.reward_transform = flags.reward_transform
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large
         self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
         self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=256//DOWNSCALE_C, type_nn=self.type_nn)
         self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(256//DOWNSCALE_C, 
-                      obs_shape[1]//16, obs_shape[1]//16))
+                      obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform)
+        if self.reward_transform:
+            self.reward_tran = self.output_rvpi.reward_tran
         
     def forward(self, x, actions, one_hot=False):
         """
@@ -407,28 +436,36 @@ class ModelNetBase(nn.Module):
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
         
-        r, v, logits = self.output_rvpi(encoded)
-        r_list, v_list, logits_list = [], [v.squeeze(-1).unsqueeze(0)], [logits.unsqueeze(0)]
+        r, v, v_enc_logits, logits = self.output_rvpi(encoded)
+        r_list, v_list, logits_list = [], [v.unsqueeze(0)], [logits.unsqueeze(0)]
+        if self.reward_transform: v_enc_logits_list = [v_enc_logits]
+
         encoded_list = [encoded.unsqueeze(0)]
         
         for k in range(actions.shape[0]):            
             encoded = self.dynamicModel(encoded, actions[k])
-            r, v, logits = self.output_rvpi(encoded)
-            r_list.append(r.squeeze(-1).unsqueeze(0))
-            v_list.append(v.squeeze(-1).unsqueeze(0))
+            r, v, v_enc_logits, logits = self.output_rvpi(encoded)
+            r_list.append(r.unsqueeze(0))
+            v_list.append(v.unsqueeze(0))
             logits_list.append(logits.unsqueeze(0))
-            encoded_list.append(encoded.unsqueeze(0))        
+            encoded_list.append(encoded.unsqueeze(0))      
+            if self.reward_transform: v_enc_logits_list.append(v_enc_logits.unsqueeze(0))
         
         if len(r_list) > 0:
             rs = torch.concat(r_list, dim=0)
         else:
-            rs = None
+            rs = None        
             
         vs = torch.concat(v_list, dim=0)
         logits = torch.concat(logits_list, dim=0)
         encodeds = torch.concat(encoded_list, dim=0)        
+
+        if self.reward_transform:
+            v_enc_logits = torch.concat(v_enc_logits_list, dim=0)
+        else:
+            v_enc_logits = None
         
-        return rs, vs, logits, encodeds        
+        return rs, vs, v_enc_logits, logits, encodeds        
 
     def get_weights(self):
         return {k: v.cpu() for k, v in self.state_dict().items()}
@@ -573,3 +610,45 @@ def ModelNet(obs_shape, num_actions, flags, rnn=None):
     else:
         return ModelNetBase(obs_shape, num_actions, flags)
     
+class RewardTran(nn.Module):    
+    def __init__(self, vec, support=300, eps=0.001):
+        super(RewardTran, self).__init__()
+        self.support = support
+        self.eps = eps
+        self.vec = vec
+        if self.vec:
+            self.dec = torch.arange(-support, support+1,1)        
+            self.encoded_n = 2 * self.support + 1
+            self.register_buffer('dec_const', self.dec)
+
+    def forward(self, x):
+        """encode the unencoded scalar reward or values to encoded scalar (and encoded vector) according to MuZero"""
+        with torch.no_grad():
+            sup, eps = self.support, self.eps
+            enc_s = torch.sign(x)*(torch.sqrt(torch.abs(x)+1)-1)+eps*x
+            if not self.vec: return enc_s
+            enc_s = torch.clamp(enc_s, -sup, +sup)            
+            enc_v = torch.zeros(enc_s.shape+(2*sup+1,), dtype=torch.float32, device=enc_s.device)        
+            enc_s_floor = torch.floor(enc_s)
+            enc_v_reminder = enc_s - enc_s_floor
+            enc_s_floor = enc_s_floor.long().unsqueeze(-1)
+            enc_v.scatter_(-1, torch.clamp_max(sup+enc_s_floor+1, 2*sup) , enc_v_reminder.unsqueeze(-1))
+            enc_v.scatter_(-1, sup+enc_s_floor, 1-enc_v_reminder.unsqueeze(-1))        
+            return enc_s, enc_v
+
+    def encode(self, x):
+        return self.forward(x)
+
+    def decode(self, x):
+        """dncode the encoded vector (or encoded scalar) to unencoded scalar (and encoded scalar) according to MuZero"""    
+        with torch.no_grad():  
+            eps = self.eps     
+            if self.vec:            
+                enc_s = torch.sum(self.dec_const*x, dim=-1)   
+            else:
+                enc_s = x
+            dec_s = torch.sign(enc_s)*(torch.square((torch.sqrt(1+4*eps*(torch.abs(enc_s)+1+eps))-1)/(2*eps)) - 1) 
+            if self.vec:
+                return enc_s, dec_s    
+            else:
+                return dec_s

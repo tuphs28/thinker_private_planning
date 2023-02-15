@@ -24,14 +24,39 @@ def compute_baseline_loss(advantages, masks_ls, c_ls):
         loss = loss + 0.5 * torch.sum((advantages * (1 - mask)) ** 2) * c        
     return loss
     
+def compute_baseline_loss_tran(baseline_enc_s, target_baseline, reward_tran, masks_ls, c_ls):
+    assert len(masks_ls) == len(c_ls)
+    target_baseline_enc_s = reward_tran.encode(target_baseline)
+    loss = 0.
+    for mask, c in zip(masks_ls, c_ls):
+        ce_loss = ((baseline_enc_s - target_baseline_enc_s) * (1 - mask))**2
+        loss = loss + torch.sum(ce_loss) * c
+    return loss
+
+def compute_baseline_loss_tran_(baseline_enc_logits, target_baseline, reward_tran, masks_ls, c_ls):
+    # target_baseline has shape (T, B)
+    # baseline_enc_logits has shape (T, B, logit_n)
+    assert len(masks_ls) == len(c_ls)
+    _, target_baseline_enc_logits = reward_tran.encode(target_baseline)
+    loss = 0.
+    for mask, c in zip(masks_ls, c_ls):
+        ce_loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                        input = torch.flatten(baseline_enc_logits, 0, 1),
+                        target = torch.flatten(target_baseline_enc_logits, 0, 1)
+                      )
+        ce_loss = ce_loss.view_as(target_baseline) * (1 - mask)
+        loss = loss + torch.sum(ce_loss) * c
+    return loss
+
+
 def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
     assert len(logits_ls) == len(actions_ls) == len(masks_ls) == len(c_ls)
     loss = 0.    
     for logits, actions, masks, c in zip(logits_ls, actions_ls, masks_ls, c_ls):
-        cross_entropy = F.nll_loss(
-            F.log_softmax(torch.flatten(logits, 0, 1), dim=-1),
-            target=torch.flatten(actions, 0, 1),
-            reduction="none",)
+        cross_entropy = torch.nn.CrossEntropyLoss(reduction="none")(
+            input = torch.flatten(logits, 0, 1),
+            target = torch.flatten(actions, 0, 1)
+            )
         cross_entropy = cross_entropy.view_as(advantages)
         adv_cross_entropy = cross_entropy * advantages.detach()
         loss = loss + torch.sum(adv_cross_entropy * (1-masks)) * c
@@ -42,22 +67,21 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     loss = 0.
     assert(len(logits_ls) == len(masks_ls) == len(c_ls))
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
-        policy = F.softmax(logits, dim=-1)
-        log_policy = F.log_softmax(logits, dim=-1)
-        ent = torch.sum(policy * log_policy, dim=-1) #* (1-masks)
+        logits = torch.flatten(logits, 0, 1)
+        ent = -torch.nn.CrossEntropyLoss(reduction="sum")(
+            input = logits,
+            target = F.softmax(logits, dim=-1))
         loss = loss + torch.sum(ent) * c 
     return loss
 
 def action_log_probs(policy_logits, actions):
-    return -F.nll_loss(
-        F.log_softmax(torch.flatten(policy_logits, 0, -2), dim=-1),
-        torch.flatten(actions),
-        reduction="none",
-    ).view_as(actions) 
-  
+    return -torch.nn.CrossEntropyLoss(reduction="none")(
+            input = torch.flatten(policy_logits, 0, 1),
+            target = torch.flatten(actions, 0, 1)).view_as(actions) 
+            
 def from_logits(
     behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
-    discounts, rewards, values, bootstrap_value, clip_rho_threshold=1.0,
+    discounts, rewards, values, values_enc_s, reward_tran, bootstrap_value, clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0, lamb=1.0,):
     """V-trace for softmax policies."""
     assert(len(behavior_logits_ls) == len(target_logits_ls) == len(actions_ls) == len(masks_ls))
@@ -74,6 +98,8 @@ def from_logits(
         discounts=discounts,
         rewards=rewards,
         values=values,
+        values_enc_s=values_enc_s, 
+        reward_tran=reward_tran,
         bootstrap_value=bootstrap_value,
         clip_rho_threshold=clip_rho_threshold,
         clip_pg_rho_threshold=clip_pg_rho_threshold,
@@ -306,14 +332,25 @@ class ActorLearner():
             discounts=discounts,
             rewards=rewards[:, :, 0],
             values=new_actor_out.baseline[:, :, 0],
+            values_enc_s=new_actor_out.baseline_enc_s[:, :, 0] if self.flags.reward_transform else None,
+            reward_tran=self.actor_net.reward_tran if self.flags.reward_transform else None,
             bootstrap_value=bootstrap_value[:, 0],
             lamb=self.flags.lamb
         )    
 
         pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )          
-        baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
-            vtrace_returns.vs - new_actor_out.baseline[:, :, 0], 
-            masks_ls = [real_mask, im_mask], c_ls = [self.flags.real_cost, self.flags.real_im_cost])
+
+        if not self.flags.reward_transform:
+            baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
+                vtrace_returns.vs - new_actor_out.baseline[:, :, 0], 
+                masks_ls = [real_mask, im_mask], c_ls = [self.flags.real_cost, self.flags.real_im_cost])
+        else:
+            baseline_loss = self.flags.baseline_cost * compute_baseline_loss_tran(
+                baseline_enc_s = new_actor_out.baseline_enc_s[:, :, 0], 
+                target_baseline = vtrace_returns.vs, 
+                reward_tran = self.actor_net.reward_tran, 
+                masks_ls = [real_mask, im_mask], 
+                c_ls = [self.flags.real_cost, self.flags.real_im_cost])
 
         # compute advantage w.r.t imagainary rewards
 
@@ -343,13 +380,23 @@ class ActorLearner():
                 discounts=discounts,
                 rewards=rewards[:, :, 1],
                 values=new_actor_out.baseline[:, :, 1],
+                values_enc_s=new_actor_out.baseline_enc_s[:, :, 1] if self.flags.reward_transform else None,
+                reward_tran=self.actor_net.reward_tran if self.flags.reward_transform else None,
                 bootstrap_value=bootstrap_value[:, 1],
                 lamb=self.flags.lamb
             )
             im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )   
-            im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
-                vtrace_returns.vs - new_actor_out.baseline[:, :, 1], masks_ls = [zero_mask], c_ls = [
+            if not self.flags.reward_transform:
+                im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
+                    vtrace_returns.vs - new_actor_out.baseline[:, :, 1], masks_ls = [zero_mask], c_ls = [
                     self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c])     
+            else:
+                im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss_tran(
+                    baseline_enc_s = new_actor_out.baseline_enc_s[:, :, 1], 
+                    target_baseline = vtrace_returns.vs, 
+                    reward_tran = self.actor_net.reward_tran, 
+                    masks_ls = [zero_mask], 
+                    c_ls = [self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c])
         else:
             im_pg_loss = torch.zeros(1, device=self.device)
             im_baseline_loss = torch.zeros(1, device=self.device)

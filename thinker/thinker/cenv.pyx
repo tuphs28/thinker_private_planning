@@ -8,6 +8,7 @@ import cython
 from libcpp cimport bool
 from libcpp.vector cimport vector
 from cpython.ref cimport PyObject, Py_INCREF, Py_DECREF
+from libc.math cimport sqrt
 from libc.stdlib cimport malloc, free
 
 # util function
@@ -107,24 +108,53 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout):
         node_propagate(pnode[0].pparent, r, v, new_rollout)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed):
+cdef float[:] node_stat(Node* pnode, bool detailed, bool reward_transform):
     cdef float[:] result = np.zeros((pnode[0].num_actions*5+5) if detailed else (pnode[0].num_actions*5+2), dtype=np.float32) 
     cdef int i
     result[pnode[0].action] = 1. # action
-    result[pnode[0].num_actions] = pnode[0].r # reward
-    result[pnode[0].num_actions+1] = pnode[0].v # value
-    for i in range(int(pnode[0].ppchildren[0].size())):
-        child = pnode[0].ppchildren[0][i][0]
-        result[pnode[0].num_actions+2+i] = child.logit # child_logits
-        result[pnode[0].num_actions*2+2+i] = average(child.prollout_qs[0]) # child_rollout_qs_mean
-        result[pnode[0].num_actions*3+2+i] = maximum(child.prollout_qs[0]) # child_rollout_qs_max
-        result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
-    if detailed:
-        pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
-        result[pnode[0].num_actions*5+2] = pnode[0].trail_r / pnode[0].discounting
-        result[pnode[0].num_actions*5+3] = pnode[0].rollout_q / pnode[0].discounting
-        result[pnode[0].num_actions*5+4] = pnode[0].max_q
+    if not reward_transform:
+        result[pnode[0].num_actions] = pnode[0].r # reward
+        result[pnode[0].num_actions+1] = pnode[0].v # value
+        for i in range(int(pnode[0].ppchildren[0].size())):
+            child = pnode[0].ppchildren[0][i][0]
+            result[pnode[0].num_actions+2+i] = child.logit # child_logits
+            result[pnode[0].num_actions*2+2+i] = average(child.prollout_qs[0]) # child_rollout_qs_mean
+            result[pnode[0].num_actions*3+2+i] = maximum(child.prollout_qs[0]) # child_rollout_qs_max
+            result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
+        if detailed:
+            pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
+            result[pnode[0].num_actions*5+2] = pnode[0].trail_r / pnode[0].discounting
+            result[pnode[0].num_actions*5+3] = pnode[0].rollout_q / pnode[0].discounting
+            result[pnode[0].num_actions*5+4] = pnode[0].max_q
+    else:
+        result[pnode[0].num_actions] = enc(pnode[0].r) # reward
+        result[pnode[0].num_actions+1] = enc(pnode[0].v) # value
+        for i in range(int(pnode[0].ppchildren[0].size())):
+            child = pnode[0].ppchildren[0][i][0]
+            result[pnode[0].num_actions+2+i] = child.logit # child_logits
+            result[pnode[0].num_actions*2+2+i] = enc(average(child.prollout_qs[0])) # child_rollout_qs_mean
+            result[pnode[0].num_actions*3+2+i] = enc(maximum(child.prollout_qs[0])) # child_rollout_qs_max
+            result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
+        if detailed:
+            pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
+            result[pnode[0].num_actions*5+2] = enc(pnode[0].trail_r / pnode[0].discounting)
+            result[pnode[0].num_actions*5+3] = enc(pnode[0].rollout_q / pnode[0].discounting)
+            result[pnode[0].num_actions*5+4] = enc(pnode[0].max_q)
     return result
+
+cdef float enc(float x):
+    return sign(x)*(sqrt(abs(x)+1)-1)+(0.001)*x
+
+cdef float sign(float x):
+    if x > 0.: return 1.
+    if x < 0.: return -1.
+    return 0.
+
+cdef float abs(float x):
+    if x > 0.: return x
+    if x < 0.: return -x
+    return 0.
+
 
 cdef node_del(Node* pnode, int except_idx):
     cdef int i
@@ -153,6 +183,7 @@ cdef class cVecModelWrapper():
     cdef bool perfect_model
     cdef bool tree_carry
     cdef int reward_type
+    cdef bool reward_transform
     cdef int num_actions
     cdef int obs_n    
     cdef int env_n
@@ -202,6 +233,7 @@ cdef class cVecModelWrapper():
         self.tree_carry = flags.tree_carry
         self.num_actions = env.action_space[0].n
         self.reward_type = flags.reward_type
+        self.reward_transform = flags.reward_transform
         self.env_n = env_n
         self.obs_n = 9 + self.num_actions * 10 + self.rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
@@ -244,7 +276,7 @@ cdef class cVecModelWrapper():
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
             pass_action = torch.zeros(self.env_n, dtype=torch.long)
-            _, vs, logits, encodeds = model_net(obs_py, 
+            _, vs, _, logits, encodeds = model_net(obs_py, 
                                                 pass_action.unsqueeze(0).to(self.device), 
                                                 one_hot=False)  
             vs = vs.cpu()
@@ -371,7 +403,7 @@ cdef class cVecModelWrapper():
         if pass_inds_step.size() > 0:
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-                _, vs_, logits_, _ = model_net(obs_py, 
+                _, vs_, _, logits_, _ = model_net(obs_py, 
                         torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0), 
                         one_hot=False)  
             vs = vs_[-1].float().cpu().numpy()
@@ -508,8 +540,8 @@ cdef class cVecModelWrapper():
         result_np = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         cdef float[:, :] result = result_np        
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, reward_transform=self.reward_transform)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, reward_transform=self.reward_transform)    
             # reset
             if action is None or status[i] == 1:
                 result[i, idx2] = 1.
