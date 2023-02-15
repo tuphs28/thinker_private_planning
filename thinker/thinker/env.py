@@ -191,6 +191,7 @@ class PostWrapper:
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            model_encodes=None,
             see_mask=see_mask,
             reward=reward,
             done=done,
