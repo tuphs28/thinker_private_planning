@@ -706,7 +706,7 @@ class VecModelWrapper(gym.Wrapper):
             # record initial root_nodes_qmax 
             self.root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)
             
-            return model_out.to(self.device), gym_env_out
+            return model_out.to(self.device), gym_env_out, None
 
 
     def step(self, action, model_net):  
@@ -925,7 +925,7 @@ class VecModelWrapper(gym.Wrapper):
 
         if self.time: self.timings.time("end")
 
-        return (model_out.to(self.device), gym_env_out), full_reward, full_done, info
+        return (model_out.to(self.device), gym_env_out, None), full_reward, full_done, info
 
     def compute_model_out(self, action=None, imagine_b=None, reset_needed=None):
         root_nodes_stat = []
