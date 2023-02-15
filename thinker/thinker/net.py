@@ -170,7 +170,7 @@ class ActorNet(nn.Module):
                 if not self.actor_see_encode:
                     conv_out = self.gym_frame_encoder(gym_x, actions = None)   
                 else:
-                    conv_out = obs.model_encodes
+                    conv_out = torch.flatten(obs.model_encodes, 0, 1)   
                 conv_out = self.gym_frame_conv(conv_out)
                 conv_out = torch.flatten(conv_out, start_dim=1)
                 core_output = torch.concat([core_output, conv_out], dim=1)
