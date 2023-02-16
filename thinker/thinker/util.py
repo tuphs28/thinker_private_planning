@@ -109,8 +109,6 @@ def parse(args=None):
                         type=float, help="Bias attention for current position.")        
     parser.add_argument("--actor_see_p", default=0,
                         type=float, help="Probability of allowing actor to see state.")                                
-    parser.add_argument("--actor_see_encode",  action="store_true",
-                        help="Whether to see the encoded state")                        
     parser.add_argument("--actor_drc", action="store_true",
                         help="Whether to use drc in encoding state")    
 

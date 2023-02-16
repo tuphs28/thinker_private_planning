@@ -279,10 +279,6 @@ class SelfPlayWorker():
             fields = {}
             for field in TrainActorOut._fields:
                 out = getattr(env_out if field in EnvOut._fields else actor_out, field)
-                fields[field] = None
-                if out is None: continue
-                if self.flags.actor_see_p <= 0 and field in ["gym_env_out", "model_encodes"]: continue
-                if self.flags.actor_see_p > 0 and self.flags.actor_see_encode and field == "gym_env_out": continue
                 if out is not None and (self.flags.actor_see_p > 0 or field != "gym_env_out"):
                     fields[field] = torch.empty(size=(self.flags.unroll_length+1, self.num_p_actors)+out.shape[2:], 
                         dtype=out.dtype, device=self.device)

@@ -153,8 +153,6 @@ cdef class cVecModelWrapper():
     cdef bool perfect_model
     cdef bool tree_carry
     cdef int reward_type
-    cdef bool reward_transform
-    cdef bool actor_see_encode
     cdef int num_actions
     cdef int obs_n    
     cdef int env_n
@@ -204,8 +202,6 @@ cdef class cVecModelWrapper():
         self.tree_carry = flags.tree_carry
         self.num_actions = env.action_space[0].n
         self.reward_type = flags.reward_type
-        self.reward_transform = flags.reward_transform
-        self.actor_see_encode = flags.actor_see_encode
         self.env_n = env_n
         self.obs_n = 9 + self.num_actions * 10 + self.rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
@@ -248,21 +244,19 @@ cdef class cVecModelWrapper():
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
             pass_action = torch.zeros(self.env_n, dtype=torch.long)
-            _, vs, _, logits, model_encodes = model_net(obs_py, 
+            _, vs, logits, encodeds = model_net(obs_py, 
                                                 pass_action.unsqueeze(0).to(self.device), 
                                                 one_hot=False)  
             vs = vs.cpu()
             logits = logits.cpu()
-            env_state = self.env.clone_state(inds=np.arange(self.env_n))
+            encodeds = self.env.clone_state(inds=np.arange(self.env_n))
 
             # compute and update root node and current node
             for i in range(self.env_n):
                 root_node = node_new(pparent=NULL, action=pass_action[i].item(), logit=0., num_actions=self.num_actions, 
                     discounting=self.discounting, rec_t=self.rec_t)                
-                if not self.actor_see_encode:
-                    encoded = {"env_state": env_state[i], "gym_env_out": obs_py[i]}
-                else:
-                    encoded = {"env_state": env_state[i], "gym_env_out": obs_py[i], "model_encodes": model_encodes[0,i]}
+                
+                encoded = {"env_state": encodeds[i], "gym_env_out": obs_py[i]}
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), done=False,
                     logits=logits[-1, i].numpy(), encoded=<PyObject*>encoded, override=False)
                 node_visit(pnode=root_node)
@@ -278,20 +272,11 @@ cdef class cVecModelWrapper():
                 gym_env_out.append(encoded["gym_env_out"].unsqueeze(0))
             gym_env_out = torch.concat(gym_env_out)
 
-            if self.actor_see_encode:
-                model_encodes = []
-                for i in range(self.env_n):
-                    encoded = <dict>self.cur_nodes[i][0].encoded
-                    model_encodes.append(encoded["model_encodes"].unsqueeze(0))
-                model_encodes = torch.concat(model_encodes)
-            else:
-                model_encodes = None
-
             # record initial root_nodes_qmax 
             for i in range(self.env_n):
                 self.root_nodes_qmax[i] = self.root_nodes[i][0].max_q
             
-            return torch.tensor(model_out, dtype=torch.float32, device=self.device), gym_env_out, model_encodes
+            return torch.tensor(model_out, dtype=torch.float32, device=self.device), gym_env_out
 
     def step(self, action, model_net):  
         # action is tensor of shape (env_n, 3)
@@ -386,13 +371,13 @@ cdef class cVecModelWrapper():
         if pass_inds_step.size() > 0:
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-                _, vs_, _, logits_, model_encodes = model_net(obs_py, 
+                _, vs_, logits_, _ = model_net(obs_py, 
                         torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0), 
                         one_hot=False)  
             vs = vs_[-1].float().cpu().numpy()
             logits = logits_[-1].float().cpu().numpy()
             if self.time: self.timings.time("model")
-            env_state = self.env.clone_state(inds=pass_inds_step)   
+            encodeds = self.env.clone_state(inds=pass_inds_step)   
             if self.time: self.timings.time("clone_state")
 
         # compute the current and root nodes
@@ -405,20 +390,14 @@ cdef class cVecModelWrapper():
                 if new_root:
                     root_node = node_new(pparent=NULL, action=pass_action[j], logit=0., num_actions=self.num_actions, 
                         discounting=self.discounting, rec_t=self.rec_t) 
-                    if not self.actor_see_encode:
-                        encoded = {"env_state": env_state[j], "gym_env_out": obs_py[j]}
-                    else:
-                        encoded = {"env_state": env_state[j], "gym_env_out": obs_py[j], "model_encodes": model_encodes[0,j]}
+                    encoded = {"env_state": encodeds[j], "gym_env_out": obs_py[j]}
                     node_expand(pnode=root_node, r=0., v=vs[j], done=False,
                         logits=logits[j], encoded=<PyObject*>encoded, override=False)
                     node_del(self.root_nodes[i], except_idx=-1)
                     node_visit(root_node)
                 else:
                     root_node = self.root_nodes[i][0].ppchildren[0][re_action[i]]
-                    if not self.actor_see_encode:
-                        encoded = {"env_state": env_state[j], "gym_env_out": obs_py[j]}
-                    else:
-                        encoded = {"env_state": env_state[j], "gym_env_out": obs_py[j], "model_encodes": model_encodes[0,j]}
+                    encoded = {"env_state": encodeds[j], "gym_env_out": obs_py[j]}
                     node_expand(pnode=root_node, r=0., v=vs[j], done=False,
                         logits=logits[j], encoded=<PyObject*>encoded, override=True)                        
                     node_del(self.root_nodes[i], except_idx=re_action[i])
@@ -448,10 +427,7 @@ cdef class cVecModelWrapper():
             
             elif self.status[i] == 4:
                 # need expand
-                if not self.actor_see_encode:
-                    encoded = {"env_state": env_state[j], "gym_env_out": obs_py[j]}
-                else:
-                    encoded = {"env_state": env_state[j], "gym_env_out": obs_py[j], "model_encodes": model_encodes[0,j]}
+                encoded = {"env_state": encodeds[j], "gym_env_out": obs_py[j]}
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
                 node_expand(pnode=cur_node, r=reward[j], v=vs[j] if not done[j] else 0., done=done[j],
                         logits=logits[j], encoded=<PyObject*>encoded, override=False)
@@ -472,16 +448,6 @@ cdef class cVecModelWrapper():
             encoded = <dict>self.cur_nodes[i][0].encoded
             gym_env_out.append(encoded["gym_env_out"].unsqueeze(0))
         gym_env_out = torch.concat(gym_env_out)
-
-        if self.actor_see_encode:
-            model_encodes = []
-            for i in range(self.env_n):
-                encoded = <dict>self.cur_nodes[i][0].encoded
-                model_encodes.append(encoded["model_encodes"].unsqueeze(0))
-            model_encodes = torch.concat(model_encodes)
-        else:
-            model_encodes = None
-
         if self.time: self.timings.time("compute_model_out")
 
         # compute reward
@@ -528,7 +494,7 @@ cdef class cVecModelWrapper():
                 "real_done": torch.tensor(self.full_real_done, dtype=torch.bool, device=self.device)}
         if self.time: self.timings.time("end")
 
-        return ((torch.tensor(model_out, dtype=torch.float32, device=self.device), gym_env_out, model_encodes), 
+        return ((torch.tensor(model_out, dtype=torch.float32, device=self.device), gym_env_out), 
                 torch.tensor(self.full_reward, dtype=torch.float32, device=self.device), 
                 torch.tensor(self.full_done, dtype=torch.bool, device=self.device), 
                 info)

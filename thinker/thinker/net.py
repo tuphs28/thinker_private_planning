@@ -29,7 +29,6 @@ class ActorNet(nn.Module):
         self.flex_t = flags.flex_t                   # whether to output the terminate action
         self.flex_t_term_b = flags.flex_t_term_b     # bias added to the logit of terminating
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
-        self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         
@@ -53,9 +52,7 @@ class ActorNet(nn.Module):
 
         last_out_size = 256
         if self.actor_see_p > 0: 
-            down_scale_c = 2 if self.actor_see_encode else 4
-            last_out_size = last_out_size + (256 if self.actor_drc else (
-                256//down_scale_c//4)*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16))
+            last_out_size = last_out_size + (256 if self.actor_drc else 16*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16))
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
         self.policy = nn.Linear(last_out_size, self.num_actions)        
         self.baseline = nn.Linear(last_out_size, self.num_rewards)        
@@ -65,16 +62,15 @@ class ActorNet(nn.Module):
 
         if self.actor_see_p > 0:
             if not self.actor_drc:
-                if not self.actor_see_encode:
-                    self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
-                        down_scale_c=down_scale_c, concat_action=False)
+                down_scale_c = 4
+                self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
+                    down_scale_c=down_scale_c, concat_action=False)
                 self.gym_frame_conv = torch.nn.Sequential(
                     nn.Conv2d(in_channels=256//down_scale_c, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
                     nn.ReLU(), 
                     nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
                     nn.ReLU())
             else:
-                assert not self.actor_see_encode, "actor_drc is not compatiable with actor_see_encode"
                 self.gym_frame_conv = torch.nn.Sequential(
                     nn.Conv2d(in_channels=gym_obs_shape[0], out_channels=32, kernel_size=8, stride=4),
                     nn.ReLU(),
@@ -157,15 +153,11 @@ class ActorNet(nn.Module):
         core_output = F.relu(self.fc(core_output))
 
         if self.actor_see_p > 0:
-            if not self.actor_see_encode:
-                gym_x = obs.gym_env_out.float()
-                gym_x = gym_x * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-                gym_x = torch.flatten(gym_x, 0, 1)   
+            gym_x = obs.gym_env_out.float()
+            gym_x = gym_x * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            gym_x = torch.flatten(gym_x, 0, 1)   
             if not self.actor_drc:
-                if not self.actor_see_encode:
-                    conv_out = self.gym_frame_encoder(gym_x, actions = None)   
-                else:
-                    conv_out = torch.flatten(obs.model_encodes, 0, 1)   
+                conv_out = self.gym_frame_encoder(gym_x, actions = None)   
                 conv_out = self.gym_frame_conv(conv_out)
                 conv_out = torch.flatten(conv_out, start_dim=1)
                 core_output = torch.concat([core_output, conv_out], dim=1)
