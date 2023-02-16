@@ -15,8 +15,11 @@ import thinker.util as util
 
 def compute_cross_entropy_loss(logits, target_logits, mask, is_weights):
     target_policy = F.softmax(target_logits, dim=-1)
-    log_policy = F.log_softmax(logits, dim=-1)
-    loss = -torch.sum(target_policy * log_policy * (~mask).float().unsqueeze(-1), dim=(0,2))
+    loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                    input = torch.flatten(logits, 0, 1),
+                    target = torch.flatten(target_policy, 0, 1)
+                )
+    loss = torch.sum(loss.view_as(mask) * (~mask).float(), dim=0)
     loss = is_weights * loss
     return torch.sum(loss)
 
@@ -243,11 +246,12 @@ class ModelLearner():
 
         if self.flags.perfect_model:   
             if not self.flags.model_rnn:
-                _, vs, logits, _ = self.model_net(
+                _, vs, v_enc_logits, logits, _ = self.model_net(
                     x=gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
                     actions=action.reshape(1, -1),
                     one_hot=False)
                 vs = vs.reshape(k, b)
+                v_enc_logits = v_enc_logits.reshape(k, b, -1)
                 logits = logits.reshape(k, b, -1)
             else:
                 vs, logits, model_state = self.model_net(
@@ -297,7 +301,16 @@ class ModelLearner():
             rs_loss = torch.sum(rs_loss)
             
         #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
-        vs_loss = torch.sum(((vs[:train_len] - target_vs) ** 2) * (~done_masks).float(), dim=0)
+        if not self.flags.reward_transform:
+            vs_loss = torch.sum(((vs[:train_len] - target_vs) ** 2) * (~done_masks).float(), dim=0)
+        else:
+            _, target_vs_enc_v = self.model_net.reward_tran.encode(target_vs)
+            vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                        input = torch.flatten(v_enc_logits[:train_len], 0, 1),
+                        target = torch.flatten(target_vs_enc_v, 0, 1)
+                      ).view_as(done_masks) * (~done_masks).float()
+            vs_loss = torch.sum(vs_loss, dim=0)
+
         vs_loss = vs_loss * is_weights
         vs_loss = self.flags.model_vs_loss_cost * torch.sum(vs_loss)
 
