@@ -14,7 +14,7 @@ from thinker.env import Environment, EnvOut
 import thinker.util as util
 
 #_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'gym_env_out')
-_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc_s"])
+_fields = tuple(item for item in ActorOut._fields + EnvOut._fields)
 TrainActorOut = namedtuple('TrainActorOut', _fields)
 TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done', 'baseline'])
 
@@ -377,7 +377,7 @@ class SelfPlayWorker():
 
     def po_model(self, env_out, model_net):
         if not model_net.rnn:
-            _, _, _, policy_logits, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)                        
+            _, _, policy_logits, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)                        
         else:
             if not hasattr(self, 'model_state'): 
                 self.model_state = self.model_net.init_state(bsz=1)

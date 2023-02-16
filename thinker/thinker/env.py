@@ -237,13 +237,12 @@ class ModelWrapper(gym.Wrapper):
         self.discounting = flags.discounting
         self.depth_discounting = flags.depth_discounting
         self.reward_type = flags.reward_type    
-        self.reward_transform = flags.reward_transform
         self.no_mem = flags.no_mem
         self.perfect_model = flags.perfect_model
         self.reset_m = flags.reset_m
         self.tree_carry = flags.tree_carry
         self.thres_carry = flags.thres_carry        
-        self.thres_discounting = flags.thres_discounting        
+        self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space.n
         self.cur_node = None
         self.root_node = None
@@ -355,7 +354,7 @@ class ModelWrapper(gym.Wrapper):
                 a_tensor = F.one_hot(torch.tensor(re_action, dtype=torch.long).unsqueeze(0), self.num_actions) 
                 # a_tensor is in shape (1, num_action,)
                 if not model_net.rnn:                    
-                    _, vs, _, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                                         
+                    _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                                         
                 else:
                     vs, logits, model_state = model_net(x=x_tensor.unsqueeze(0), 
                               actions=a_tensor.unsqueeze(0), 
@@ -420,7 +419,7 @@ class ModelWrapper(gym.Wrapper):
                             a_tensor = F.one_hot(torch.tensor(a, dtype=torch.long).unsqueeze(0), self.num_actions) 
 
                             if not model_net.rnn:
-                                _, vs, _, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                     
+                                _, vs, logits, encodeds = model_net(x_tensor, a_tensor.unsqueeze(0), one_hot=True)                     
                             else:
                                 vs, logits, model_state = model_net(x=x_tensor.unsqueeze(0), 
                                         actions=a_tensor.unsqueeze(0), 
@@ -454,10 +453,10 @@ class ModelWrapper(gym.Wrapper):
                     reset = True
             
             if self.ver > 0:
-                root_node_stat = self.root_node.stat(detailed=True, reward_transform=self.reward_transform)
+                root_node_stat = self.root_node.stat(detailed=True)
             else:
-                root_node_stat = self.root_node.stat(detailed=False, reward_transform=self.reward_transform)
-            cur_node_stat = self.cur_node.stat(detailed=False, reward_transform=self.reward_transform)                        
+                root_node_stat = self.root_node.stat()
+            cur_node_stat = self.cur_node.stat()                        
             reset = torch.tensor([reset], dtype=torch.float32)            
             depc = torch.tensor([self.discounting ** (self.rollout_depth)])
             
@@ -630,7 +629,6 @@ class VecModelWrapper(gym.Wrapper):
         self.thres_discounting = flags.thres_discounting
         self.num_actions = env.action_space[0].n
         self.reward_type = flags.reward_type
-        self.reward_transform = flags.reward_transform
         self.env_n = env_n
             
         if not self.flex_t:
@@ -668,7 +666,7 @@ class VecModelWrapper(gym.Wrapper):
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
             pass_action = torch.zeros(self.env_n, dtype=torch.long)
-            _, vs, _, logits, encodeds = model_net(obs_py, 
+            _, vs, logits, encodeds = model_net(obs_py, 
                                                 pass_action.unsqueeze(0).to(self.device), 
                                                 one_hot=False)  
             vs = vs.cpu()
@@ -786,7 +784,7 @@ class VecModelWrapper(gym.Wrapper):
 
                 if self.time: self.timings.time("misc_2")
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-                _, vs, _, logits, encodeds = model_net(obs_py, 
+                _, vs, logits, encodeds = model_net(obs_py, 
                                                     pass_action.unsqueeze(0).to(self.device), 
                                                     one_hot=False)  
                 vs = vs.cpu()
@@ -924,8 +922,8 @@ class VecModelWrapper(gym.Wrapper):
         root_nodes_stat = []
         cur_nodes_stat = []
         for n in range(self.env_n):
-            root_nodes_stat.append(self.root_nodes[n].stat(detailed=True, reward_transform=self.reward_transform).unsqueeze(0))
-            cur_nodes_stat.append(self.cur_nodes[n].stat(detailed=False, reward_transform=self.reward_transform).unsqueeze(0))     
+            root_nodes_stat.append(self.root_nodes[n].stat(detailed=True).unsqueeze(0))
+            cur_nodes_stat.append(self.cur_nodes[n].stat(detailed=False).unsqueeze(0))     
         root_nodes_stat = torch.concat(root_nodes_stat)
         cur_nodes_stat = torch.concat(cur_nodes_stat)
         if action is None: 
@@ -1030,7 +1028,7 @@ class Node:
             self.rollout_n = self.rollout_n + 1
         if self.parent is not None: self.parent.propagate(r, v, new_rollout)
             
-    def stat(self, detailed, reward_transform):
+    def stat(self, detailed=False):
         assert self.expanded()
         self.child_logits = torch.concat([x.logit for x in self.children])        
         child_rollout_qs_mean = []
@@ -1057,18 +1055,10 @@ class Node:
         ret_list = ["action", "r", "v", "child_logits", "child_rollout_qs_mean",
                     "child_rollout_qs_max", "child_rollout_ns_enc"]
         if detailed: ret_list.extend(["trail_r_undiscount", "rollout_q_undiscount", "max_q"])
-        if not reward_transform:
-            self.ret_dict = {x: getattr(self, x) for x in ret_list}
-        else:
-            tran_list = ["r", "v", "child_rollout_qs_mean", "child_rollout_qs_max", "trail_r_undiscount", "rollout_q_undiscount", "max_q"]
-            self.ret_dict = {x: enc(getattr(self, x)) if x in tran_list else getattr(self, x)  for x in ret_list}
+        self.ret_dict = {x: getattr(self, x) for x in ret_list}
         #for x in ret_list: print(x, getattr(self, x))
         out = torch.concat(list(self.ret_dict.values()))        
         return out         
-
-def enc(x):
-    eps=0.001
-    return torch.sign(x)*(torch.sqrt(torch.abs(x)+1)-1)+eps*x
 
 # Standard wrappers
 
