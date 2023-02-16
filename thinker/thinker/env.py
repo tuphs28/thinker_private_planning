@@ -7,7 +7,7 @@ import gym
 from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
 from thinker import util
 
-EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'see_mask', 'reward', 'done', 'real_done',
+EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'model_encodes', 'see_mask', 'reward', 'done', 'real_done',
     'truncated_done', 'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
 def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
@@ -121,6 +121,7 @@ class PostWrapper:
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            model_encodes=None,
             see_mask=see_mask,
             reward=initial_reward,
             done=initial_done,
@@ -190,6 +191,7 @@ class PostWrapper:
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            model_encodes=None,
             see_mask=see_mask,
             reward=reward,
             done=done,
@@ -526,6 +528,7 @@ class PostVecModelWrapper(gym.Wrapper):
         self.flags = flags
         self.num_actions = num_actions
         self.actor_see_p = flags.actor_see_p 
+        self.actor_see_encode = flags.actor_see_encode
         self.model_out_shape = env.model_out_shape
         self.gym_env_out_shape = env.gym_env_out_shape
         self.reward_type = flags.reward_type
@@ -537,13 +540,15 @@ class PostVecModelWrapper(gym.Wrapper):
         self.episode_return = torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device)
         self.episode_step = torch.zeros(1, self.env_n, dtype=torch.long, device=self.device)
 
-        model_out, gym_env_out = self.env.reset(model_net) 
+        model_out, gym_env_out, model_encodes = self.env.reset(model_net) 
         model_out = model_out.unsqueeze(0)
         gym_env_out = gym_env_out.unsqueeze(0)
+        if self.actor_see_encode: model_encodes = model_encodes.unsqueeze(0)
 
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            model_encodes=model_encodes,
             see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device),
             done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
@@ -563,9 +568,10 @@ class PostVecModelWrapper(gym.Wrapper):
             "shape of action should be (1, B, %d)" % action_shape)
         out, reward, done, info = self.env.step(action[0], model_net)     
         real_done = info["real_done"]
-        model_out, gym_env_out = out
+        model_out, gym_env_out, model_encodes = out
         model_out = model_out.unsqueeze(0)
         gym_env_out = gym_env_out.unsqueeze(0)
+        if self.actor_see_encode: model_encodes = model_encodes.unsqueeze(0)
 
         self.episode_step += 1
         self.episode_return = self.episode_return + reward.unsqueeze(0)
@@ -587,6 +593,7 @@ class PostVecModelWrapper(gym.Wrapper):
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
+            model_encodes=model_encodes,
             see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=reward.unsqueeze(0),
             done=done.unsqueeze(0),
@@ -699,7 +706,7 @@ class VecModelWrapper(gym.Wrapper):
             # record initial root_nodes_qmax 
             self.root_nodes_qmax = torch.tensor([n.max_q for n in self.root_nodes], dtype=torch.float32)
             
-            return model_out.to(self.device), gym_env_out
+            return model_out.to(self.device), gym_env_out, None
 
 
     def step(self, action, model_net):  
@@ -918,7 +925,7 @@ class VecModelWrapper(gym.Wrapper):
 
         if self.time: self.timings.time("end")
 
-        return (model_out.to(self.device), gym_env_out), full_reward, full_done, info
+        return (model_out.to(self.device), gym_env_out, None), full_reward, full_done, info
 
     def compute_model_out(self, action=None, imagine_b=None, reset_needed=None):
         root_nodes_stat = []
