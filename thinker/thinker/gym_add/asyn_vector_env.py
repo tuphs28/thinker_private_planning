@@ -523,6 +523,7 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
                 env.seed(data)
                 pipe.send((None, True))
             elif command == "close":
+                env.close()
                 pipe.send((None, True))
                 break
             elif command == "_check_observation_space":

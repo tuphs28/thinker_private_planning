@@ -222,9 +222,6 @@ cdef class cVecModelWrapper():
 
     def __init__(self, env, env_n, flags, device=None, time=False):
         assert flags.perfect_model, "imperfect model not yet supported"
-        assert not flags.thres_carry, "thres_carry not yet supported"
-        assert not flags.model_rnn, "model_rnn not yet supported"
-        assert not flags.flex_t, "flexible time step not yet supported"
 
         self.device = torch.device("cpu") if device is None else device
         self.env = env     
@@ -587,8 +584,9 @@ cdef class cVecModelWrapper():
 
     def close(self):
         cdef int i
-        for i in range(self.env_n):
-            node_del(self.root_nodes[i], except_idx=-1)
+        if hasattr(self, "root_nodes"):
+            for i in range(self.env_n):
+                node_del(self.root_nodes[i], except_idx=-1)
         self.env.close()
 
     def seed(self, x):

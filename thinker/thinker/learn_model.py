@@ -35,7 +35,8 @@ class ModelLearner():
 
         env = Environment(flags)        
         self.model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags)
-        self.model_net.train(True)
+        env.close()
+        self.model_net.train(True)        
 
         # initialize learning setting
 
@@ -125,27 +126,22 @@ class ModelLearner():
                     start_time = timer()                
 
             # start consume data
-            train_model_out, model_state, is_weights, inds, new_psteps = data            
+            train_model_out, is_weights, inds, new_psteps = data            
             self.real_step += new_psteps - last_psteps            
             last_psteps = new_psteps
 
             # move the data to the process device
             train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
-            if self.flags.model_rnn:
-                model_state = util.tuple_map(model_state, lambda x:x.to(self.device))
-            else:
-                model_state = None
             is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
                         
             # compute losses
             if self.flags.float16:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):      
-                    losses, priorities, model_state = self.compute_losses(train_model_out, is_weights, model_state)
+                    losses, priorities = self.compute_losses(train_model_out, is_weights)
             else:
-                losses, priorities, model_state = self.compute_losses(train_model_out, is_weights, model_state)
+                losses, priorities = self.compute_losses(train_model_out, is_weights)
             total_loss = losses["total_loss"]
-            if model_state is not None: model_state = util.tuple_map(model_state, lambda x:x.cpu())
-            self.model_buffer.update_priority.remote(inds, priorities, model_state)
+            self.model_buffer.update_priority.remote(inds, priorities)
             
             # gradient descent on loss
             self.optimizer.zero_grad()
@@ -236,7 +232,7 @@ class ModelLearner():
             n += 1
         return True
 
-    def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor, model_state: tuple):
+    def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor):
         k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
         train_len = train_model_out.gym_env_out.shape[0] - k
         # each elem in train_model_out is in the shape of (train_len + k, b, ...)
@@ -245,21 +241,12 @@ class ModelLearner():
         action = train_model_out.action[:train_len]
 
         if self.flags.perfect_model:   
-            if not self.flags.model_rnn:
-                _, vs, v_enc_logits, logits, _ = self.model_net(
-                    x=gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
-                    actions=action.reshape(1, -1),
-                    one_hot=False)
-                vs = vs.reshape(k, b)
-                v_enc_logits = v_enc_logits.reshape(k, b, -1)
-                logits = logits.reshape(k, b, -1)
-            else:
-                vs, logits, model_state = self.model_net(
-                    x=gym_env_out,                                        
-                    actions=action,
-                    done=train_model_out.done[:train_len],
-                    state=model_state,
-                    one_hot=False)
+            _, vs, v_enc_logits, logits, _ = self.model_net(
+                x=gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
+                actions=action.reshape(1, -1),  one_hot=False)
+            vs = vs.reshape(k, b)
+            v_enc_logits = v_enc_logits.reshape(k, b, -1)
+            logits = logits.reshape(k, b, -1)
         else:        
             rs, vs, logits, _ = self.model_net(
                 x=gym_env_out[0], 
@@ -333,7 +320,7 @@ class ModelLearner():
         else:
             priorities = (torch.absolute(vs[0] - target_vs[0])).detach().cpu().numpy()
 
-        return losses, priorities, model_state
+        return losses, priorities
 
     def step_per_transition(self):
         return self.step / (self.real_step - self.flags.model_warm_up_n + 1) 

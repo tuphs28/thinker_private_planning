@@ -48,7 +48,6 @@ def compute_baseline_loss_tran_(baseline_enc_logits, target_baseline, reward_tra
         loss = loss + torch.sum(ce_loss) * c
     return loss
 
-
 def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
     assert len(logits_ls) == len(actions_ls) == len(masks_ls) == len(c_ls)
     loss = 0.    
@@ -123,11 +122,12 @@ class ActorLearner():
         self.wlogger = util.Wandb(flags, subname='_actor') if flags.use_wandb else None
         self.time = False
 
-        env = Environment(flags, model_wrap=True)
+        env = Environment(flags, model_wrap=True, env_n=1)
         self.actor_net = ActorNet(obs_shape=env.model_out_shape, 
                                       gym_obs_shape=env.gym_env_out_shape,
                                       num_actions=env.num_actions, 
                                       flags=flags)
+        env.close()
         # initialize learning setting
 
         if not self.flags.disable_cuda and torch.cuda.is_available():
@@ -144,11 +144,8 @@ class ActorLearner():
         self.last_im_returns = deque(maxlen=40000)
         
         self.optimizer = torch.optim.Adam(self.actor_net.parameters(),lr=flags.learning_rate)
-        if not self.flags.flex_t:
-            lr_lambda = lambda epoch: 1 - min(epoch * self.flags.unroll_length * self.flags.batch_size, 
-            self.flags.total_steps * self.flags.rec_t) / (self.flags.total_steps * self.flags.rec_t)
-        else:
-            lr_lambda = lambda epoch: 1 - min(epoch, self.flags.total_steps) / self.flags.total_steps
+        lr_lambda = lambda epoch: 1 - min(epoch * self.flags.unroll_length * self.flags.batch_size, 
+        self.flags.total_steps * self.flags.rec_t) / (self.flags.total_steps * self.flags.rec_t)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
         if self.flags.preload_actor and not flags.load_checkpoint:
@@ -175,8 +172,7 @@ class ActorLearner():
         # move network and optimizer to process device
         self.actor_net.to(self.device)
         util.optimizer_to(self.optimizer, self.device)
-
-        if self.time: self.timing = util.Timings()
+        if self.time: self.timing = util.Timings()        
 
     def learn_data(self):
         timer = timeit.default_timer
@@ -200,7 +196,6 @@ class ActorLearner():
                 queue_n += 0.01
             data = ray.get(data)
             if self.time: self.timing.time("get data")
-
             # start consume data
 
             # batch and move the data to the process device
@@ -219,8 +214,7 @@ class ActorLearner():
             else:
                 losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
             total_loss = losses["total_loss"]
-            if self.time: self.timing.time("compute loss")            
-
+            if self.time: self.timing.time("compute loss")    
             # gradient descent on loss
             self.optimizer.zero_grad()
             if self.flags.float16:
@@ -245,11 +239,7 @@ class ActorLearner():
                 self.optimizer.step()            
             if self.time: self.timing.time("grad descent")
 
-            if not self.flags.flex_t:
-                self.scheduler.step()
-            else:
-                self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
-                self.scheduler.step()                    
+            self.scheduler.step()          
 
             if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
             
@@ -319,13 +309,6 @@ class ActorLearner():
         zero_mask = torch.zeros_like(im_mask)
         masks_ls = [real_mask, im_mask, im_mask]                
         c_ls = [self.flags.real_cost, self.flags.real_im_cost, self.flags.real_im_cost]
-        
-        if self.flags.flex_t:
-            behavior_logits_ls.append(train_actor_out.term_policy_logits)
-            target_logits_ls.append(new_actor_out.term_policy_logits)
-            actions_ls.append(train_actor_out.term_action)
-            masks_ls.append(zero_mask)
-            c_ls.append(self.flags.real_im_cost)
 
         vtrace_returns = from_logits(
             behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
@@ -355,10 +338,7 @@ class ActorLearner():
         # compute advantage w.r.t imagainary rewards
 
         if self.flags.reward_type == 1:
-            if self.flags.reward_carry:                
-                discounts = (~train_actor_out.done).float() * self.im_discounting 
-            else:
-                discounts = (~(train_actor_out.cur_t == 0)).float() * self.im_discounting        
+            discounts = (~(train_actor_out.cur_t == 0)).float() * self.im_discounting        
             behavior_logits_ls = [train_actor_out.im_policy_logits, train_actor_out.reset_policy_logits]
             target_logits_ls = [new_actor_out.im_policy_logits, new_actor_out.reset_policy_logits]
             actions_ls = [train_actor_out.im_action, train_actor_out.reset_action] 
@@ -367,14 +347,7 @@ class ActorLearner():
                 c_ls = [self.flags.im_cost, self.flags.im_cost]
             else:
                 c_ls = [self.flags.im_cost * self.anneal_c, self.flags.im_cost * self.anneal_c]
-            
-            if self.flags.flex_t:
-                behavior_logits_ls.append(train_actor_out.term_policy_logits)
-                target_logits_ls.append(new_actor_out.term_policy_logits)
-                actions_ls.append(train_actor_out.term_action)
-                masks_ls.append(zero_mask)
-                c_ls.append(self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c)
-            
+                        
             vtrace_returns = from_logits(
                 behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
                 discounts=discounts,
@@ -406,10 +379,6 @@ class ActorLearner():
         im_ent_c = self.flags.im_entropy_cost * (self.flags.real_im_cost + ((
             self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c) if self.flags.reward_type == 1 else 0))
         c_ls = [self.flags.entropy_cost * self.flags.real_cost, im_ent_c, im_ent_c]
-        if self.flags.flex_t:
-            target_logits_ls.append(new_actor_out.term_policy_logits)
-            masks_ls.append(zero_mask)
-            c_ls.append(im_ent_c)        
         entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)    
 
         reg_loss = self.flags.reg_cost * torch.sum(new_actor_out.reg_loss)

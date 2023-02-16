@@ -47,11 +47,7 @@ def parse(args=None):
     parser.add_argument("--preload_actor", default="",
                         help="File location of the preload actor network.")                        
     parser.add_argument("--preload_model", default="",
-                        help="File location of the preload model network.")
-    parser.add_argument("--employ_model", default="",
-                        help="Use another fixed model for the planning agent")                        
-    parser.add_argument("--employ_model_rnn",  action="store_true",
-                        help="Whether to use ConvLSTM in the employed model (only support perfect model).")                        
+                        help="File location of the preload model network.")                                     
 
     # Actor Training settings.            
     parser.add_argument("--policy_type", default=0, type=int, 
@@ -116,13 +112,7 @@ def parse(args=None):
 
     # Model architecure settings
     parser.add_argument("--model_type_nn", default=0,
-                        type=float, help="Model type.")        
-    parser.add_argument("--model_rnn", action="store_true",
-                        help="Whether to use ConvLSTM in model (only support perfect model).")    
-    parser.add_argument("--model_rnn_debug", action="store_true",
-                        help="Whether to debug model_rnn.")                          
-    parser.add_argument("--model_disable_mem", action="store_true",
-                        help="Whether to disable memory in model_rnn.")                                                  
+                        type=float, help="Model type.")                                                                 
     
     # Actor loss settings
     parser.add_argument("--entropy_cost", default=0.00001,
@@ -159,31 +149,13 @@ def parse(args=None):
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
-                        help="Reward type")   
-    parser.add_argument("--reset_m", default=-1, type=int,
-                        help="Auto reset after passing m node since an unexpanded noded")     
+                        help="Reward type")       
     parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",
                         help="Whether to use perfect model.")          
     parser.add_argument("--rec_t", default=20, type=int, 
                         help="Number of planning steps.")
-    parser.add_argument("--flex_t", action="store_true",
-                        help="Whether to enable flexible planning steps.") 
-    parser.add_argument("--flex_t_cost", default=1e-5,
-                        type=float, help="Cost of planning step (only enabled when flex_t == True).")               
-    parser.add_argument("--flex_t_term_b", default=0.,
-                        type=float, help="Bias added to the logit of term action.")      
-    parser.add_argument("--no_mem", action="store_true",
-                        help="Whether to erase all memories after each real action.")   
     parser.add_argument("--disable_tree_carry", action="store_false", dest="tree_carry",
                         help="Whether to carry over the tree.")   
-    parser.add_argument("--thres_carry", action="store_true",
-                        help="Whether to carry threshold over.")   
-    parser.add_argument("--reward_carry", action="store_true",
-                        help="Whether to carry planning reward over.")      
-    parser.add_argument("--thres_discounting", default=0.9,
-                        type=float, help="Threshold discounting factor.")   
-    parser.add_argument("--model_wrapper_ver", default=1,
-                        type=float, help="Model wrapper version.")
     parser.add_argument("--depth_discounting", default=1.,
                         type=float, help="Discounting factor for planning reward based on search depth.")                           
 
@@ -203,7 +175,7 @@ def parse(args=None):
     else:
         flags = parser.parse_args(args)  
     
-    fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor", "employ_model"]    
+    fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor"]    
     for f in fs:
         path = getattr(flags, f)
         if path: setattr(flags, f, os.path.expanduser(path))
@@ -217,11 +189,6 @@ def parse(args=None):
 
     if flags.xpid is None:
         flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
-
-    if flags.model_rnn:
-        assert flags.model_batch_mode, "rnn model can only be equipped with batch model mode"
-
-    assert not (flags.flex_t and flags.num_p_actors > 1), "flex_t not supported for parallel actor"
 
     return flags
 

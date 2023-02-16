@@ -4,8 +4,8 @@ from torch import nn
 from torch.nn import functional as F
 from thinker.core.rnn import ConvAttnLSTM
 
-ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_policy_logits', 'term_policy_logits', 
-    'action', 'im_action', 'reset_action', 'term_action', 'baseline', 'baseline_enc_s', 'reg_loss'])
+ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_policy_logits', 
+    'action', 'im_action', 'reset_action', 'baseline', 'baseline_enc_s', 'reg_loss'])
 
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h,w))
@@ -24,10 +24,7 @@ class ActorNet(nn.Module):
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
         self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim        
-        self.no_mem = flags.no_mem                   # whether to earse real memory at the end of planning stage
         self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 2 for planning rewards)
-        self.flex_t = flags.flex_t                   # whether to output the terminate action
-        self.flex_t_term_b = flags.flex_t_term_b     # bias added to the logit of terminating
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
@@ -66,8 +63,6 @@ class ActorNet(nn.Module):
 
         self.reset = nn.Linear(last_out_size, 2)        
         
-        if self.flex_t: self.term = nn.Linear(last_out_size, 2)        
-
         if self.actor_see_p > 0:
             if not self.actor_drc:
                 if not self.actor_see_encode:
@@ -125,9 +120,6 @@ class ActorNet(nn.Module):
                 reset_action (tensor): sampled reset action (non-one-hot form) (T x B)
                 baseline (tensor): prediced baseline (T x B x 1) or (T x B x 2)
                 reg_loss (tensor): regularization loss (T x B)
-            if flex_t is enabled:
-                term_policy_logits (tensor): logits of termination action (T x B x 2)
-                term_action (tensor): sampled termination action (non-one-hot form) (T x B)
         """
                 
         x = obs.model_out.unsqueeze(-1).unsqueeze(-1)
@@ -144,10 +136,6 @@ class ActorNet(nn.Module):
         core_state_1 = core_state[:self.core_state_sep_ind]
         notdone = ~(done.bool())
         for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):  
-            if self.no_mem and obs.cur_t[n, 0] == 0:
-                core_state_1 = self.initial_state(B)
-                core_state_1 = tuple(v.to(x.device) for v in core_state_1)
-                
             # Input shape: B, self.conv_out + self.num_actions + 1, H, W
             for t in range(self.tran_t):                
                 if t > 0: nd = torch.ones(B).to(x.device).bool()                    
@@ -196,14 +184,10 @@ class ActorNet(nn.Module):
         policy_logits = self.policy(core_output)
         im_policy_logits = self.im_policy(core_output)
         reset_policy_logits = self.reset(core_output)
-        
-        if self.flex_t: 
-            term_policy_logits = self.term(core_output)            
-            term_policy_logits[:, 1] += self.flex_t_term_b  
+
         action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
         reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
-        if self.flex_t: term_action = torch.multinomial(F.softmax(term_policy_logits, dim=1), num_samples=1)
         
         if not self.reward_transform:
             baseline = self.baseline(core_output)
@@ -218,12 +202,10 @@ class ActorNet(nn.Module):
         policy_logits = policy_logits.view(T, B, self.num_actions)
         im_policy_logits = im_policy_logits.view(T, B, self.num_actions)
         reset_policy_logits = reset_policy_logits.view(T, B, 2)
-        term_policy_logits = term_policy_logits.view(T, B, 2) if self.flex_t else None
         
         action = action.view(T, B)      
         im_action = im_action.view(T, B)      
-        reset_action = reset_action.view(T, B)             
-        term_action = term_action.view(T, B) if self.flex_t else None        
+        reset_action = reset_action.view(T, B)                 
 
         baseline_enc_s = baseline_enc_s.view(T, B, self.num_rewards) if self.reward_transform else None
         baseline = baseline.view(T, B, self.num_rewards)        
@@ -231,11 +213,9 @@ class ActorNet(nn.Module):
         actor_out = ActorOut(policy_logits=policy_logits,                         
                              im_policy_logits=im_policy_logits,                         
                              reset_policy_logits=reset_policy_logits,     
-                             term_policy_logits=term_policy_logits,     
                              action=action,     
                              im_action=im_action,
                              reset_action=reset_action,
-                             term_action=term_action,
                              baseline_enc_s=baseline_enc_s,
                              baseline=baseline, 
                              reg_loss=reg_loss,)       
@@ -609,14 +589,8 @@ class ModelNetRNN(nn.Module):
     def set_weights(self, weights):
         self.load_state_dict(weights)                
 
-def ModelNet(obs_shape, num_actions, flags, rnn=None):
-    # rnn: whether to use rnn for model network; 
-    # override flags.model_rnn
-    rnn = flags.model_rnn if rnn is None else rnn
-    if rnn:
-        return ModelNetRNN(obs_shape, num_actions, flags)
-    else:
-        return ModelNetBase(obs_shape, num_actions, flags)
+def ModelNet(obs_shape, num_actions, flags):
+    return ModelNetBase(obs_shape, num_actions, flags)
     
 class RewardTran(nn.Module):    
     def __init__(self, vec, support=300, eps=0.001):
