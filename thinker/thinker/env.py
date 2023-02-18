@@ -6,7 +6,7 @@ import torch
 from torch.nn import functional as F
 import gym
 from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
-from thinker.cenv import cVecModelWrapper
+from thinker.cenv import cVecModelWrapper, cVecFullModelWrapper
 from thinker import util
 
 EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'model_encodes', 'see_mask', 'reward', 'done', 'real_done',
@@ -31,8 +31,9 @@ def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
 
     env = AsyncVectorEnv([lambda: PreWrap(gym.make(flags.env), flags.env) for _ in range(env_n)])
     num_actions = env.action_space[0].n    
-    if model_wrap:                
-        env = PostVecModelWrapper(cVecModelWrapper(env, env_n, flags, 
+    if model_wrap:              
+        wrapper = cVecModelWrapper if flags.perfect_model else cVecFullModelWrapper
+        env = PostVecModelWrapper(wrapper(env, env_n, flags, 
             device=device, time=time), env_n, num_actions, flags, model_wrap=True, device=device)
     else:
         env = PostVecModelWrapper(env, env_n, num_actions, flags, model_wrap=False, device=device)
@@ -140,7 +141,8 @@ class PostVecModelWrapper(gym.Wrapper):
             done = torch.tensor(done, dtype=torch.bool, device=self.device)
             real_done = torch.tensor(real_done, dtype=torch.bool, device=self.device)
 
-        gym_env_out = gym_env_out.unsqueeze(0)
+        if gym_env_out is not None:
+            gym_env_out = gym_env_out.unsqueeze(0)
         if self.actor_see_encode and self.model_wrap: model_encodes = model_encodes.unsqueeze(0)
 
         self.episode_step += 1

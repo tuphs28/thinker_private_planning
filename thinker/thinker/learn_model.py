@@ -13,13 +13,13 @@ from thinker.self_play import SelfPlayWorker, TrainModelOut, PO_MODEL
 from thinker.env import Environment
 import thinker.util as util
 
-def compute_cross_entropy_loss(logits, target_logits, mask, is_weights):
+def compute_cross_entropy_loss(logits, target_logits, is_weights):
     target_policy = F.softmax(target_logits, dim=-1)
     loss = torch.nn.CrossEntropyLoss(reduction="none")(
                     input = torch.flatten(logits, 0, 1),
                     target = torch.flatten(target_policy, 0, 1)
                 )
-    loss = torch.sum(loss.view_as(mask) * (~mask).float(), dim=0)
+    loss = torch.sum(loss.reshape(target_logits.shape[:-1]), dim=0)
     loss = is_weights * loss
     return torch.sum(loss)
 
@@ -237,21 +237,23 @@ class ModelLearner():
         train_len = train_model_out.gym_env_out.shape[0] - k
         # each elem in train_model_out is in the shape of (train_len + k, b, ...)
 
-        gym_env_out = train_model_out.gym_env_out[:train_len] # the last k elem are not needed
-        action = train_model_out.action[:train_len]
+        gym_env_out = train_model_out.gym_env_out[:train_len] # the last k elem are not needed        
 
         if self.flags.perfect_model:   
-            _, vs, v_enc_logits, logits, _ = self.model_net(
+            action = train_model_out.action[:train_len]
+            _, _, vs, v_enc_logits, logits, _ = self.model_net(
                 x=gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
                 actions=action.reshape(1, -1),  one_hot=False)
             vs = vs.reshape(k, b)
             v_enc_logits = v_enc_logits.reshape(k, b, -1)
             logits = logits.reshape(k, b, -1)
         else:        
-            rs, vs, logits, _ = self.model_net(
-                x=gym_env_out[0], 
-                actions=action,
-                one_hot=False)
+            action = train_model_out.action[:train_len+1]
+            rs, r_enc_logits, vs, v_enc_logits, logits, _ = self.model_net(
+                x=gym_env_out[0], actions=action, one_hot=False)
+            vs = vs[:-1]
+            v_enc_logits = v_enc_logits[:-1]
+            logits = logits[:-1]
 
         target_rewards = train_model_out.reward[1:train_len+1]
         target_logits = train_model_out.policy_logits[1:train_len+1]
@@ -261,20 +263,18 @@ class ModelLearner():
             target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]
 
         # if done on step j, r_{j}, v_{j-1}, a_{j-1} has the last valid loss 
+        # we set all target r_{j+1}, v_{j}, a_{j} to 0, 0, and last a_{j+1}
         # rs is stored in the form of r_{t+1}, ..., r_{t+k}
         # vs is stored in the form of v_{t}, ..., v_{t+k-1}
-        # logits is stored in the form of a{t}, ..., a_{t+k-1}
+        # logits is stored in the form of a{t}, ..., a_{t+k-1}        
 
         if not self.flags.perfect_model:
-            done_masks = []
-            done = torch.zeros(b).bool().to(self.device)
-            for t in range(k):
-                if t > 0: done = torch.logical_or(done, train_model_out.done[t])
-                done_masks.append(done.unsqueeze(0))
-
-            done_masks = torch.concat(done_masks, dim=0)
-        else:
-            done_masks = torch.zeros(k, b).bool().to(self.device)
+            done = torch.zeros(b, dtype=torch.bool, device=self.device)
+            for t in range(k-1):
+                done = torch.logical_or(done, train_model_out.done[t+1])
+                target_rewards[t+1, done] = 0.
+                target_logits[t+1, done] = target_logits[t, done]
+                target_vs[t+1, done] = 0.
         
         # compute final loss
 
@@ -283,26 +283,34 @@ class ModelLearner():
         if self.flags.perfect_model:
             rs_loss =  None
         else:
-            rs_loss = torch.sum(((rs - target_rewards) ** 2) * (~done_masks).float(), dim=0)
+            if not self.flags.reward_transform:
+                rs_loss = torch.sum(((rs - target_rewards) ** 2), dim=0)
+            else:
+                _, target_rs_enc_v = self.model_net.reward_tran.encode(target_rewards)
+                rs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                        input = torch.flatten(r_enc_logits[:train_len], 0, 1),
+                        target = torch.flatten(target_rs_enc_v, 0, 1)
+                      )
+                rs_loss = torch.sum(rs_loss.reshape(target_rs_enc_v.shape[:-1]), dim=0)
             rs_loss = rs_loss * is_weights
             rs_loss = torch.sum(rs_loss)
             
-        #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()) * (~done_masks).float())
+        #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()))
         if not self.flags.reward_transform:
-            vs_loss = torch.sum(((vs[:train_len] - target_vs) ** 2) * (~done_masks).float(), dim=0)
+            vs_loss = torch.sum(((vs[:train_len] - target_vs) ** 2), dim=0)
         else:
             _, target_vs_enc_v = self.model_net.reward_tran.encode(target_vs)
             vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
                         input = torch.flatten(v_enc_logits[:train_len], 0, 1),
                         target = torch.flatten(target_vs_enc_v, 0, 1)
-                      ).view_as(done_masks) * (~done_masks).float()
-            vs_loss = torch.sum(vs_loss, dim=0)
+                      )
+            vs_loss = torch.sum(vs_loss.reshape(target_vs_enc_v.shape[:-1]), dim=0)
 
         vs_loss = vs_loss * is_weights
         vs_loss = self.flags.model_vs_loss_cost * torch.sum(vs_loss)
 
         logits_loss = self.flags.model_logits_loss_cost * compute_cross_entropy_loss(
-            logits, target_logits.detach(), done_masks, is_weights)   
+            logits, target_logits.detach(), is_weights)   
 
         total_loss = vs_loss + logits_loss
         if rs_loss is not None: total_loss = total_loss + rs_loss
@@ -314,8 +322,7 @@ class ModelLearner():
 
         # compute priorities
         if not self.flags.model_batch_mode:
-            priorities = (torch.absolute(vs - target_vs))
-            priorities[done_masks] = torch.nan
+            priorities = torch.absolute(vs - target_vs)
             priorities = priorities.detach().cpu().numpy()
         else:
             priorities = (torch.absolute(vs[0] - target_vs[0])).detach().cpu().numpy()

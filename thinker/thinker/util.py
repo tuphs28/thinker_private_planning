@@ -168,12 +168,13 @@ def parse(args=None):
                         help="Global gradient norm clip for actor learner.")
     parser.add_argument("--model_grad_norm_clipping", default=0, type=float,
                         help="Global gradient norm clip for model learner.")            
-
-
+    
     if args is None:
         flags = parser.parse_args()  
     else:
         flags = parser.parse_args(args)  
+
+    assert not (not flags.perfect_model and flags.actor_see_p > 0 and not flags.actor_see_encode), "learned model cannot see gym_env_out directly"
     
     fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor"]    
     for f in fs:

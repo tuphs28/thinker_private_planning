@@ -361,31 +361,37 @@ class Output_rvpi(nn.Module):
         c, h, w = input_shape
         self.conv1 = nn.Conv2d(in_channels=c, out_channels=c//2, kernel_size=3, padding='same') 
         self.conv2 = nn.Conv2d(in_channels=c//2, out_channels=c//4, kernel_size=3, padding='same') 
-        fc_in = h * w * (c // 4)
-        self.fc_r = nn.Linear(fc_in, 1)         
+        fc_in = h * w * (c // 4)        
         self.fc_logits = nn.Linear(fc_in, num_actions)         
 
         self.reward_transform = reward_transform
         if self.reward_transform:
             self.reward_tran = RewardTran(vec=True)
             self.fc_v = nn.Linear(fc_in, self.reward_tran.encoded_n) 
+            self.fc_r = nn.Linear(fc_in, self.reward_tran.encoded_n)         
         else:
             self.fc_v = nn.Linear(fc_in, 1) 
+            self.fc_r = nn.Linear(fc_in, 1)         
         
     def forward(self, x):    
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = torch.flatten(x, start_dim=1)
-        r, logits = self.fc_r(x), self.fc_logits(x)
-        r = r.squeeze(-1)
+        logits = self.fc_logits(x)
         if self.reward_transform:
             v_enc_logits = self.fc_v(x)
             v_enc_v = F.softmax(v_enc_logits, dim=-1)
             v_enc_s, v = self.reward_tran.decode(v_enc_v)
+
+            r_enc_logits = self.fc_r(x)
+            r_enc_v = F.softmax(r_enc_logits, dim=-1)
+            r_enc_s, r = self.reward_tran.decode(r_enc_v)
         else:
             v_enc_logits = None
             v = self.fc_v(x).squeeze(-1)
-        return r, v, v_enc_logits, logits
+            r_enc_logits = None
+            r = self.fc_r(x).squeeze(-1)
+        return r, r_enc_logits, v, v_enc_logits, logits
 
 class ModelNetBase(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        
@@ -402,6 +408,12 @@ class ModelNetBase(nn.Module):
                       obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform)
         if self.reward_transform:
             self.reward_tran = self.output_rvpi.reward_tran
+    
+    def encoded(self, x, actions, one_hot=False):
+        if not one_hot:
+            actions = F.one_hot(actions, self.num_actions)                
+        encodes = self.frameEncoder(x, actions[0])
+        return encodes
         
     def forward(self, x, actions, one_hot=False):
         """
@@ -424,36 +436,39 @@ class ModelNetBase(nn.Module):
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
         
-        r, v, v_enc_logits, logits = self.output_rvpi(encoded)
+        r, r_enc_logits, v, v_enc_logits, logits = self.output_rvpi(encoded)
         r_list, v_list, logits_list = [], [v.unsqueeze(0)], [logits.unsqueeze(0)]
-        if self.reward_transform: v_enc_logits_list = [v_enc_logits]
+        if self.reward_transform: 
+            r_enc_logits_list = []
+            v_enc_logits_list = [v_enc_logits.unsqueeze(0)]
 
         encoded_list = [encoded.unsqueeze(0)]
         
         for k in range(actions.shape[0]):            
             encoded = self.dynamicModel(encoded, actions[k])
-            r, v, v_enc_logits, logits = self.output_rvpi(encoded)
+            r, r_enc_logits, v, v_enc_logits, logits = self.output_rvpi(encoded)
             r_list.append(r.unsqueeze(0))
             v_list.append(v.unsqueeze(0))
             logits_list.append(logits.unsqueeze(0))
             encoded_list.append(encoded.unsqueeze(0))      
-            if self.reward_transform: v_enc_logits_list.append(v_enc_logits.unsqueeze(0))
+            if self.reward_transform: 
+                r_enc_logits_list.append(r_enc_logits.unsqueeze(0))
+                v_enc_logits_list.append(v_enc_logits.unsqueeze(0))
         
-        if len(r_list) > 0:
-            rs = torch.concat(r_list, dim=0)
-        else:
-            rs = None        
-            
+        
+        rs = torch.concat(r_list, dim=0) if len(r_list) > 0 else None            
         vs = torch.concat(v_list, dim=0)
         logits = torch.concat(logits_list, dim=0)
         encodeds = torch.concat(encoded_list, dim=0)        
 
-        if self.reward_transform:
+        if self.reward_transform:            
+            r_enc_logits = torch.concat(r_enc_logits_list, dim=0) if len(r_enc_logits_list) > 0 else None
             v_enc_logits = torch.concat(v_enc_logits_list, dim=0)
         else:
+            r_enc_logits = None
             v_enc_logits = None
         
-        return rs, vs, v_enc_logits, logits, encodeds        
+        return rs, r_enc_logits, vs, v_enc_logits, logits, encodeds        
 
     def get_weights(self):
         return {k: v.cpu() for k, v in self.state_dict().items()}
