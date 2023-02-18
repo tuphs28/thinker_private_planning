@@ -264,7 +264,7 @@ cdef class cVecFullModelWrapper():
     cdef int[:] rollout_depth
     cdef int[:] max_rollout_depth
     cdef int[:] cur_t
-f
+
     # internal variables only used in step function
     cdef float[:] depth_delta
     cdef int[:] max_rollout_depth_
