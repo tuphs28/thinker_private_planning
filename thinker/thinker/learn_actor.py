@@ -344,9 +344,9 @@ class ActorLearner():
             actions_ls = [train_actor_out.im_action, train_actor_out.reset_action] 
             masks_ls = [im_mask, im_mask]  
             if not self.flags.im_cost_anneal: 
-                c_ls = [self.flags.im_cost, self.flags.im_cost]
+                c_ls = [self.flags.im_cost, self.flags.im_cost if not self.flags.reset_no_im_cost else 0.]
             else:
-                c_ls = [self.flags.im_cost * self.anneal_c, self.flags.im_cost * self.anneal_c]
+                c_ls = [self.flags.im_cost * self.anneal_c, (self.flags.im_cost if not self.flags.reset_no_im_cost else 0.) * self.anneal_c]
                         
             vtrace_returns = from_logits(
                 behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
