@@ -420,11 +420,10 @@ class ModelNetBase(nn.Module):
         self.supervise = flags.model_supervise
         if self.supervise:
             flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*(256//DOWNSCALE_C)
-            self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512),
-                                           nn.Linear(512, 512),
-                                           nn.Linear(512, 512))
-            self.P_2 = torch.nn.Sequential(nn.Linear(512, 512),
-                                           nn.Linear(512, 512))
+            self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512), nn.BatchNorm1d(512), nn.ReLU(),
+                                           nn.Linear(512, 512), nn.BatchNorm1d(512), nn.ReLU(),
+                                           nn.Linear(512, 1024), nn.BatchNorm1d(1024))
+            self.P_2 = torch.nn.Sequential(nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512, 1024))
             self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
 
     def supervise_loss(self, encodeds, x, actions, is_weights, one_hot=False):
