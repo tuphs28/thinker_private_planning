@@ -356,7 +356,7 @@ class DynamicModel(nn.Module):
         return out
     
 class Output_rvpi(nn.Module):   
-    def __init__(self, num_actions, input_shape, reward_transform):         
+    def __init__(self, num_actions, input_shape, reward_transform, zero_init):         
         super(Output_rvpi, self).__init__()        
         c, h, w = input_shape
         self.conv1 = nn.Conv2d(in_channels=c, out_channels=c//2, kernel_size=3, padding='same') 
@@ -372,6 +372,14 @@ class Output_rvpi(nn.Module):
         else:
             self.fc_v = nn.Linear(fc_in, 1) 
             self.fc_r = nn.Linear(fc_in, 1)         
+
+        if zero_init:
+            torch.nn.init.constant_(self.fc_v.weight, 0.)
+            torch.nn.init.constant_(self.fc_v.bias, 0.)
+            torch.nn.init.constant_(self.fc_r.weight, 0.)
+            torch.nn.init.constant_(self.fc_r.bias, 0.)
+            torch.nn.init.constant_(self.fc_logits.weight, 0.)
+            torch.nn.init.constant_(self.fc_logits.bias, 0.)
         
     def forward(self, x):    
         x = F.relu(self.conv1(x))
@@ -405,7 +413,7 @@ class ModelNetBase(nn.Module):
         self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
         self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=256//DOWNSCALE_C, type_nn=self.type_nn)
         self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(256//DOWNSCALE_C, 
-                      obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform)
+                      obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform, zero_init=flags.model_zero_init)
         if self.reward_transform:
             self.reward_tran = self.output_rvpi.reward_tran
 
