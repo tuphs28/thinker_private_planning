@@ -148,6 +148,8 @@ def parse(args=None):
                        help="Multipler to policy vs loss when training the model.")                           
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
                        help="0 for mean root value, 1 for max root value, 2 for actor'svalue.")     
+    parser.add_argument("--model_supervise", action="store_true",
+                        help="Whether to add self-supervised loss in model training")                                   
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 

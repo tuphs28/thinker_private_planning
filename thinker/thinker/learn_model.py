@@ -236,20 +236,20 @@ class ModelLearner():
         k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
         train_len = train_model_out.gym_env_out.shape[0] - k
         # each elem in train_model_out is in the shape of (train_len + k, b, ...)
-
-        gym_env_out = train_model_out.gym_env_out[:train_len] # the last k elem are not needed        
-
-        if self.flags.perfect_model:   
+    
+        gym_env_out = train_model_out.gym_env_out
+        if self.flags.perfect_model: 
+            gym_env_out_ = gym_env_out[:train_len] # the last k elem are not needed         
             action = train_model_out.action[:train_len]
             _, _, vs, v_enc_logits, logits, _ = self.model_net(
-                x=gym_env_out.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
+                x=gym_env_out_.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
                 actions=action.reshape(1, -1),  one_hot=False)
             vs = vs.reshape(k, b)
             v_enc_logits = v_enc_logits.reshape(k, b, -1)
             logits = logits.reshape(k, b, -1)
         else:        
             action = train_model_out.action[:train_len+1]
-            rs, r_enc_logits, vs, v_enc_logits, logits, _ = self.model_net(
+            rs, r_enc_logits, vs, v_enc_logits, logits, encodeds = self.model_net(
                 x=gym_env_out[0], actions=action, one_hot=False)
             vs = vs[:-1]
             v_enc_logits = v_enc_logits[:-1]
@@ -270,11 +270,13 @@ class ModelLearner():
 
         if not self.flags.perfect_model:
             done = torch.zeros(b, dtype=torch.bool, device=self.device)
-            for t in range(k-1):
+            for t in range(train_len-1):
                 done = torch.logical_or(done, train_model_out.done[t+1])
                 target_rewards[t+1, done] = 0.
                 target_logits[t+1, done] = target_logits[t, done]
                 target_vs[t+1, done] = 0.
+                if self.flags.model_supervise:
+                    gym_env_out[t+1, done] = gym_env_out[t, done]                    
         
         # compute final loss
 
@@ -312,13 +314,21 @@ class ModelLearner():
         logits_loss = self.flags.model_logits_loss_cost * compute_cross_entropy_loss(
             logits, target_logits.detach(), is_weights)   
 
+        if self.flags.model_supervise:
+            sup_loss = self.model_net.supervise_loss(encodeds=encodeds[1:], x=gym_env_out[1:train_len+1], 
+                actions=train_model_out.action[1:train_len+1], is_weights=is_weights, one_hot=False)
+        else:
+            sup_loss = None
+
         total_loss = vs_loss + logits_loss
         if rs_loss is not None: total_loss = total_loss + rs_loss
+        if sup_loss is not None: total_loss = total_loss + sup_loss
 
         losses = {"total_loss": total_loss,
                    "vs_loss": vs_loss,
                    "logits_loss": logits_loss,
-                   "rs_loss": rs_loss }
+                   "rs_loss": rs_loss,
+                   "sup_loss": sup_loss }
 
         # compute priorities
         if not self.flags.model_batch_mode:

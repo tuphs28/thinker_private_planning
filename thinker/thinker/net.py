@@ -346,7 +346,7 @@ class DynamicModel(nn.Module):
         if self.training:
             x.register_hook(lambda grad: grad * 0.5)
         if self.type_nn == 0:
-            actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
+            actions = actions.unsqueeze(-1).unsqueeze(-1).tile  ([1, 1, x.shape[2], x.shape[3]])        
             x = torch.concat([x, actions], dim=1)
             out = self.res(x)
         elif self.type_nn == 1:            
@@ -408,17 +408,53 @@ class ModelNetBase(nn.Module):
                       obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform)
         if self.reward_transform:
             self.reward_tran = self.output_rvpi.reward_tran
+
+        self.supervise = flags.model_supervise
+        if self.supervise:
+            flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*(256//DOWNSCALE_C)
+            self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512),
+                                           nn.Linear(512, 512),
+                                           nn.Linear(512, 512))
+            self.P_2 = torch.nn.Sequential(nn.Linear(512, 512),
+                                           nn.Linear(512, 512))
+            self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
+    def supervise_loss(self, encodeds, x, actions, is_weights, one_hot=False):
+        """
+        Args:
+            encodes(tensor): encodes output from forward with shape (k, B, C, H, W) in the form of z_{t+1}, ..., z_{t+k}
+            x(tensor): frames (uint8) with shape (k, B, C, H, W), in the form of s_{t+1}, ..., s{t+k}
+            actions(tensor): action (int64) with shape (k, B), in the form of a_{t}, a_{t}, a_{t+1}, .. a_{t+k}
+            im_weights(tensor): importance weight with shape (B) for each sample;  
+        Return:
+            loss(tensor): scalar self-supervised loss
+        """
+        k, bsz, c, h, w = encodeds.shape
+        encodeds = torch.flatten(encodeds, 0, 1)        
+        encodeds = torch.flatten(encodeds, 1)
+        src = self.P_2(self.P_1(encodeds))
+        with torch.no_grad():
+            x = torch.flatten(x, 0, 1)
+            actions = torch.flatten(actions, 0, 1)   
+            tgt_encodes = self.encoded(x, actions, one_hot)
+            tgt_encodes = torch.flatten(tgt_encodes, 1)
+            tgt = self.P_1(tgt_encodes)
+        
+        loss = -self.cos(src, tgt)
+        loss = torch.sum(loss.reshape(k, bsz), dim=0)
+        loss = loss * is_weights
+        return torch.sum(loss)
     
     def encoded(self, x, actions, one_hot=False):
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
-        encodes = self.frameEncoder(x, actions[0])
+        encodes = self.frameEncoder(x, actions)
         return encodes
         
     def forward(self, x, actions, one_hot=False):
         """
         Args:
-            x(tensor): frames (uint8 or float) with shape (B, C, H, W), in the form of s_t
+            x(tensor): frames (uint8) with shape (B, C, H, W), in the form of s_t
             actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
         Return:
             reward(tensor): predicted reward with shape (k, B), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
