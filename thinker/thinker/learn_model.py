@@ -176,7 +176,7 @@ class ModelLearner():
                                 sps, 
                                 np.mean(all_returns) if all_returns is not None else 0.,
                                 np.std(all_returns) if all_returns is not None else 0.)
-                print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss"]
+                print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss", "sup_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
                         print_str += " %s %.2f" % (k, losses[k].item() / numel_per_step)
@@ -276,7 +276,7 @@ class ModelLearner():
                 target_logits[t+1, done] = target_logits[t, done]
                 target_vs[t+1, done] = 0.
                 if self.flags.model_supervise:
-                    gym_env_out[t+1, done] = gym_env_out[t, done]                    
+                    gym_env_out[t+1, done] = gym_env_out[t, done]    
         
         # compute final loss
 
@@ -299,19 +299,19 @@ class ModelLearner():
             
         #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()))
         if not self.flags.reward_transform:
-            vs_loss = torch.sum(((vs[:train_len] - target_vs) ** 2), dim=0)
+            vs_loss = torch.sum(((vs[:train_len] - target_vs.detach()) ** 2), dim=0)
         else:
             _, target_vs_enc_v = self.model_net.reward_tran.encode(target_vs)
             vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
                         input = torch.flatten(v_enc_logits[:train_len], 0, 1),
-                        target = torch.flatten(target_vs_enc_v, 0, 1)
+                        target = torch.flatten(target_vs_enc_v.detach(), 0, 1)
                       )
             vs_loss = torch.sum(vs_loss.reshape(target_vs_enc_v.shape[:-1]), dim=0)
 
         vs_loss = vs_loss * is_weights
-        vs_loss = self.flags.model_vs_loss_cost * torch.sum(vs_loss)
+        vs_loss = torch.sum(vs_loss)
 
-        logits_loss = self.flags.model_logits_loss_cost * compute_cross_entropy_loss(
+        logits_loss = compute_cross_entropy_loss(
             logits, target_logits.detach(), is_weights)   
 
         if self.flags.model_supervise:
@@ -320,9 +320,9 @@ class ModelLearner():
         else:
             sup_loss = None
 
-        total_loss = vs_loss + logits_loss
-        if rs_loss is not None: total_loss = total_loss + rs_loss
-        if sup_loss is not None: total_loss = total_loss + sup_loss
+        total_loss = self.flags.model_vs_loss_cost * vs_loss + self.flags.model_logits_loss_cost * logits_loss
+        if rs_loss is not None: total_loss = total_loss + self.flags.model_rs_loss_cost * rs_loss
+        if sup_loss is not None: total_loss = total_loss + self.flags.model_sup_loss_cost * sup_loss
 
         losses = {"total_loss": total_loss,
                    "vs_loss": vs_loss,
@@ -333,10 +333,13 @@ class ModelLearner():
         # compute priorities
         if not self.flags.model_batch_mode:
             priorities = torch.absolute(vs - target_vs)
+            if not self.flags.perfect_model:    
+                # when he model is imperfect, we only reset the priority of the first time step
+                priorities[0] = torch.mean(priorities, dim=0)
+                priorities[1:] = torch.nan                 
             priorities = priorities.detach().cpu().numpy()
         else:
             priorities = (torch.absolute(vs[0] - target_vs[0])).detach().cpu().numpy()
-
         return losses, priorities
 
     def step_per_transition(self):

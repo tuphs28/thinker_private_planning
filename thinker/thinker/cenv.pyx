@@ -242,6 +242,7 @@ cdef class cVecFullModelWrapper():
     cdef int reward_type
     cdef bool reward_transform
     cdef bool actor_see_encode
+    cdef bool actor_see_double_encode    
     cdef int num_actions
     cdef int obs_n    
     cdef int env_n
@@ -290,7 +291,8 @@ cdef class cVecFullModelWrapper():
         self.num_actions = env.action_space[0].n
         self.reward_type = flags.reward_type
         self.reward_transform = flags.reward_transform
-        self.actor_see_encode = flags.actor_see_encode        
+        self.actor_see_encode = flags.actor_see_encode  
+        self.actor_see_double_encode = flags.actor_see_double_encode
         self.env_n = env_n
         self.obs_n = 9 + self.num_actions * 10 + self.rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
@@ -364,11 +366,17 @@ cdef class cVecFullModelWrapper():
             else:
                 gym_env_out = None
 
-            model_encodes = []
-            for i in range(self.env_n):
-                encoded = <dict>self.cur_nodes[i][0].encoded
-                model_encodes.append(encoded["model_encodes"].unsqueeze(0))
-            model_encodes = torch.concat(model_encodes)
+            if self.actor_see_encode:
+                model_encodes = []
+                for i in range(self.env_n):
+                    encoded = <dict>self.cur_nodes[i][0].encoded
+                    model_encodes.append(encoded["model_encodes"].unsqueeze(0))
+                model_encodes = torch.concat(model_encodes)
+
+                if self.actor_see_double_encode:
+                    model_encodes = torch.concat([model_encodes, model_encodes], dim=1)
+            else:
+                model_encodes = None
 
             # record initial root_nodes_qmax 
             for i in range(self.env_n):
@@ -546,11 +554,21 @@ cdef class cVecFullModelWrapper():
         else:
             gym_env_out = None
 
-        model_encodes = []
-        for i in range(self.env_n):
-            encoded = <dict>self.cur_nodes[i][0].encoded
-            model_encodes.append(encoded["model_encodes"].unsqueeze(0))
-        model_encodes = torch.concat(model_encodes)
+        if self.actor_see_encode:
+            model_encodes = []
+            for i in range(self.env_n):
+                encoded = <dict>self.cur_nodes[i][0].encoded
+                model_encodes.append(encoded["model_encodes"].unsqueeze(0))
+            model_encodes = torch.concat(model_encodes)
+            if self.actor_see_double_encode:
+                model_encodes_ = []
+                for i in range(self.env_n):
+                    encoded = <dict>self.root_nodes[i][0].encoded
+                    model_encodes_.append(encoded["model_encodes"].unsqueeze(0))
+                model_encodes_ = torch.concat(model_encodes_)
+                model_encodes = torch.concat([model_encodes, model_encodes_], dim=1)
+        else:
+            model_encodes = None
 
         if self.time: self.timings.time("compute_model_out")
         # compute reward
@@ -660,6 +678,7 @@ cdef class cVecModelWrapper():
     cdef int reward_type
     cdef bool reward_transform
     cdef bool actor_see_encode
+    cdef bool actor_see_double_encode
     cdef int num_actions
     cdef int obs_n    
     cdef int env_n
@@ -708,7 +727,8 @@ cdef class cVecModelWrapper():
         self.num_actions = env.action_space[0].n
         self.reward_type = flags.reward_type
         self.reward_transform = flags.reward_transform
-        self.actor_see_encode = flags.actor_see_encode        
+        self.actor_see_encode = flags.actor_see_encode      
+        self.actor_see_double_encode = flags.actor_see_double_encode  
         self.env_n = env_n
         self.obs_n = 9 + self.num_actions * 10 + self.rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
@@ -788,6 +808,10 @@ cdef class cVecModelWrapper():
                     encoded = <dict>self.cur_nodes[i][0].encoded
                     model_encodes.append(encoded["model_encodes"].unsqueeze(0))
                 model_encodes = torch.concat(model_encodes)
+
+                if self.actor_see_double_encode:
+                    model_encodes = torch.concat([model_encodes, model_encodes], dim=1)
+                
             else:
                 model_encodes = None
 
@@ -985,6 +1009,14 @@ cdef class cVecModelWrapper():
                 encoded = <dict>self.cur_nodes[i][0].encoded
                 model_encodes.append(encoded["model_encodes"].unsqueeze(0))
             model_encodes = torch.concat(model_encodes)
+
+            if self.actor_see_double_encode:
+                model_encodes_ = []
+                for i in range(self.env_n):
+                    encoded = <dict>self.root_nodes[i][0].encoded
+                    model_encodes_.append(encoded["model_encodes"].unsqueeze(0))
+                model_encodes_ = torch.concat(model_encodes_)
+                model_encodes = torch.concat([model_encodes, model_encodes_], dim=1)
         else:
             model_encodes = None
 

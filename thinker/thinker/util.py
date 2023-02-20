@@ -106,7 +106,9 @@ def parse(args=None):
     parser.add_argument("--actor_see_p", default=0,
                         type=float, help="Probability of allowing actor to see state.")                                
     parser.add_argument("--actor_see_encode",  action="store_true",
-                        help="Whether to see the encoded state")                        
+                        help="Whether to see the encoded state")        
+    parser.add_argument("--actor_see_double_encode",  action="store_true",
+                        help="Whether to see double encoded state (need to be eanabled with actor_see_encode)")                                          
     parser.add_argument("--actor_drc", action="store_true",
                         help="Whether to use drc in encoding state")    
 
@@ -148,11 +150,18 @@ def parse(args=None):
     parser.add_argument("--model_logits_loss_cost", default=0.5, type=float,
                        help="Multipler to policy logit loss when training the model.")                            
     parser.add_argument("--model_vs_loss_cost", default=1, type=float,
-                       help="Multipler to policy vs loss when training the model.")                           
+                       help="Multipler to vs loss when training the model.")                           
+    parser.add_argument("--model_rs_loss_cost", default=1, type=float,
+                       help="Multipler to rs loss when training the model.")                                                  
+    parser.add_argument("--model_sup_loss_cost", default=1, type=float,
+                       help="Multipler to self-supervise loss when training the model.")                                                                         
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
                        help="0 for mean root value, 1 for max root value, 2 for actor'svalue.")     
     parser.add_argument("--model_supervise", action="store_true",
-                        help="Whether to add self-supervised loss in model training")                                   
+                        help="Whether to add self-supervised loss in model training")    
+    parser.add_argument("--model_supervise_type", default=0, type=int,
+                       help="0 for efficientZero, 1 for direct cosine similarity.")                            
+
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 

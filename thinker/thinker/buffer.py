@@ -134,7 +134,7 @@ class ModelBuffer():
 
         if not self.batch_mode:
             # abs_flat_inds is an array of shape (model_batch_size,)
-            # priorities is an array of shape (model_batch_size, k)
+            # priorities is an array of shape (model_batch_size, k)            
             priorities = priorities.transpose()
 
             flat_inds = abs_flat_inds - base_ind_pri # get the relative index
@@ -153,10 +153,11 @@ class ModelBuffer():
 
             flat_inds = flat_inds.astype(float)
             flat_inds[carry_mask] = flat_inds[carry_mask] + (-flat_inds_block[carry_mask] + carry_inds_block) * (self.t * self.n) 
-            mask = ~np.isnan(flat_inds)
-            flat_inds = flat_inds[mask].astype(int)
 
-            priorities = priorities.reshape(-1)[mask]            
+            priorities = priorities.reshape(-1)
+            mask = ~np.isnan(flat_inds) & ~np.isnan(priorities)
+            flat_inds = flat_inds[mask].astype(int)
+            priorities = priorities[mask]        
             self.priorities[flat_inds] = priorities      
         else:
             flat_inds = abs_flat_inds - base_ind_pri

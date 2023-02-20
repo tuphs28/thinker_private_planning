@@ -27,6 +27,7 @@ class ActorNet(nn.Module):
         self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 2 for planning rewards)
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
+        self.actor_see_double_encode = flags.actor_see_double_encode # Whether the actor see the model encoded state or the raw env state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
@@ -68,8 +69,10 @@ class ActorNet(nn.Module):
                 if not self.actor_see_encode:
                     self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
                         down_scale_c=down_scale_c, concat_action=False)
+                in_channels=256//down_scale_c
+                if self.actor_see_double_encode: in_channels=in_channels*2 
                 self.gym_frame_conv = torch.nn.Sequential(
-                    nn.Conv2d(in_channels=256//down_scale_c, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
+                    nn.Conv2d(in_channels=in_channels, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
                     nn.ReLU(), 
                     nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
                     nn.ReLU())
@@ -418,12 +421,14 @@ class ModelNetBase(nn.Module):
             self.reward_tran = self.output_rvpi.reward_tran
 
         self.supervise = flags.model_supervise
-        if self.supervise:
-            flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*(256//DOWNSCALE_C)
-            self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512), nn.BatchNorm1d(512), nn.ReLU(),
-                                           nn.Linear(512, 512), nn.BatchNorm1d(512), nn.ReLU(),
-                                           nn.Linear(512, 1024), nn.BatchNorm1d(1024))
-            self.P_2 = torch.nn.Sequential(nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512, 1024))
+        self.model_supervise_type = flags.model_supervise_type
+        if self.supervise:                        
+            if self.model_supervise_type == 0:
+                flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*(256//DOWNSCALE_C)            
+                self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512), nn.BatchNorm1d(512), nn.ReLU(),
+                                            nn.Linear(512, 512), nn.BatchNorm1d(512), nn.ReLU(),
+                                            nn.Linear(512, 1024), nn.BatchNorm1d(1024))
+                self.P_2 = torch.nn.Sequential(nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512, 1024))
             self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
 
     def supervise_loss(self, encodeds, x, actions, is_weights, one_hot=False):
@@ -437,17 +442,25 @@ class ModelNetBase(nn.Module):
             loss(tensor): scalar self-supervised loss
         """
         k, bsz, c, h, w = encodeds.shape
+
         encodeds = torch.flatten(encodeds, 0, 1)        
         encodeds = torch.flatten(encodeds, 1)
-        src = self.P_2(self.P_1(encodeds))
+        if self.model_supervise_type == 0:
+            src = self.P_2(self.P_1(encodeds))
+        elif self.model_supervise_type == 1:
+            src = encodeds
+        
         with torch.no_grad():
             x = torch.flatten(x, 0, 1)
             actions = torch.flatten(actions, 0, 1)   
             tgt_encodes = self.encoded(x, actions, one_hot)
             tgt_encodes = torch.flatten(tgt_encodes, 1)
-            tgt = self.P_1(tgt_encodes)
+            if self.model_supervise_type == 0:
+                tgt = self.P_1(tgt_encodes)
+            elif self.model_supervise_type == 1:
+                tgt = tgt_encodes
         
-        loss = -self.cos(src, tgt)
+        loss = -self.cos(src, tgt.detach())
         loss = torch.sum(loss.reshape(k, bsz), dim=0)
         loss = loss * is_weights
         return torch.sum(loss)
