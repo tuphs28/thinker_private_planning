@@ -153,7 +153,9 @@ class ModelLearner():
             optimize_params = self.optimizer.param_groups[0]['params']
             if self.flags.float16: scaler.unscale_(self.optimizer)
             if self.flags.model_grad_norm_clipping > 0:
-                torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
+                total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
+            else:
+                total_norm = util.compute_grad_norm(optimize_params)     
             
             if self.flags.float16:
                 scaler.step(self.optimizer)
@@ -168,14 +170,15 @@ class ModelLearner():
             # print statistics
             if timer() - start_time > 5:
                 sps = (self.step - start_step) / (timer() - start_time)                
-                print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f)" % (
+                print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f) total_norm %.2f" % (
                                 n, 
                                 self.real_step, 
                                 self.step, 
                                 self.step_per_transition(), 
                                 sps, 
                                 np.mean(all_returns) if all_returns is not None else 0.,
-                                np.std(all_returns) if all_returns is not None else 0.)
+                                np.std(all_returns) if all_returns is not None else 0.,
+                                total_norm.item())
                 print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss", "sup_loss"]
                 for k in print_stats: 
                     if losses[k] is not None:
@@ -188,7 +191,8 @@ class ModelLearner():
                 stats = {"step": self.step,
                          "real_step": self.real_step,
                          "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
-                         "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None}
+                         "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
+                         "model_total_norm": total_norm.item()}
                 for k in print_stats: 
                     stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
 

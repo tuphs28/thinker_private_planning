@@ -18,7 +18,28 @@ if __name__ == "__main__":
     ray.init()
     st_time = time.time()
     flags = util.parse()
-    
+
+    num_gpus_available = torch.cuda.device_count()
+    logger.info("Detected %d GPU" % num_gpus_available)    
+    if num_gpus_available == 1:
+        flags.num_actors = 1
+        flags.num_p_actors = 32
+        flags.gpu_learn_actor = 0.5
+        flags.gpu_learn_model = 0.25
+        flags.gpu_self_play = 0.25
+    elif num_gpus_available == 2:
+        flags.num_actors = 2
+        flags.num_p_actors = 32
+        flags.gpu_learn_actor = 1
+        flags.gpu_learn_model = 0.5
+        flags.gpu_self_play = 0.25
+    elif num_gpus_available == 3:
+        flags.num_actors = 2
+        flags.num_p_actors = 32
+        flags.gpu_learn_actor = 1
+        flags.gpu_learn_model = 1
+        flags.gpu_self_play = 0.5                
+
     actor_buffer = ActorBuffer.remote(batch_size=flags.batch_size, num_p_actors=flags.num_p_actors)
     model_buffer = ModelBuffer.remote(flags) if flags.train_model else None
     param_buffer = GeneralBuffer.remote()        

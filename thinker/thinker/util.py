@@ -5,6 +5,7 @@ import argparse
 import subprocess
 import os 
 import logging
+import numpy as np
 import torch
 
 def parse(args=None):
@@ -221,6 +222,39 @@ def construct_tuple(x, **kwargs):
 def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
 
+def decode_model_out(model_out, num_actions, reward_tran):
+    idx1 = num_actions*5+5
+    idx2 = num_actions*10+7
+    d = dec if reward_tran else lambda x: x
+    return {
+        "root_action": model_out[0,:,:num_actions],
+        "root_r": d(model_out[0,:,[num_actions]]),
+        "root_v": d(model_out[0,:,[num_actions+1]]),
+        "root_logits": model_out[0,:,num_actions+2:2*num_actions+2],
+        "root_qs_mean": d(model_out[0,:,2*num_actions+2:3*num_actions+2]),
+        "root_qs_max": d(model_out[0,:,3*num_actions+2:4*num_actions+2]),
+        "root_ns": model_out[0,:,4*num_actions+2:5*num_actions+2],
+        "root_trail_r": d(model_out[0,:,[5*num_actions+2]]),
+        "root_trail_q": d(model_out[0,:,[5*num_actions+3]]),
+        "root_max_v": d(model_out[0,:,[5*num_actions+4]]),
+        "cur_action": model_out[0,:,idx1:idx1+num_actions],
+        "cur_r": d(model_out[0,:,[idx1+num_actions]]),
+        "cur_v": d(model_out[0,:,[idx1+num_actions+1]]),
+        "cur_logits": model_out[0,:,idx1+num_actions+2:idx1+2*num_actions+2],
+        "cur_qs_mean": d(model_out[0,:,idx1+2*num_actions+2:idx1+3*num_actions+2]),
+        "cur_qs_max": d(model_out[0,:,idx1+3*num_actions+2:idx1+4*num_actions+2]),
+        "cur_ns": model_out[0,:,idx1+4*num_actions+2:idx1+5*num_actions+2],
+        "reset": model_out[0,:,idx2],
+        "time": model_out[0,:,idx2+1:-1],
+        "derec": model_out[0,:,[-1]],
+    }
+
+def enc(x):
+    return np.sign(x)*(np.sqrt(np.abs(x)+1)-1)+(0.001)*x    
+
+def dec(x):
+    return np.sign(x)*(np.square((np.sqrt(1+4*0.001*(torch.abs(x)+1+0.001))-1)/(2*0.001)) - 1) 
+
 def optimizer_to(optim, device):
     for param in optim.state.values():
         # Not sure there are any global tensors in the state dict
@@ -313,3 +347,12 @@ class Wandb():
             name=exp_name,
         )
         self.wandb.config.update(flags, allow_val_change=True)
+
+def compute_grad_norm(parameters, norm_type=2.0):
+    grads = [p.grad for p in parameters if p.grad is not None]
+    norm_type = float(norm_type)
+    if len(grads) == 0:
+        return torch.tensor(0.)
+    device = grads[0].device
+    total_norm = torch.norm(torch.stack([torch.norm(g.detach(), norm_type).to(device) for g in grads]), norm_type)
+    return total_norm
