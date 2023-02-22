@@ -106,6 +106,7 @@ class ActorNet(nn.Module):
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
+        self.model_type_nn = flags.model_type_nn
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -144,7 +145,10 @@ class ActorNet(nn.Module):
                 if not self.actor_see_encode:
                     self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
                         down_scale_c=down_scale_c, concat_action=False)
-                in_channels=256//down_scale_c
+                if self.model_type_nn == 2 and self.actor_see_encode:
+                    in_channels=64
+                else:
+                    in_channels=256//down_scale_c
                 if self.actor_see_double_encode: in_channels=in_channels*2 
                 self.gym_frame_conv = torch.nn.Sequential(
                     nn.Conv2d(in_channels=in_channels, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
@@ -419,7 +423,7 @@ class DynamicModel(nn.Module):
             res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(15)] + [
                     ResBlock(inplanes=inplanes, outplanes=inplanes*num_actions)])                    
         elif type_nn == 2:
-            self.conv1 = nn.Conv2d(in_channels=inplanes+num_actions, out_channels=inplanes, kernel_size=3, stride=2, padding=1) 
+            self.conv1 =  conv3x3(inplanes+num_actions, inplanes)
             self.bn1 = nn.BatchNorm2d(inplanes)
             res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(1)])
 
