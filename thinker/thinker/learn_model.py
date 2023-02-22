@@ -335,9 +335,9 @@ class ModelLearner():
                    "sup_loss": sup_loss }
 
         # compute priorities
-        if not self.flags.model_batch_mode:
+        if not self.flags.model_batch_mode:            
             priorities = torch.absolute(vs - target_vs)
-            if not self.flags.perfect_model:    
+            if self.flags.priorities_type == 1 and not self.flags.perfect_model:    
                 # when he model is imperfect, we only reset the priority of the first time step
                 priorities[0] = torch.mean(priorities, dim=0)
                 priorities[1:] = torch.nan                 

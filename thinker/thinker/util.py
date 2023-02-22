@@ -79,6 +79,8 @@ def parse(args=None):
                         help="Alpha used to compute the priority from model buffer; 0. for no priority replay.")
     parser.add_argument("--priority_beta", default=0.4, type=float,
                         help="Initial beta used to compute the priority from model buffer.")
+    parser.add_argument("--priority_type", default=1, type=int,
+                        help="Type 0: update priority for all time step; Type 1: update priority for the first time step.")                        
     parser.add_argument("--model_buffer_n", default=200000, type=int, 
                         help="Maximum number of transition in model buffer.") 
     parser.add_argument("--model_warm_up_n", default=400000, type=int, 
