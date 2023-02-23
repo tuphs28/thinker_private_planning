@@ -145,8 +145,8 @@ class ActorNet(nn.Module):
                 if not self.actor_see_encode:
                     self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
                         down_scale_c=down_scale_c, concat_action=False)
-                if self.model_type_nn == 2 and self.actor_see_encode:
-                    in_channels=64
+                if self.model_type_nn in [2, 3] and self.actor_see_encode:
+                    in_channels=64 if self.model_type_nn == 2 else 128
                 else:
                     in_channels=256//down_scale_c
                 if self.actor_see_double_encode: in_channels=in_channels*2 
@@ -326,7 +326,7 @@ class FrameEncoder(nn.Module):
         self.down_scale_c=down_scale_c
         if type_nn in [0, 1]:
             self.concat_action=concat_action
-        elif type_nn == 2:
+        elif type_nn in [2, 3]:
             self.concat_action=False        
 
         if self.concat_action:
@@ -353,26 +353,27 @@ class FrameEncoder(nn.Module):
             self.res3 = torch.nn.Sequential(*res)
             self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
 
-        elif type_nn == 2:
+        elif type_nn in [2, 3]:
             # efficient zero
-            out_channels = 64
+            num_block = 1 if type_nn == 2 else 2
+            out_channels = 64 if type_nn == 2 else 128
             self.conv1 = nn.Conv2d(in_channels, out_channels // 2, kernel_size=3, stride=2, padding=1, bias=False)
             self.bn1 = nn.BatchNorm2d(out_channels // 2)
             self.resblocks1 = nn.ModuleList(
-                [ResBlock(out_channels // 2, out_channels // 2) for _ in range(1)]
+                [ResBlock(out_channels // 2, out_channels // 2) for _ in range(num_block)]
             )
             self.conv2 = nn.Conv2d(out_channels // 2, out_channels, kernel_size=3, stride=2, padding=1, bias=False,)
             self.downsample_block = ResBlock(out_channels // 2, out_channels, stride=2, downsample=self.conv2)
             self.resblocks2 = nn.ModuleList(
-                [ResBlock(out_channels, out_channels) for _ in range(1)]
+                [ResBlock(out_channels, out_channels) for _ in range(num_block)]
             )
             self.pooling1 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
             self.resblocks3 = nn.ModuleList(
-                [ResBlock(out_channels, out_channels) for _ in range(1)]
+                [ResBlock(out_channels, out_channels) for _ in range(num_block)]
             )
             self.pooling2 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)   
             self.resblocks4 = nn.ModuleList(
-                [ResBlock(out_channels, out_channels) for _ in range(1)]
+                [ResBlock(out_channels, out_channels) for _ in range(num_block)]
             )
     
     def forward(self, x, actions):      
@@ -394,7 +395,7 @@ class FrameEncoder(nn.Module):
             x = self.avg1(x)
             x = self.res3(x)
             x = self.avg2(x)
-        elif self.type_nn == 2:
+        elif self.type_nn in [2, 3]:
             x = self.conv1(x)
             x = self.bn1(x)
             x = nn.functional.relu(x)
@@ -422,10 +423,11 @@ class DynamicModel(nn.Module):
         elif type_nn == 1:                      
             res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(15)] + [
                     ResBlock(inplanes=inplanes, outplanes=inplanes*num_actions)])                    
-        elif type_nn == 2:
+        elif type_nn in [2, 3]:
+            num_block = 1 if type_nn == 2 else 4
             self.conv1 =  conv3x3(inplanes+num_actions, inplanes)
             self.bn1 = nn.BatchNorm2d(inplanes)
-            res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(1)])
+            res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(num_block)])
 
         self.res = torch.nn.Sequential(*res)
         self.num_actions = num_actions
@@ -442,7 +444,7 @@ class DynamicModel(nn.Module):
             res_out = self.res(x).view(bsz, self.num_actions, c, h, w)        
             actions = actions.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             out = torch.sum(actions * res_out, dim=1)
-        elif self.type_nn == 2:  
+        elif self.type_nn in [2,3]:  
             actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
             out = torch.concat([x, actions], dim=1)
             out = self.conv1(out)
@@ -481,9 +483,10 @@ class Output_rvpi(nn.Module):
                 torch.nn.init.constant_(self.fc_r.bias, 0.)
                 torch.nn.init.constant_(self.fc_logits.weight, 0.)
                 torch.nn.init.constant_(self.fc_logits.bias, 0.)
-        elif self.type_nn == 2:
+        elif self.type_nn in [2, 3]:
+            num_block = 1 if self.type_nn  == 2 else 2
             self.resblocks = nn.ModuleList(
-                [ResBlock(c, c) for _ in range(1)]
+                [ResBlock(c, c) for _ in range(num_block)]
             )
             self.conv1x1_v = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)
             self.conv1x1_r = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)
@@ -506,7 +509,7 @@ class Output_rvpi(nn.Module):
             x = F.relu(self.conv2(x))
             x = torch.flatten(x, start_dim=1)
             x_v, x_r, x_logits = x, x, x
-        elif self.type_nn == 2:
+        elif self.type_nn in [2, 3]:
             for block in self.resblocks: x = block(x)
             x_v = torch.flatten(nn.functional.relu(self.bn_v(self.conv1x1_v(x))), start_dim=1)
             x_r = torch.flatten(nn.functional.relu(self.bn_r(self.conv1x1_r(x))), start_dim=1)
@@ -540,8 +543,10 @@ class ModelNetBase(nn.Module):
         self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
         if self.type_nn in [0, 1]:
             inplanes = 256 // DOWNSCALE_C
-        else:
+        elif self.type_nn == 2:
             inplanes = 64
+        elif self.type_nn == 3:
+            inplanes = 128
         self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=inplanes, type_nn=self.type_nn)
         self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(inplanes, 
                       obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform, 
