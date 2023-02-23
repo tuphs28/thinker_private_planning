@@ -119,7 +119,7 @@ class ActorLearner():
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
-        self.wlogger = util.Wandb(flags, subname='_actor') if flags.use_wandb else None
+        self.wlogger = util.Wandb(flags, subname='') if flags.use_wandb else None
         self.time = False
 
         env = Environment(flags, model_wrap=True, env_n=1)
