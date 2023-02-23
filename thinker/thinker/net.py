@@ -553,7 +553,7 @@ class ModelNetBase(nn.Module):
         self.model_supervise_type = flags.model_supervise_type
         if self.supervise:                        
             if self.model_supervise_type == 0:
-                flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*(256//DOWNSCALE_C)            
+                flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*inplanes          
                 self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512), nn.BatchNorm1d(512), nn.ReLU(),
                                             nn.Linear(512, 512), nn.BatchNorm1d(512), nn.ReLU(),
                                             nn.Linear(512, 1024), nn.BatchNorm1d(1024))
