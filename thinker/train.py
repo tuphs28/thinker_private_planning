@@ -38,7 +38,13 @@ if __name__ == "__main__":
         flags.num_p_actors = 32
         flags.gpu_learn_actor = 1
         flags.gpu_learn_model = 1
-        flags.gpu_self_play = 0.5                
+        flags.gpu_self_play = 0.5        
+    elif num_gpus_available == 4:
+        flags.num_actors = 2
+        flags.num_p_actors = 32
+        flags.gpu_learn_actor = 1
+        flags.gpu_learn_model = 1
+        flags.gpu_self_play = 1
 
     actor_buffer = ActorBuffer.remote(batch_size=flags.batch_size, num_p_actors=flags.num_p_actors)
     model_buffer = ModelBuffer.remote(flags) if flags.train_model else None
