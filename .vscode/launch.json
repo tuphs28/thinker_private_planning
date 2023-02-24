@@ -17,7 +17,7 @@
             "program": "train.py",
             //"args": "--env 'BreakoutNoFrameskip-v4' --model_batch_size 1 --disable_perfect_model --model_supervise --model_type_nn 0 --im_cost_anneal --actor_see_p 1 --actor_see_encode --reward_transform --discounting 0.99 --unroll_length 50 --model_unroll_length 50 --num_actors 1 --num_p_actors 32 --gpu_self_play 0.25 --gpu_learn_actor 0.5 --gpu_learn_model 0.25 --model_warm_up_n 1000"                        
             //"args": "--load_checkpoint /media/sc/datadisk/data/thinker/logs/breakout/deep_model_200"                        
-            "args": "--env 'BreakoutNoFrameskip-v4' --model_batch_size 4 --disable_perfect_model --model_supervise --model_supervise_type 0 --model_type_nn 3 --im_cost_anneal --actor_see_p 1 --actor_see_encode --reward_transform --discounting 0.99 --unroll_length 50 --model_unroll_length 50 --num_actors 1 --num_p_actors 32 --gpu_self_play 0.25 --gpu_learn_actor 0.5 --gpu_learn_model 0.25 --model_warm_up_n 1000"                        
+            "args": "--env 'BreakoutNoFrameskip-v4' --actor_warm_up_n 10000 --model_batch_size 4 --disable_perfect_model --model_supervise --model_supervise_type 0 --model_type_nn 3 --im_cost_anneal --actor_see_p 1 --actor_see_encode --reward_transform --discounting 0.99 --unroll_length 50 --model_unroll_length 50 --num_actors 1 --num_p_actors 32 --gpu_self_play 0.25 --gpu_learn_actor 0.5 --gpu_learn_model 0.25 --model_warm_up_n 1000"                        
         }
     ]
 }

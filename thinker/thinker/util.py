@@ -61,6 +61,8 @@ def parse(args=None):
                         help="Actor learner batch size.")
     parser.add_argument("--unroll_length", default=200, type=int, 
                         help="The unroll length (time dimension).")
+    parser.add_argument("--actor_warm_up_n", default=0, type=int, 
+                        help="Number of transition accumulated before actor start learning.")                                                                        
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
@@ -84,7 +86,7 @@ def parse(args=None):
     parser.add_argument("--model_buffer_n", default=200000, type=int, 
                         help="Maximum number of transition in model buffer.") 
     parser.add_argument("--model_warm_up_n", default=400000, type=int, 
-                        help="Number of transition accumulated before model start learning.")                        
+                        help="Number of transition accumulated before model start learning.")     
     parser.add_argument("--test_policy_type", default=1, type=int, 
                         help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
     parser.add_argument("--model_min_step_per_transition", default=14, type=int, 
@@ -177,6 +179,8 @@ def parse(args=None):
                         help="Whether to carry over the tree.")   
     parser.add_argument("--depth_discounting", default=1.,
                         type=float, help="Discounting factor for planning reward based on search depth.")                           
+    parser.add_argument("--max_depth", default=-1,
+                        type=int, help="Maximal search death.")                                                   
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,

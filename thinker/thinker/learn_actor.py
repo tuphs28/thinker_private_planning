@@ -207,6 +207,12 @@ class ActorLearner():
             initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
             if self.time: self.timing.time("convert data")
 
+            if self.real_step < self.flags.actor_warm_up_n:
+                stats = self.compute_stat(train_actor_out, None, None)   
+                self._logger.info("Preloading: %d/%d" % (self.real_step, self.flags.actor_warm_up_n))
+                time.sleep(5)
+                continue
+
             # compute losses
             if self.flags.float16:
                 with torch.autocast(device_type='cuda', dtype=torch.float16):                
@@ -215,6 +221,7 @@ class ActorLearner():
                 losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
             total_loss = losses["total_loss"]
             if self.time: self.timing.time("compute loss")    
+
             # gradient descent on loss
             self.optimizer.zero_grad()
             if self.flags.float16:
@@ -431,7 +438,8 @@ class ActorLearner():
                     "total_norm": total_norm
                     }
 
-        for k, v in losses.items(): stats[k] = v.item()  
+        if losses is not None: 
+            for k, v in losses.items(): stats[k] = v.item()  
         return stats
 
     def save_checkpoint(self):
