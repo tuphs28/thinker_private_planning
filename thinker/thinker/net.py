@@ -107,6 +107,7 @@ class ActorNet(nn.Module):
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
         self.model_type_nn = flags.model_type_nn
+        self.model_size_nn = flags.model_size_nn
         
         self.conv_out_hw = 1   
         self.d_model = self.conv_out
@@ -319,10 +320,11 @@ class ActorNet(nn.Module):
 DOWNSCALE_C = 2
    
 class FrameEncoder(nn.Module):    
-    def __init__(self, num_actions, frame_channels=3, type_nn=0, down_scale_c=2, concat_action=True):
+    def __init__(self, num_actions, frame_channels=3, type_nn=0, size_nn=1, down_scale_c=2, concat_action=True):
         super(FrameEncoder, self).__init__() 
         self.num_actions = num_actions
         self.type_nn = type_nn
+        self.size_nn = size_nn
         self.down_scale_c=down_scale_c
         if type_nn in [0, 1]:
             self.concat_action=concat_action
@@ -355,7 +357,7 @@ class FrameEncoder(nn.Module):
 
         elif type_nn in [2, 3]:
             # efficient zero
-            num_block = 1 if type_nn == 2 else 2
+            num_block = 1 if type_nn == 2 else (2 * self.size_nn)
             out_channels = 64 if type_nn == 2 else 128
             self.conv1 = nn.Conv2d(in_channels, out_channels // 2, kernel_size=3, stride=2, padding=1, bias=False)
             self.bn1 = nn.BatchNorm2d(out_channels // 2)
@@ -413,9 +415,10 @@ class FrameEncoder(nn.Module):
         return x
     
 class DynamicModel(nn.Module):
-    def __init__(self, num_actions, inplanes=256, type_nn=0):        
+    def __init__(self, num_actions, inplanes=256, type_nn=0, size_nn=1):        
         super(DynamicModel, self).__init__()
         self.type_nn = type_nn
+        self.size_nn = size_nn
         if type_nn == 0:
             res = nn.ModuleList([ResBlock(inplanes=inplanes+num_actions, outplanes=inplanes)] + [
                     ResBlock(inplanes=inplanes) for i in range(4)]) 
@@ -424,7 +427,7 @@ class DynamicModel(nn.Module):
             res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(15)] + [
                     ResBlock(inplanes=inplanes, outplanes=inplanes*num_actions)])                    
         elif type_nn in [2, 3]:
-            num_block = 1 if type_nn == 2 else 4
+            num_block = 1 if type_nn == 2 else (4 * self.size_nn)
             self.conv1 =  conv3x3(inplanes+num_actions, inplanes)
             self.bn1 = nn.BatchNorm2d(inplanes)
             res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(num_block)])
@@ -455,11 +458,12 @@ class DynamicModel(nn.Module):
         return out
     
 class Output_rvpi(nn.Module):   
-    def __init__(self, num_actions, input_shape, reward_transform, zero_init, type_nn):         
+    def __init__(self, num_actions, input_shape, reward_transform, zero_init, type_nn, size_nn):         
         super(Output_rvpi, self).__init__()        
         c, h, w = input_shape
         self.input_shape = input_shape
         self.type_nn = type_nn
+        self.size_nn = size_nn
         self.reward_transform = reward_transform
 
         if self.type_nn in [0, 1]:
@@ -484,24 +488,25 @@ class Output_rvpi(nn.Module):
                 torch.nn.init.constant_(self.fc_logits.weight, 0.)
                 torch.nn.init.constant_(self.fc_logits.bias, 0.)
         elif self.type_nn in [2, 3]:
-            num_block = 1 if self.type_nn  == 2 else 2
+            num_block = 1 if self.type_nn  == 2 else 2 * self.size_nn
+            out_channels = 16 if self.type_nn  == 2 else 16 * self.size_nn
             self.resblocks = nn.ModuleList(
                 [ResBlock(c, c) for _ in range(num_block)]
             )
-            self.conv1x1_v = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)
-            self.conv1x1_r = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)
-            self.conv1x1_logits = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)
-            self.bn_v = nn.BatchNorm2d(16)
-            self.bn_r = nn.BatchNorm2d(16)
-            self.bn_logits = nn.BatchNorm2d(16)
+            self.conv1x1_v = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
+            self.conv1x1_r = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
+            self.conv1x1_logits = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
+            self.bn_v = nn.BatchNorm2d(out_channels)
+            self.bn_r = nn.BatchNorm2d(out_channels)
+            self.bn_logits = nn.BatchNorm2d(out_channels)
             if self.reward_transform:
                 self.reward_tran = RewardTran(vec=True)
                 out_n = self.reward_tran.encoded_n
             else:
                 out_n = 1            
-            self.fc_v = mlp(h * w * 16, [32], out_n, init_zero=zero_init)
-            self.fc_r = mlp(h * w * 16, [32], out_n, init_zero=zero_init)
-            self.fc_logits = mlp(h * w * 16, [32], num_actions, init_zero=zero_init)                                  
+            self.fc_v = mlp(h * w * out_channels, [32], out_n, init_zero=zero_init)
+            self.fc_r = mlp(h * w * out_channels, [32], out_n, init_zero=zero_init)
+            self.fc_logits = mlp(h * w * out_channels, [32], num_actions, init_zero=zero_init)                                  
         
     def forward(self, x):    
         if self.type_nn in [0, 1]:
@@ -539,18 +544,19 @@ class ModelNetBase(nn.Module):
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
         self.reward_transform = flags.reward_transform
-        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large
-        self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn)
+        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
+        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
+        self.frameEncoder = FrameEncoder(num_actions=num_actions, frame_channels=obs_shape[0], type_nn=self.type_nn, size_nn=self.size_nn)
         if self.type_nn in [0, 1]:
             inplanes = 256 // DOWNSCALE_C
         elif self.type_nn == 2:
             inplanes = 64
         elif self.type_nn == 3:
-            inplanes = 128
-        self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=inplanes, type_nn=self.type_nn)
+            inplanes = 128 
+        self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=inplanes, type_nn=self.type_nn, size_nn=self.size_nn)
         self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(inplanes, 
                       obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform, 
-                      zero_init=flags.model_zero_init, type_nn=self.type_nn)
+                      zero_init=flags.model_zero_init, type_nn=self.type_nn, size_nn=self.size_nn)
         if self.reward_transform:
             self.reward_tran = self.output_rvpi.reward_tran
 

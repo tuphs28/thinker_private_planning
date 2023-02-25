@@ -120,6 +120,8 @@ def parse(args=None):
     # Model architecure settings
     parser.add_argument("--model_type_nn", default=0,
                         type=float, help="Model type.")          
+    parser.add_argument("--model_size_nn", default=1,
+                        type=int, help="Model size multipler.")       
     parser.add_argument("--model_zero_init", action="store_true",
                         help="Zero initialisation for the model output")            
                                                            

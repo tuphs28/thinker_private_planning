@@ -98,6 +98,10 @@ class SelfPlayWorker():
             self.model_n = 0
             self.model_t = 0
 
+        if self.rank == 0:
+            self._logger.info("Actor network size: %d" % sum(p.numel() for p in self.actor_net.parameters()))
+            self._logger.info("Model network size: %d" % sum(p.numel() for p in self.model_net.parameters()))
+
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
         Args:

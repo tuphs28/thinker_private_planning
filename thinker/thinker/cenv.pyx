@@ -545,7 +545,7 @@ cdef class cVecFullModelWrapper():
         if self.time: self.timings.time("compute_root_cur_nodes")
 
         # reset if serach depth exceeds max depth
-        if self.max_allow_depth > -1:
+        if self.max_allow_depth > 0:
             for i in range(self.env_n):
                 if self.rollout_depth[i] >= self.max_allow_depth:
                     action[i, 2] = 1
@@ -682,6 +682,7 @@ cdef class cVecModelWrapper():
     cdef int rec_t
     cdef float discounting
     cdef float depth_discounting
+    cdef int max_allow_depth
     cdef bool perfect_model
     cdef bool tree_carry
     cdef int reward_type
@@ -731,6 +732,7 @@ cdef class cVecModelWrapper():
         self.rec_t = flags.rec_t               
         self.discounting = flags.discounting
         self.depth_discounting = flags.depth_discounting
+        self.max_allow_depth = flags.max_depth
         self.perfect_model = flags.perfect_model
         self.tree_carry = flags.tree_carry
         self.num_actions = env.action_space[0].n
@@ -1002,6 +1004,13 @@ cdef class cVecModelWrapper():
         self.root_nodes = root_nodes_
         self.cur_nodes = cur_nodes_
         if self.time: self.timings.time("compute_root_cur_nodes")
+
+        # reset if serach depth exceeds max depth
+        if self.max_allow_depth > 0:
+            for i in range(self.env_n):
+                if self.rollout_depth[i] >= self.max_allow_depth:
+                    action[i, 2] = 1
+                    reset[i] = 1
 
         # compute model_out        
         model_out = self.compute_model_out(action, self.status)
