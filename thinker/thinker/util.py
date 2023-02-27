@@ -172,7 +172,9 @@ def parse(args=None):
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
-                        help="Reward type")       
+                        help="Reward type")     
+    parser.add_argument("--im_gate", action="store_true", 
+                        help="Whether to gate im reward by real advantage.")            
     parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",
                         help="Whether to use perfect model.")          
     parser.add_argument("--rec_t", default=20, type=int, 

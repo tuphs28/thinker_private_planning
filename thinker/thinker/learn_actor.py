@@ -345,6 +345,9 @@ class ActorLearner():
         # compute advantage w.r.t imagainary rewards
 
         if self.flags.reward_type == 1:
+            if self.flags.im_gate:
+                 rewards[:, :, 1] = torch.maximum(rewards[:, :, 1], vtrace_returns.pg_advantages)
+
             discounts = (~(train_actor_out.cur_t == 0)).float() * self.im_discounting        
             behavior_logits_ls = [train_actor_out.im_policy_logits, train_actor_out.reset_policy_logits]
             target_logits_ls = [new_actor_out.im_policy_logits, new_actor_out.reset_policy_logits]
