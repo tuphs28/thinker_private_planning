@@ -249,7 +249,7 @@ class ModelLearner():
                 x=gym_env_out_.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
                 actions=action.reshape(1, -1),  one_hot=False)
             vs = vs.reshape(k, b)
-            v_enc_logits = v_enc_logits.reshape(k, b, -1)
+            if v_enc_logits is not None: v_enc_logits = v_enc_logits.reshape(k, b, -1)
             logits = logits.reshape(k, b, -1)
         else:        
             action = train_model_out.action[:train_len+1]
