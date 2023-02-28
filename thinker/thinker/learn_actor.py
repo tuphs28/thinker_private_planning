@@ -152,6 +152,9 @@ class ActorLearner():
             checkpoint = torch.load(self.flags.preload_actor, map_location=torch.device('cpu'))
             self.actor_net.set_weights(checkpoint["actor_net_state_dict"])  
             self._logger.info("Loadded actor network from %s" % self.flags.preload_actor)
+            if "actor_net_optimizer_state_dict" in checkpoint:
+                self.optimizer.load_state_dict(checkpoint["actor_net_optimizer_state_dict"])  
+                self._logger.info("Loadded actor network's optimizer from %s" % self.flags.preload_actor)
 
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_actor.tar"))

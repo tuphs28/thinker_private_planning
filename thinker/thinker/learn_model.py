@@ -58,6 +58,9 @@ class ModelLearner():
             checkpoint = torch.load(self.flags.preload_model, map_location=torch.device('cpu'))
             self.model_net.set_weights(checkpoint["model_state_dict" if "model_state_dict" in checkpoint else "model_net_state_dict"])  
             self._logger.info("Loadded model network from %s" % self.flags.preload_model)
+            if "model_net_optimizer_state_dict" in checkpoint:
+                self.optimizer.load_state_dict(checkpoint["model_net_optimizer_state_dict"])  
+                self._logger.info("Loadded model network's optimizer from %s" % self.flags.preload_model)            
 
         if flags.load_checkpoint:
             self.load_checkpoint(os.path.join(flags.load_checkpoint, "ckp_model.tar"))
