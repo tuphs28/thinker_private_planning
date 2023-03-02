@@ -107,8 +107,8 @@ class ModelLearner():
                 self.flags.model_k_step_return if not self.flags.model_batch_mode else 
                 self.flags.model_unroll_length)
 
-        max_diff = self.flags.model_unroll_length * self.flags.batch_size
-        # in case the actor learner stops before model learner
+        max_diff = 200000
+        # stop training the model at the last 200k real steps
 
         n = 0
         if self.flags.float16:
