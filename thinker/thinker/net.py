@@ -85,6 +85,115 @@ class ResBlock(nn.Module):
         out = self.relu(out)
         return out
 
+
+class ActorEncoder(nn.Module):
+    def __init__(self, input_shape, num_actions, frame_encode, double_encode, compress_size, drc, rnn_grad_scale):
+        super(ActorEncoder, self).__init__()
+        self.input_shape = input_shape
+        self.frame_encode = frame_encode
+        self.double_encode = double_encode
+        self.compress = compress_size > 0
+        self.compress_size = compress_size        
+        self.drc = drc
+        self.rnn_grad_scale = rnn_grad_scale
+        
+        encoder_out_channels = 32
+
+        if frame_encode:
+            down_scale_c = 4
+            self.frame_encoder = FrameEncoder(frame_channels=input_shape[0], num_actions=num_actions, 
+                    down_scale_c=down_scale_c, concat_action=False)
+            in_channels = 256 // down_scale_c
+            in_hw = input_shape[1] // 16 
+        else:
+            in_channels = input_shape[0]
+            in_hw = input_shape[1]
+
+        # input shape here is (in_channels, in_hw, in_hw)
+        if not drc:
+            self.conv = torch.nn.Sequential(
+                nn.Conv2d(in_channels=in_channels, out_channels=encoder_out_channels*2, kernel_size=3, padding='same'), 
+                nn.ReLU(), 
+                nn.Conv2d(in_channels=encoder_out_channels*2, out_channels=encoder_out_channels, kernel_size=3, padding='same'), 
+                nn.ReLU())            
+        else:
+            self.conv = torch.nn.Sequential(
+                nn.Conv2d(in_channels=in_channels, out_channels=encoder_out_channels, kernel_size=3, padding='same'), 
+                nn.ReLU())
+            self.drc_core = ConvAttnLSTM(h=in_hw, w=in_hw,
+                                        input_dim=encoder_out_channels, hidden_dim=encoder_out_channels, kernel_size=3, num_layers=3, 
+                                        num_heads=8, mem_n=0, attn=False, attn_mask_b=0.,
+                                        grad_scale=self.rnn_grad_scale)                   
+        
+        if self.compress:            
+            self.fc = torch.nn.Sequential(nn.Linear(encoder_out_channels * in_hw * in_hw, compress_size), nn.ReLU())
+
+        self.out_size = (encoder_out_channels * in_hw * in_hw) if not self.compress else compress_size
+        if self.double_encode: self.out_size *= 2
+
+        self.initial_state(1)
+
+    def initial_state(self, batch_size, device=None):
+        if self.drc:
+            state = self.drc_core.init_state(batch_size, device=device)
+            self.core_state_sep_ind = len(state)
+            if self.double_encode:
+                state = state + self.actor_encoder.drc_core.init_state(batch_size, device=device)
+        else:
+            state = None
+        return state
+    
+    def forward(self, x, mask=None, core_state=(), done=None):
+        """encode the state or model's encoding inside the actor network
+        args:
+            x: input tensor of shape (T, B, C, H, W); can be state or model's encoding,
+            mask: mask tensor of shape (T, B); boolean
+            core_state: core_state for drc module (only when drc is enabled)
+            done: done tensor of shape (T, B); boolean
+        return:
+            output: output tensor of shape (T*B, self.out_size)"""
+        if not self.double_encode:
+            return self.forward_single(x, mask, core_state, done)
+        else:
+            _, _, C, *_ = x.shape
+            enc_1, core_state_1 = self.forward_single(x[:, :, :C//2], mask, core_state[:self.core_state_sep_ind] if self.drc else None, done)
+            enc_2, core_state_2 = self.forward_single(x[:, :, C//2:], mask, core_state[self.core_state_sep_ind:] if self.drc else None, done)
+            enc = torch.concat([enc_1, enc_2], dim=1)
+            if self.drc:
+                core_state = core_state_1 + core_state_2
+            else:
+                core_state = None
+            return enc, core_state    
+        
+    def forward_single(self, x, mask=None, core_state=(), done=None):
+        T, B, *_ = x.shape
+        x = x.float()
+        if mask is not None:
+            x = x * mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        x = torch.flatten(x, 0, 1)  
+
+        if self.frame_encode:
+            x = self.frame_encoder(x, actions=None)
+        x = self.conv(x)
+        if self.drc:
+            core_input = x.view(*((T, B) + x.shape[1:]))
+            core_output_list = []
+            notdone = ~(done.bool())
+            for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):
+                for t in range(3):                
+                    if t > 0: nd = torch.ones(B, device=x.device, dtype=torch.bool)
+                    nd = nd.view(-1)      
+                    output, core_state = self.drc_core(input, core_state, nd, nd) # output shape: 1, B, core_output_size    
+                core_output_list.append(output)              
+            core_output = torch.cat(core_output_list)   
+            x = torch.flatten(core_output, start_dim=0, end_dim=1)
+        else:
+            core_state = None
+        x = torch.flatten(x, start_dim=1)
+        if self.compress: 
+            x = self.fc(x)
+        return x, core_state
+
 class ActorNet(nn.Module):    
     def __init__(self, obs_shape, gym_obs_shape, num_actions, flags):
 
@@ -98,91 +207,64 @@ class ActorNet(nn.Module):
         self.tran_layer_n = flags.tran_layer_n       # number of layers
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
         self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
-        self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim        
+        self.tran_dim = flags.tran_dim               # size of transformer / LSTM embedding dim        
         self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 2 for planning rewards)
         self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
         self.actor_see_double_encode = flags.actor_see_double_encode # Whether the actor see the model encoded state or the raw env state
+        self.actor_encode_concat_type = flags.actor_encode_concat_type # Type of concating the encoding to model's output
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
         self.model_type_nn = flags.model_type_nn
-        self.model_size_nn = flags.model_size_nn
-        
-        self.conv_out_hw = 1   
-        self.d_model = self.conv_out
-        
-        self.conv1 = nn.Conv2d(in_channels=self.obs_shape[0], out_channels=self.conv_out//2, kernel_size=1, stride=1)        
-        self.conv2 = nn.Conv2d(in_channels=self.conv_out//2, out_channels=self.conv_out, kernel_size=1, stride=1)        
-        self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
-        self.env_input_size = self.conv_out
-        d_in = self.env_input_size + self.d_model 
+        self.model_size_nn = flags.model_size_nn     
 
-        self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
-                                input_dim=d_in-self.d_model, hidden_dim=self.d_model,
+        # encoder for state or encoding output        
+        if self.actor_see_p > 0:
+            if not self.actor_see_encode:
+                input_shape = gym_obs_shape
+            else:
+                in_channels= 128 if self.model_type_nn in [0, 1, 3] else 64
+                input_shape = (in_channels, gym_obs_shape[1]//16, gym_obs_shape[2]//16)
+            compress_size = 128 if self.actor_encode_concat_type == 1 else 256
+            self.actor_encoder = ActorEncoder(input_shape=input_shape, num_actions=num_actions,
+                frame_encode=not self.actor_see_encode, double_encode=self.actor_see_double_encode, 
+                compress_size=compress_size, drc=self.actor_drc, rnn_grad_scale=self.rnn_grad_scale)
+
+        in_channels = self.obs_shape[0]
+        if self.actor_see_p > 0 and self.actor_encode_concat_type == 1:
+            in_channels = in_channels + self.actor_encoder.out_size
+
+        self.initial_enc = torch.nn.Sequential(nn.Linear(in_channels, self.tran_dim), 
+                                              nn.ReLU(),
+                                              nn.Linear(self.tran_dim, self.tran_dim), 
+                                              nn.ReLU())
+
+        self.core = ConvAttnLSTM(h=1, w=1,
+                                input_dim=self.tran_dim, hidden_dim=self.tran_dim,
                                 kernel_size=1, num_layers=self.tran_layer_n,
                                 num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
                                 attn_mask_b=self.attn_mask_b, grad_scale=self.rnn_grad_scale)                         
         
-        rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
-        self.fc = nn.Linear(rnn_out_size, 256)        
-
-        last_out_size = 256
-        if self.actor_see_p > 0: 
-            down_scale_c = 2 if self.actor_see_encode else 4
-            last_out_size = last_out_size + (256 if self.actor_drc else (
-                256//down_scale_c//4)*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16))
+        last_out_size = 256           
+        self.fc = torch.nn.Sequential(nn.Linear(self.tran_dim, last_out_size),  nn.ReLU())              
+        if self.actor_see_p > 0 and self.actor_encode_concat_type == 0:             
+            last_out_size = last_out_size + self.actor_encoder.out_size
+            
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
         self.policy = nn.Linear(last_out_size, self.num_actions)       
+        self.reset = nn.Linear(last_out_size, 2)    
         self.baseline = nn.Linear(last_out_size, self.num_rewards)        
 
         if self.reward_transform:
             self.reward_tran = RewardTran(vec=False)
-
-        self.reset = nn.Linear(last_out_size, 2)        
-        
-        if self.actor_see_p > 0:
-            if not self.actor_drc:
-                if not self.actor_see_encode:
-                    self.gym_frame_encoder = FrameEncoder(frame_channels=gym_obs_shape[0], num_actions=self.num_actions, 
-                        down_scale_c=down_scale_c, concat_action=False)
-                if self.model_type_nn in [2, 3] and self.actor_see_encode:
-                    in_channels=64 if self.model_type_nn == 2 else 128
-                else:
-                    in_channels=256//down_scale_c
-                if self.actor_see_double_encode: in_channels=in_channels*2 
-                self.gym_frame_conv = torch.nn.Sequential(
-                    nn.Conv2d(in_channels=in_channels, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
-                    nn.ReLU(), 
-                    nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
-                    nn.ReLU())
-            else:
-                assert not self.actor_see_encode, "actor_drc is not compatiable with actor_see_encode"
-                self.gym_frame_conv = torch.nn.Sequential(
-                    nn.Conv2d(in_channels=gym_obs_shape[0], out_channels=32, kernel_size=8, stride=4),
-                    nn.ReLU(),
-                    nn.Conv2d(32, 32, kernel_size=4, stride=2),
-                    nn.ReLU())
-                compute_hw_out = lambda hw_in, kernel_size, stride: (hw_in - (kernel_size-1) - 1) // stride + 1
-                hw_out_1 = compute_hw_out(gym_obs_shape[1], 8, 4)
-                hw_out_2 = compute_hw_out(hw_out_1, 4, 2)
-                self.conv_out_hw_2 = hw_out_2
-                self.drc_core = ConvAttnLSTM(h=hw_out_2, w=hw_out_2,
-                        input_dim=32, hidden_dim=32, kernel_size=3, num_layers=3, 
-                        num_heads=8, mem_n=0, attn=False, attn_mask_b=0.,
-                        grad_scale=self.rnn_grad_scale)
-                self.drc_fc = nn.Linear(hw_out_2*hw_out_2*32, 256)     
-
-        #print("actor size: ", sum(p.numel() for p in self.parameters()))
-        #for k, v in self.named_parameters(): print(k, v.numel())   
-
         self.initial_state(1) # just for setting core_state_sep_ind
 
     def initial_state(self, batch_size, device=None):
         state = self.core.init_state(batch_size, device=device) 
         self.core_state_sep_ind = len(state)
         if self.actor_see_p > 0 and self.actor_drc:
-            state = state + self.drc_core.init_state(batch_size, device=device)
+            state = state + self.actor_encoder.init_state(batch_size, device=device)
         return state
 
     def forward(self, obs, core_state=()):
@@ -205,80 +287,61 @@ class ActorNet(nn.Module):
                 reg_loss (tensor): regularization loss (T x B)
         """
                 
-        x = obs.model_out.unsqueeze(-1).unsqueeze(-1)
+        x = obs.model_out
         done = obs.done
         
-        if len(x.shape) == 4: x = x.unsqueeze(0)
+        if len(x.shape) == 2: x = x.unsqueeze(0)
         if len(done.shape) == 1: done = done.unsqueeze(0)  
             
         T, B, *_ = x.shape
         x = torch.flatten(x, 0, 1)  # Merge time and batch.  
-        env_input = self.frame_conv(x)                
-        core_input = env_input.view(T, B, -1, self.conv_out_hw, self.conv_out_hw)
+
+        if self.actor_see_p > 0:
+            encoder_out, core_state_ = self.actor_encoder(obs.model_encodes if self.actor_see_encode else obs.gym_env_out, 
+                                             mask=obs.see_mask if self.actor_see_p < 1 else None, 
+                                             core_state = core_state[self.core_state_sep_ind:],
+                                             done=done)
+            
+        if self.actor_encode_concat_type == 1 and self.actor_see_p > 0:
+            x = torch.concat([x, encoder_out], dim=1)
+        x = self.initial_enc(x)                
+
+        core_input = x.view(*((T, B) + x.shape[1:]))
         core_output_list = []
-        core_state_1 = core_state[:self.core_state_sep_ind]
+        core_state = core_state[:self.core_state_sep_ind]
         notdone = ~(done.bool())
+        core_input = core_input.unsqueeze(-1).unsqueeze(-1)
         for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):  
-            # Input shape: B, self.conv_out + self.num_actions + 1, H, W
             for t in range(self.tran_t):                
-                if t > 0: nd = torch.ones(B).to(x.device).bool()                    
+                if t > 0: nd = torch.ones(B, device=x.device, dtype=torch.bool)                 
                 nd = nd.view(-1)      
-                output, core_state_1 = self.core(input, core_state_1, nd, nd) # output shape: 1, B, core_output_size 
-                
-            last_input = input   
+                output, core_state = self.core(input, core_state, nd, nd) # output shape: 1, B, core_output_size                 
             core_output_list.append(output)                             
         core_output = torch.cat(core_output_list)              
         core_output = torch.flatten(core_output, 0, 1)        
         core_output = torch.flatten(core_output, start_dim=1)
-        core_output = F.relu(self.fc(core_output))
+        x = self.fc(core_output)
 
-        if self.actor_see_p > 0:
-            if not self.actor_see_encode:
-                gym_x = obs.gym_env_out.float()
-                gym_x = gym_x * obs.see_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-                gym_x = torch.flatten(gym_x, 0, 1)   
-            if not self.actor_drc:
-                if not self.actor_see_encode:
-                    conv_out = self.gym_frame_encoder(gym_x, actions = None)   
-                else:
-                    conv_out = torch.flatten(obs.model_encodes, 0, 1)   
-                conv_out = self.gym_frame_conv(conv_out)
-                conv_out = torch.flatten(conv_out, start_dim=1)
-                core_output = torch.concat([core_output, conv_out], dim=1)
-            else:       
-                gym_x = gym_x / 255.0
-                conv_out = self.gym_frame_conv(gym_x)
-                core_input = conv_out.view(T, B, -1, self.conv_out_hw_2, self.conv_out_hw_2)
-                core_output_list = []
-                core_state_2 = core_state[self.core_state_sep_ind:]
-                for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):
-                    for t in range(3):                
-                        if t > 0: nd = torch.ones(B).to(x.device).bool()                    
-                        nd = nd.view(-1)      
-                        output, core_state_2 = self.drc_core(input, core_state_2, nd, nd) # output shape: 1, B, core_output_size                         
-                    core_output_list.append(output)              
-
-                core_output_2 = torch.cat(core_output_list)   
-                core_output_2 = torch.flatten(core_output_2, 0, 1)        
-                core_output_2 = torch.flatten(core_output_2, start_dim=1)
-                core_output_2 = F.relu(self.drc_fc(core_output_2))
-                core_output = torch.concat([core_output, core_output_2], dim=1)
+        if self.actor_encode_concat_type == 0 and self.actor_see_p > 0:
+            x = torch.concat([x, encoder_out], dim=1)
    
-        policy_logits = self.policy(core_output)
-        im_policy_logits = self.im_policy(core_output)
-        reset_policy_logits = self.reset(core_output)
+        policy_logits = self.policy(x)
+        im_policy_logits = self.im_policy(x)
+        reset_policy_logits = self.reset(x)
 
         action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
         reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
         
         if not self.reward_transform:
-            baseline = self.baseline(core_output)
+            baseline = self.baseline(x)
         else:            
-            baseline_enc_s = self.baseline(core_output)
+            baseline_enc_s = self.baseline(x)
             baseline = self.reward_tran.decode(baseline_enc_s)
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
+                    1e-3 * torch.sum(im_policy_logits**2, dim=-1) / 2 + 
+                    1e-3 * torch.sum(reset_policy_logits**2, dim=-1) / 2 + 
                     1e-5 * torch.sum(core_output**2, dim=-1) / 2)
         reg_loss = reg_loss.view(T, B)
         
@@ -304,9 +367,7 @@ class ActorNet(nn.Module):
                              reg_loss=reg_loss,)       
         
         if self.actor_see_p > 0 and self.actor_drc:
-            core_state = core_state_1 + core_state_2
-        else:
-            core_state = core_state_1
+            core_state = core_state + core_state_
         return actor_out, core_state
 
     def get_weights(self):

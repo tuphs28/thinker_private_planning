@@ -116,6 +116,8 @@ def parse(args=None, override=True):
                         help="Whether to see double encoded state (need to be eanabled with actor_see_encode)")                                          
     parser.add_argument("--actor_drc", action="store_true",
                         help="Whether to use drc in encoding state")    
+    parser.add_argument("--actor_encode_concat_type",  default=0,
+                        type=int, help="Type of concating the encoding to model's output.")          
 
     # Model architecure settings
     parser.add_argument("--model_type_nn", default=0,
