@@ -99,7 +99,8 @@ class SelfPlayWorker():
             self.model_t = 0
 
         if self.rank == 0:
-            self._logger.info("Actor network size: %d" % sum(p.numel() for p in self.actor_net.parameters()))
+            if self.policy==PO_NET:
+                self._logger.info("Actor network size: %d" % sum(p.numel() for p in self.actor_net.parameters()))
             self._logger.info("Model network size: %d" % sum(p.numel() for p in self.model_net.parameters()))
 
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
@@ -356,8 +357,8 @@ class SelfPlayWorker():
             n = self.policy_params["n"]
             temp = self.policy_params["temp"]
         else:
-            n, temp = 1, 0.5 # default policy param
-        policy_logits, action, _ = self.nstep(env, model_net, discounting, n, temp)
+            n, temp = 2, 0.01 # default policy param
+        policy_logits, action, _ = self.nstep(env.env, model_net, discounting, n, temp)
         policy_logits = policy_logits.unsqueeze(0)
         action = action.unsqueeze(0)
         actor_out = util.construct_tuple(ActorOut, policy_logits=policy_logits, action=action)               
@@ -365,20 +366,23 @@ class SelfPlayWorker():
 
     def nstep(self, env, model_net, discounting, n, temp):  
         with torch.no_grad():
-            num_actions = env.num_actions
-            q_ret = torch.zeros(1, num_actions)    
-            state = env.clone_state()
+            num_actions =env.action_space[0].n  
+            q_ret = torch.zeros(self.num_p_actors, num_actions)    
+            state = env.clone_state([n for n in range(self.num_p_actors)])
             for act in range(num_actions):
-                env_out = env.step(torch.full(size=(1, 1, 1), fill_value=act, dtype=torch.long))
+                action = torch.full(size=(self.num_p_actors,), fill_value=act, dtype=torch.long, device=self.device)
+                obs, reward, done, info = env.step(action.cpu().numpy())
+                obs = torch.tensor(obs, device=self.device)
+                reward = torch.tensor(reward)
+                done = torch.tensor(done)
                 if n > 1:
                     _, _, sub_q_ret = self.nstep(env, model_net, discounting, n-1, temp)
-                    ret = env_out.reward + discounting * torch.max(sub_q_ret, dim=1)[0] * (~env_out.done).float()
+                    ret = reward + discounting * torch.max(sub_q_ret, dim=1)[0] * (~done).float()
                 else:
-                    _, _, baseline, _, _, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)
-                    ret = env_out.reward + discounting * baseline * (~env_out.done).float()
+                    _, _, baseline, _, _, _ = model_net(obs, action.unsqueeze(0).unsqueeze(-1), one_hot=False)
+                    ret = reward + discounting * baseline[0].cpu() * (~done).float()
                 q_ret[:, act] = ret
-                env.restore_state(state)
-
+                env.restore_state(state, [n for n in range(self.num_p_actors)])
             policy_logits = q_ret / temp
             prob = F.softmax(policy_logits, dim=1)
             action = torch.multinomial(prob, num_samples=1)

@@ -117,7 +117,7 @@ class PostVecModelWrapper(gym.Wrapper):
         assert action.shape == (1, self.env_n, action_shape), (
             "shape of action should be (1, B, %d)" % action_shape)
 
-        if not self.model_wrap: action = action[:, :, 0]
+        if not self.model_wrap: action = action[:, :, 0].cpu()
         out, reward, done, info = self.env.step(action[0], model_net)     
         if self.model_wrap:
             real_done = info["real_done"]
