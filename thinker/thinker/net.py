@@ -264,7 +264,7 @@ class ActorNetBase(nn.Module):
         state = self.core.init_state(batch_size, device=device) 
         self.core_state_sep_ind = len(state)
         if self.actor_see_p > 0 and self.actor_drc:
-            state = state + self.actor_encoder.init_state(batch_size, device=device)
+            state = state + self.actor_encoder.initial_state(batch_size, device=device)
         return state
 
     def forward(self, obs, core_state=()):
