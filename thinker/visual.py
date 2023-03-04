@@ -310,7 +310,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
             plt.close()
 
             log_str = "step:%d; return %.4f(%.4f) done %s real_done %s" % (
-                step, env_out.episode_return[0,0,0], env_out.episode_return[0,0,1],
+                step, env_out.episode_return[0,0,0], env_out.episode_return[0,0,1] if flags.reward_type == 1 else 0,
                 "True" if env_out.done[0,0] else "False", 
                 "True" if env_out.real_done[0,0] else "False",)
             print(log_str)
