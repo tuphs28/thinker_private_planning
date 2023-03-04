@@ -8,7 +8,7 @@ import logging
 import numpy as np
 import torch
 
-def parse(args=None):
+def parse(args=None, override=True):
     parser = argparse.ArgumentParser(description="Thinker v1")
     
     parser.add_argument("--xpid", default=None,
@@ -208,7 +208,7 @@ def parse(args=None):
         path = getattr(flags, f)
         if path: setattr(flags, f, os.path.expanduser(path))
             
-    if flags.load_checkpoint:
+    if flags.load_checkpoint and override:
         check_point_path = os.path.join(flags.load_checkpoint, "ckp_actor.tar")
         train_checkpoint = torch.load(check_point_path, torch.device("cpu"))
         flags_ = train_checkpoint["flags"]
