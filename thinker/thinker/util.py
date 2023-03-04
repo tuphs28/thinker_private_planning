@@ -29,6 +29,8 @@ def parse(args=None, override=True):
                         help="Whether to transform the reward as MuZero.")                       
 
     # Resources settings.
+    parser.add_argument("--disable_auto_res", action="store_true",
+                        help="Whether to allocate resources automatically")    
     parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
                         help="Number of gpu per actor learning.") 
     parser.add_argument("--gpu_learn_model", default=0.5, type=float,
@@ -96,6 +98,8 @@ def parse(args=None, override=True):
                             
   
     # Actor architecture settings
+    parser.add_argument("--actor_net_ver", default=0, type=int, 
+                        help="Version of actor net.")    
     parser.add_argument("--tran_dim", default=96, type=int, 
                         help="Size of transformer hidden dim.")
     parser.add_argument("--tran_mem_n", default=40, type=int, 

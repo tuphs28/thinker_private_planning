@@ -194,10 +194,10 @@ class ActorEncoder(nn.Module):
             x = self.fc(x)
         return x, core_state
 
-class ActorNet(nn.Module):    
+class ActorNetBase(nn.Module):    
     def __init__(self, obs_shape, gym_obs_shape, num_actions, flags):
 
-        super(ActorNet, self).__init__()
+        super(ActorNetBase, self).__init__()
         self.obs_shape = obs_shape
         self.gym_obs_shape = gym_obs_shape
         self.num_actions = num_actions  
@@ -376,10 +376,16 @@ class ActorNet(nn.Module):
     def set_weights(self, weights):
         self.load_state_dict(weights)
 
+def ActorNet(obs_shape, gym_obs_shape, num_actions, flags):
+    if flags.actor_net_ver == 1:
+        return ActorNetBase(obs_shape, gym_obs_shape, num_actions, flags)
+    elif flags.actor_net_ver == 0:
+        from thinker.legacy import LegacyActorNet
+        return LegacyActorNet(obs_shape, gym_obs_shape, num_actions, flags)
+
 # Model Network
 
-DOWNSCALE_C = 2
-   
+DOWNSCALE_C = 2   
 class FrameEncoder(nn.Module):    
     def __init__(self, num_actions, frame_channels=3, type_nn=0, size_nn=1, down_scale_c=2, concat_action=True):
         super(FrameEncoder, self).__init__() 
@@ -735,132 +741,7 @@ class ModelNetBase(nn.Module):
         if device != torch.device("cpu"):
             weights = {k: v.to(device) for k, v in weights.items()}
         self.load_state_dict(weights)        
-
-
-class ModelNetRNN(nn.Module):    
-    def __init__(self, obs_shape, num_actions, flags):        
-        super(ModelNetRNN, self).__init__()      
-        self.rnn = True
-        self.flags = flags
-        self.obs_shape = obs_shape
-        self.num_actions = num_actions 
-
-        self.tran_t = 1
-        self.tran_mem_n = 0
-        self.tran_layer_n = 1
-        self.tran_lstm_no_attn = True
-        self.attn_mask_b = 0                
-        
-        self.conv_out = 32        
-        self.conv_out_hw = 8
-        #self.conv1 = nn.Conv2d(in_channels=self.obs_shape[0], out_channels=self.conv_out, kernel_size=8, stride=4)        
-        #self.conv2 = nn.Conv2d(in_channels=self.conv_out, out_channels=self.conv_out, kernel_size=4, stride=2)                
-        #self.frame_conv = torch.nn.Sequential(self.conv1, nn.ReLU(), self.conv2, nn.ReLU())
-
-        self.conv_out = 32
-        self.conv_out_hw = 5        
-        self.frameEncoder = FrameEncoder(num_actions=self.num_actions)
-        self.frame_conv = torch.nn.Sequential(
-                nn.Conv2d(in_channels=128, out_channels=128//2, kernel_size=3, padding='same'), 
-                nn.ReLU(), 
-                nn.Conv2d(in_channels=128//2, out_channels=128//4, kernel_size=3, padding='same'), 
-                nn.ReLU())
-
-        self.debug = flags.model_rnn_debug
-        self.disable_mem = flags.model_disable_mem
-
-        if self.debug:
-            self.policy = nn.Linear(5*5*32, self.num_actions)        
-            self.baseline = nn.Linear(5*5*32, 1)      
-            self.r = nn.Linear(5*5*32, 1)    
-        else:
-            self.env_input_size = self.conv_out 
-            self.d_model = self.conv_out 
-            d_in = self.env_input_size + self.d_model 
-
-            self.core = ConvAttnLSTM(h=self.conv_out_hw, w=self.conv_out_hw,
-                                    input_dim=d_in-self.d_model, hidden_dim=self.d_model,
-                                    kernel_size=3, num_layers=self.tran_layer_n,
-                                    num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
-                                    attn_mask_b=self.attn_mask_b, grad_scale=1)                         
-            
-            rnn_out_size = self.conv_out_hw * self.conv_out_hw * self.d_model                
-            self.fc = nn.Linear(rnn_out_size, 256)        
-                
-            self.policy = nn.Linear(256, self.num_actions)        
-            self.baseline = nn.Linear(256, 1)        
-            
-
-    def init_state(self, bsz, device=None):
-        if self.debug:
-            return (torch.zeros(1, bsz, 1, 1, 1),)
-        return self.core.init_state(bsz, device)
-        
-    def forward(self, x, actions, done, state, one_hot=False):
-        """
-        Args:
-            x(tensor): frames (uint8 or float) with shape (T, B, C, H, W), in the form of s_t
-            actions(tensor): action (int64) with shape (T, B) or (T, B, num_actions)
-            done(tensor): done (bool) with shape (T, B)
-            state(tuple): tuple of inital state
-            one_hot(bool): whether the actions are in one-hot encoding
-        Return:
-            vs(tensor): values (float) with shape (T, B)
-            logits(tensor): policy logits (float) with shape (T, B, num_actions)
-            state(tuple): tuple of state tensor after the last step
-        """
-        assert done.dtype == torch.bool, "done has to be boolean"       
-
-        T, B = x.shape[0], x.shape[1]
-
-        if one_hot: 
-            assert actions.shape == (T, B, self.num_actions), ("invalid action shape:", actions.shape)
-        else:
-            assert actions.shape == (T, B,),  ("invalid action shape:", actions.shape)
-        assert len(x.shape) == 5
-
-        #x = x.float() / 255.0  
-        x = torch.flatten(x, 0, 1)        
-        if not one_hot:
-            actions = F.one_hot(actions.view(T * B), self.num_actions).float()
-        else:
-            actions = actions.view(T * B, -1)
-        
-        #conv_out = self.frame_conv(x)   
-        conv_out = self.frameEncoder(x, actions)   
-        conv_out = self.frame_conv(conv_out) 
-
-        if self.debug:
-            core_output = torch.flatten(conv_out, start_dim=1)
-            vs = self.baseline(core_output).view(T, B)
-            logits = self.policy(core_output).view(T, B, self.num_actions)
-            state = self.init_state(B, x.device)
-            return vs, logits, state
-
-        core_input = conv_out
-        core_input = core_input.view(T, B, self.env_input_size, self.conv_out_hw, self.conv_out_hw)
-        core_output_list = []
-
-        if self.disable_mem:
-            state = self.init_state(bsz=B, device=x.device)
-        notdone = (~done).float()
-        for input, nd in zip(core_input.unbind(), notdone.unbind()):
-            for t in range(self.tran_t):                          
-                nd_ = nd if t == 0 else torch.ones_like(nd)
-                output, state = self.core(input, state, nd_, nd_) # output shape: 1, B, core_output_size 
-            core_output_list.append(output)    
-        core_output = torch.flatten(torch.cat(core_output_list), 0, 1)
-        core_output = F.relu(self.fc(torch.flatten(core_output, start_dim=1)))                   
-        vs = self.baseline(core_output).view(T, B)
-        logits = self.policy(core_output).view(T, B, self.num_actions)
-        return vs, logits, state
-
-    def get_weights(self):
-        return {k: v.cpu() for k, v in self.state_dict().items()}
-
-    def set_weights(self, weights):
-        self.load_state_dict(weights)                
-
+         
 def ModelNet(obs_shape, num_actions, flags):
     return ModelNetBase(obs_shape, num_actions, flags)
     
