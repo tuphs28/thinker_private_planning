@@ -49,6 +49,7 @@ def PreWrap(env, name):
         env = TransposeWrap(env)
     else:        
         env = StateWrapper(env)
+        env = TimeLimit_(env, max_episode_steps=108000)
         env = NoopResetEnv(env, noop_max=30)
         env = MaxAndSkipEnv(env, skip=4)
         env = wrap_deepmind(env,
