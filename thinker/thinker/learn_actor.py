@@ -182,7 +182,7 @@ class ActorLearner():
         start_step = self.step
         start_time = timer()
         ckp_start_time = int(time.strftime("%M")) // 10
-        queue_n = 0
+        ckp_save_n, queue_n, eval_n = 0, 0, 0
         n = 0
         if self.flags.float16:
             scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
@@ -207,14 +207,15 @@ class ActorLearner():
 
             train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
                 else None for n in range(len(data[0][0]))))
+            actor_id = train_actor_out.id
             initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
             if self.time: self.timing.time("convert data")
 
             if self.real_step < self.flags.actor_warm_up_n:
-                stats = self.compute_stat(train_actor_out, None, None)   
+                stats = self.compute_stat(train_actor_out, None, None, actor_id)   
                 self._logger.info("Preloading: %d/%d" % (self.real_step, self.flags.actor_warm_up_n))
                 time.sleep(5)
-                continue
+                continue                           
 
             # compute losses
             if self.flags.float16:
@@ -254,12 +255,18 @@ class ActorLearner():
             if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
             
             # statistic output
-            stats = self.compute_stat(train_actor_out, losses, total_norm)       
+            stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)       
 
             # write to log file
             self.plogger.log(stats)
             if self.flags.use_wandb:
                 self.wlogger.wandb.log(stats, step=stats['real_step'])
+                # upload files
+                if self.flags.use_wandb and self.flags.wandb_ckp_freq > 0 and self.real_step > ckp_save_n:
+                    self._logger.info("Uploading files to wandb...")
+                    ckp_save_n = self.real_step + self.flags.wandb_ckp_freq
+                    self.wlogger.wandb.save(os.path.join(self.flags.savedir,  self.flags.xpid, "*"),
+                                            os.path.join(self.flags.savedir,  self.flags.xpid))            
 
             # print statistics
             if timer() - start_time > 5:
@@ -273,9 +280,9 @@ class ActorLearner():
                 for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
                 self._logger.info(print_str)
                 start_step = self.step
-                start_time = timer()    
-                if self.time: print(self.timing.summary()) 
+                start_time = timer()                    
                 queue_n = 0
+                if self.time: print(self.timing.summary()) 
             
             if int(time.strftime("%M")) // 10 != ckp_start_time:
                 self.save_checkpoint()
@@ -410,10 +417,17 @@ class ActorLearner():
                   }
         return losses, train_actor_out
 
-    def compute_stat(self, train_actor_out: TrainActorOut, losses: dict, total_norm: float):
+    def compute_stat(self, train_actor_out: TrainActorOut, losses: dict, total_norm: float, actor_id: torch.Tensor):
         """Update step, real_step and tot_eps; return training stat for printing"""
-        episode_returns = train_actor_out.episode_return[train_actor_out.real_done][:, 0]  
-        episode_returns = tuple(episode_returns.detach().cpu().numpy())
+        if torch.any(train_actor_out.real_done):
+            episode_returns = train_actor_out.episode_return[train_actor_out.real_done][:, 0]  
+            episode_returns = tuple(episode_returns.detach().cpu().numpy())
+            episode_lens = train_actor_out.episode_step[train_actor_out.real_done]  
+            episode_lens = tuple(episode_lens.detach().cpu().numpy())            
+            done_ids = actor_id.broadcast_to(train_actor_out.real_done.shape)[train_actor_out.real_done]
+            done_ids = tuple(done_ids.detach().cpu().numpy())
+        else:
+            episode_returns, episode_lens, done_ids = (), (), ()
         self.last_returns.extend(episode_returns)
         rmean_episode_return = np.average(self.last_returns) if len(self.last_returns) > 0 else 0.
 
@@ -437,7 +451,9 @@ class ActorLearner():
                     "tot_eps": self.tot_eps,
                     "rmean_episode_return": rmean_episode_return,
                     "rmean_im_episode_return": rmean_im_episode_return, 
-                    "episode_returns": episode_returns,                     
+                    "episode_returns": episode_returns,  
+                    "episode_lens": episode_lens,
+                    "done_ids": done_ids,
                     "cur_real_step": cur_real_step,
                     "mean_plan_step": mean_plan_step,
                     "max_rollout_depth": max_rollout_depth,

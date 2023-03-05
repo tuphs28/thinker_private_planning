@@ -39,7 +39,7 @@ def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
         env = PostVecModelWrapper(env, env_n, num_actions, flags, model_wrap=False, device=device)
     return env
 
-def PreWrap(env, name):
+def PreWrap(env, name, test=False):
     if name == "cSokoban-v0":
         env = TransposeWrap(env)
     elif name == "Sokoban-v0":

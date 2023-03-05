@@ -19,6 +19,8 @@ def parse(args=None, override=True):
     # Environment settings
     parser.add_argument("--use_wandb", action="store_true",
                         help="Whether to use wandb logging")
+    parser.add_argument("--wandb_ckp_freq", type=int, default="500000",
+                        help="Checkpoint frequency of wandb.")    
     parser.add_argument("--env", type=str, default="cSokoban-v0",
                         help="Gym environment.")
     parser.add_argument("--cwrapper", action="store_true",
@@ -84,7 +86,7 @@ def parse(args=None, override=True):
     parser.add_argument("--priority_beta", default=0.4, type=float,
                         help="Initial beta used to compute the priority from model buffer.")
     parser.add_argument("--priority_type", default=2, type=int,
-                        help="Type 0: update priority for all time step; Type 1: update priority for the first time step (mean of all error); Type 1: update priority for the first time step (first-step error)")                        
+                        help="Type 0: update priority for all time step; Type 1: update priority for the first time step (mean of all error); Type 2: update priority for the first time step (first-step error)")                        
     parser.add_argument("--model_buffer_n", default=200000, type=int, 
                         help="Maximum number of transition in model buffer.") 
     parser.add_argument("--model_warm_up_n", default=400000, type=int, 

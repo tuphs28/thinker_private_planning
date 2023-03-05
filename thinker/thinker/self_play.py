@@ -15,7 +15,7 @@ import thinker.util as util
 
 #_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'gym_env_out')
 _fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc_s"])
-TrainActorOut = namedtuple('TrainActorOut', _fields)
+TrainActorOut = namedtuple('TrainActorOut', _fields + ('id',))
 TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done', 'baseline'])
 
 PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
@@ -44,6 +44,7 @@ class SelfPlayWorker():
         self.num_p_actors = num_p_actors
         self.flags = flags
         self.timing = util.Timings()
+        self.actor_id = (torch.arange(self.num_p_actors) + self.rank * self.num_p_actors).unsqueeze(0)
 
         self.env = Environment(flags, model_wrap=policy==PO_NET, env_n=num_p_actors, device=self.device)
         seed = [1 + i + num_p_actors * rank for i in range(num_p_actors)]
@@ -261,24 +262,22 @@ class SelfPlayWorker():
     def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int):
         # write local 
         if t == 0:
-            fields = {}
+            fields = {"id": self.actor_id}
             for field in TrainActorOut._fields:
+                if field == "id": continue
                 out = getattr(env_out if field in EnvOut._fields else actor_out, field)
                 fields[field] = None
                 if out is None: continue
                 if self.flags.actor_see_p <= 0 and field in ["gym_env_out", "model_encodes"]: continue
-                if self.flags.actor_see_p > 0 and self.flags.actor_see_encode and field == "gym_env_out": continue
-                if out is not None and (self.flags.actor_see_p > 0 or field != "gym_env_out"):
-                    fields[field] = torch.empty(size=(self.flags.unroll_length+1, self.num_p_actors)+out.shape[2:], 
-                        dtype=out.dtype, device=self.device)
-                    # each is in the shape of (T x B xdim_1 x dim_2 ...)
-                else:
-                    fields[field] = None
+                if self.flags.actor_see_p > 0 and self.flags.actor_see_encode and field == "gym_env_out": continue                
+                fields[field] = torch.empty(size=(self.flags.unroll_length+1, self.num_p_actors)+out.shape[2:], 
+                    dtype=out.dtype, device=self.device)
+                # each is in the shape of (T x B xdim_1 x dim_2 ...)
             self.actor_local_buffer = TrainActorOut(**fields)
             
         for field in TrainActorOut._fields:
             v = getattr(self.actor_local_buffer, field)            
-            if v is not None:
+            if v is not None and field not in ["id"]:
                 v[t] = getattr(env_out if field in EnvOut._fields else actor_out, field)[0]
         
         if t == self.flags.unroll_length:

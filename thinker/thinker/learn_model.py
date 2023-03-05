@@ -90,7 +90,7 @@ class ModelLearner():
             policy_params=None, 
             rank=n+1, 
             num_p_actors=1,
-            flags=flags) for n in range(5)]
+            flags=flags) for n in range(10)]
 
     def learn_data(self):
         timer = timeit.default_timer
@@ -212,10 +212,11 @@ class ModelLearner():
                 self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
             # test the model policy returns
-            if self.step - start_step_test > 500000 * self.flags.rec_t:
+            if self.step - start_step_test > 250000 * self.flags.rec_t:
                 start_step_test = self.step
                 if r_tester is not None: 
-                    all_returns = ray.get(r_tester)[0]
+                    ray.get(r_tester)[0]
+                    all_returns = ray.get(self.test_buffer.get_data.remote("episode_returns"))
                     self.test_buffer.set_data.remote("episode_returns", [])
                     #self._logger.info("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                     #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
