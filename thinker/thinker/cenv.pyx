@@ -508,7 +508,7 @@ cdef class cVecFullModelWrapper():
                     state = pass_model_states,               
                     actions = torch.tensor(pass_model_action, dtype=long, device=self.device).unsqueeze(0), 
                     one_hot = False)  
-            rs_4 = (model_net_out_4.rs if not self.value_prefix else model_net_out_4.single_rs[-1]).float().cpu().numpy()
+            rs_4 = (model_net_out_4.rs if not self.value_prefix else model_net_out_4.single_rs)[-1].float().cpu().numpy()
             vs_4 = model_net_out_4.vs[-1].float().cpu().numpy()
             logits_4 = model_net_out_4.logits[-1].float().cpu().numpy()
 
