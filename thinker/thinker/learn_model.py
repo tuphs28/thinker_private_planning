@@ -330,7 +330,7 @@ class ModelLearner():
             logits, target_logits.detach(), is_weights)   
 
         if self.flags.model_supervise:
-            sup_loss = self.model_net.supervise_loss(encodeds=encodes[1:], x=gym_env_out[1:train_len+1], 
+            sup_loss = self.model_net.supervise_loss(encodes=encodes[1:], x=gym_env_out[1:train_len+1], 
                 actions=train_model_out.action[1:train_len+1], is_weights=is_weights, one_hot=False)
         else:
             sup_loss = None
