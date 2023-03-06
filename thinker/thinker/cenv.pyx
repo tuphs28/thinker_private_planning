@@ -4,6 +4,7 @@ import gym
 import torch
 #from thinker import util
 import thinker.util as util
+from thinker.net import ModelNetOut
 
 import cython
 from libcpp cimport bool
@@ -242,6 +243,7 @@ cdef class cVecFullModelWrapper():
     cdef bool tree_carry
     cdef int reward_type
     cdef bool reward_transform
+    cdef bool value_prefix
     cdef bool actor_see_encode
     cdef bool actor_see_double_encode    
     cdef int num_actions
@@ -293,6 +295,7 @@ cdef class cVecFullModelWrapper():
         self.num_actions = env.action_space[0].n
         self.reward_type = flags.reward_type
         self.reward_transform = flags.reward_transform
+        self.value_prefix = flags.value_prefix
         self.actor_see_encode = flags.actor_see_encode  
         self.actor_see_double_encode = flags.actor_see_double_encode
         self.env_n = env_n
@@ -338,17 +341,20 @@ cdef class cVecFullModelWrapper():
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
             pass_action = torch.zeros(self.env_n, dtype=torch.long)
-            _, _, vs, _, logits, model_encodes = model_net(obs_py, 
-                                                pass_action.unsqueeze(0).to(self.device), 
-                                                one_hot=False)  
-            vs = vs.cpu()
-            logits = logits.cpu()
+            model_net_out = model_net(obs_py, 
+                                      pass_action.unsqueeze(0).to(self.device), 
+                                      one_hot=False)  
+            vs = model_net_out.vs.cpu()
+            logits = model_net_out.logits.cpu()      
 
             # compute and update root node and current node
             for i in range(self.env_n):
                 root_node = node_new(pparent=NULL, action=pass_action[i].item(), logit=0., num_actions=self.num_actions, 
                     discounting=self.discounting, rec_t=self.rec_t, remember_path=True)                
-                encoded = {"gym_env_out": obs_py[i], "model_encodes": model_encodes[-1,i]}
+                encoded = {"gym_env_out": obs_py[i], 
+                           "model_encodes": model_net_out.encodes[-1,i],
+                           "model_states": tuple(ms[[i]] for ms in model_net_out.state
+                                ) if self.value_prefix else ()}         
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), t=self.total_step[i], done=False,
                     logits=logits[-1, i].numpy(), encoded=<PyObject*>encoded, override=False)
                 node_visit(pnode=root_node)
@@ -421,6 +427,8 @@ cdef class cVecFullModelWrapper():
         re_action, im_action, reset = action[:, 0], action[:, 1], action[:, 2]
 
         pass_model_encodes = []
+        if self.value_prefix:
+            pass_model_states = []
 
         for i in range(self.env_n):            
             # compute the mask of real / imagination step                             
@@ -436,6 +444,8 @@ cdef class cVecFullModelWrapper():
                 else:
                     encoded = <dict> self.cur_nodes[i][0].encoded
                     pass_model_encodes.append(encoded["model_encodes"].unsqueeze(0))
+                    if self.value_prefix:
+                        pass_model_states.append(encoded["model_states"])
                     pass_model_action.push_back(im_action[i])
                     self.status[i] = 4  
             else: # real step
@@ -476,23 +486,31 @@ cdef class cVecFullModelWrapper():
         if pass_inds_step.size() > 0:
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-                _, _, vs_, _, logits_, model_encodes_1 = model_net(obs_py, 
+                model_net_out_1 = model_net(obs_py, 
                         torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0), 
                         one_hot=False)  
-            vs_1 = vs_[-1].float().cpu().numpy()
-            logits_1 = logits_[-1].float().cpu().numpy()
+            vs_1 = model_net_out_1.vs[-1].float().cpu().numpy()
+            logits_1 = model_net_out_1.logits[-1].float().cpu().numpy()
                 
         if self.time: self.timings.time("misc_2")
         # use model for status 4 transition (imagination transition)
         if pass_model_action.size() > 0:
             with torch.no_grad():
                 pass_model_encodes = torch.concat(pass_model_encodes)
-                rs_, _, vs_, _, logits_, model_encodes_4 = model_net.forward_encoded(encoded=pass_model_encodes,                        
-                        actions = torch.tensor(pass_model_action, dtype=long, device=self.device).unsqueeze(0), 
-                        one_hot=False)  
-            rs_4 = rs_[-1].float().cpu().numpy()
-            vs_4 = vs_[-1].float().cpu().numpy()
-            logits_4 = logits_[-1].float().cpu().numpy()
+                if self.value_prefix:                    
+                    pass_model_states = tuple(torch.concat([ms[msd] for ms in pass_model_states], dim=0)
+                        for msd in range(len(pass_model_states[0])))
+                    # all batch index are in the first index 
+                else:
+                    pass_model_states = ()
+                model_net_out_4 = model_net.forward_encoded(
+                    encoded = pass_model_encodes,         
+                    state = pass_model_states,               
+                    actions = torch.tensor(pass_model_action, dtype=long, device=self.device).unsqueeze(0), 
+                    one_hot = False)  
+            rs_4 = (model_net_out_4.rs if not self.value_prefix else model_net_out_4.single_rs[-1]).float().cpu().numpy()
+            vs_4 = model_net_out_4.vs[-1].float().cpu().numpy()
+            logits_4 = model_net_out_4.logits[-1].float().cpu().numpy()
 
         # compute the current and root nodes
         j = 0 # counter for status 1 transition
@@ -503,17 +521,19 @@ cdef class cVecFullModelWrapper():
                 # real transition
                 new_root = (not self.tree_carry or 
                     not node_expanded(self.root_nodes[i][0].ppchildren[0][re_action[i]], -1) or done[j])
+                encoded = {"gym_env_out": obs_py[j], 
+                           "model_encodes": model_net_out_1.encodes[-1,j],
+                           "model_states": tuple(ms[[j]] for ms in model_net_out_1.state
+                                ) if self.value_prefix else ()}         
                 if new_root:
                     root_node = node_new(pparent=NULL, action=pass_action[j], logit=0., num_actions=self.num_actions, 
-                        discounting=self.discounting, rec_t=self.rec_t, remember_path=True)
-                    encoded = {"gym_env_out": obs_py[j], "model_encodes": model_encodes_1[-1,j]}
+                        discounting=self.discounting, rec_t=self.rec_t, remember_path=True)                    
                     node_expand(pnode=root_node, r=0., v=vs_1[j], t=self.total_step[i], done=False,
                         logits=logits_1[j], encoded=<PyObject*>encoded, override=False)
                     node_del(self.root_nodes[i], except_idx=-1)
                     node_visit(root_node)
                 else:
                     root_node = self.root_nodes[i][0].ppchildren[0][re_action[i]]
-                    encoded = {"gym_env_out": obs_py[j], "model_encodes": model_encodes_1[-1,j]}
                     node_expand(pnode=root_node, r=0., v=vs_1[j], t=self.total_step[i], done=False,
                         logits=logits_1[j], encoded=<PyObject*>encoded, override=True)                        
                     node_del(self.root_nodes[i], except_idx=re_action[i])
@@ -532,7 +552,10 @@ cdef class cVecFullModelWrapper():
             
             elif self.status[i] == 4:
                 # need expand
-                encoded = {"gym_env_out": None, "model_encodes": model_encodes_4[-1,l]}
+                encoded = {"gym_env_out": None, 
+                           "model_encodes": model_net_out_4.encodes[-1,l],
+                           "model_states": tuple(ms[[l]] for ms in model_net_out_4.state
+                                ) if self.value_prefix else ()}                           
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
                 node_expand(pnode=cur_node, r=rs_4[l], v=vs_4[l], t=self.total_step[i], done=False,
                         logits=logits_4[l], encoded=<PyObject*>encoded, override=True)
@@ -783,11 +806,12 @@ cdef class cVecModelWrapper():
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
             pass_action = torch.zeros(self.env_n, dtype=torch.long)
-            _, _, vs, _, logits, model_encodes = model_net(obs_py, 
-                                                pass_action.unsqueeze(0).to(self.device), 
-                                                one_hot=False)  
-            vs = vs.cpu()
-            logits = logits.cpu()
+            model_net_out = model_net(obs_py, 
+                                      pass_action.unsqueeze(0).to(self.device), 
+                                      one_hot=False)  
+            vs = model_net_out.vs.cpu()
+            logits = model_net_out.logits.cpu()
+            model_encodes = model_net_out.encodes
             env_state = self.env.clone_state(inds=np.arange(self.env_n))
 
             # compute and update root node and current node
@@ -927,11 +951,12 @@ cdef class cVecModelWrapper():
         if pass_inds_step.size() > 0:
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-                _, _, vs_, _, logits_, model_encodes = model_net(obs_py, 
+                model_net_out = model_net(obs_py, 
                         torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0), 
                         one_hot=False)  
-            vs = vs_[-1].float().cpu().numpy()
-            logits = logits_[-1].float().cpu().numpy()
+                model_encodes = model_net_out.encodes
+            vs = model_net_out.vs[-1].float().cpu().numpy()
+            logits = model_net_out.logits[-1].float().cpu().numpy()
             if self.time: self.timings.time("model")
             env_state = self.env.clone_state(inds=pass_inds_step)   
             if self.time: self.timings.time("clone_state")

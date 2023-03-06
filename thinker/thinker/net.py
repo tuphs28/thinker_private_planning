@@ -6,12 +6,14 @@ from thinker.core.rnn import ConvAttnLSTM
 
 ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_policy_logits', 
     'action', 'im_action', 'reset_action', 'baseline', 'baseline_enc_s', 'reg_loss'])
+ModelNetOut = namedtuple('ModelNetOut', ['rs', 'r_enc_logits', 'vs', 'v_enc_logits', 'logits', 
+                                         'encodes', 'state', 'single_rs'])
 
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h,w))
 
 def mlp(input_size, layer_sizes, output_size, output_activation=nn.Identity, activation=nn.ReLU,
-    momentum=0.1, init_zero=False):
+    momentum=0.1, zero_init=False):
     """MLP layers
     Parameters
     ----------
@@ -37,7 +39,7 @@ def mlp(input_size, layer_sizes, output_size, output_activation=nn.Identity, act
             act = output_activation
             layers += [nn.Linear(sizes[i], sizes[i + 1]),
                        act()]
-    if init_zero:
+    if zero_init:
         layers[-2].weight.data.fill_(0)
         layers[-2].bias.data.fill_(0)
     return nn.Sequential(*layers)
@@ -482,10 +484,12 @@ class FrameEncoder(nn.Module):
         return x
     
 class DynamicModel(nn.Module):
-    def __init__(self, num_actions, inplanes=256, type_nn=0, size_nn=1):        
+    def __init__(self, num_actions, inplanes, type_nn=0, size_nn=1):        
         super(DynamicModel, self).__init__()
+        self.num_actions = num_actions     
         self.type_nn = type_nn
-        self.size_nn = size_nn
+        self.size_nn = size_nn        
+
         if type_nn == 0:
             res = nn.ModuleList([ResBlock(inplanes=inplanes+num_actions, outplanes=inplanes)] + [
                     ResBlock(inplanes=inplanes) for i in range(4)]) 
@@ -498,9 +502,7 @@ class DynamicModel(nn.Module):
             self.conv1 =  conv3x3(inplanes+num_actions, inplanes)
             self.bn1 = nn.BatchNorm2d(inplanes)
             res = nn.ModuleList([ResBlock(inplanes=inplanes) for i in range(num_block)])
-
-        self.res = torch.nn.Sequential(*res)
-        self.num_actions = num_actions
+        self.res = torch.nn.Sequential(*res)    
     
     def forward(self, x, actions):              
         bsz, c, h, w = x.shape
@@ -525,12 +527,15 @@ class DynamicModel(nn.Module):
         return out
     
 class Output_rvpi(nn.Module):   
-    def __init__(self, num_actions, input_shape, reward_transform, zero_init, type_nn, size_nn):         
+    def __init__(self, num_actions, input_shape, value_prefix, max_unroll_length, 
+            reward_transform, zero_init, type_nn, size_nn):         
         super(Output_rvpi, self).__init__()        
         c, h, w = input_shape
         self.input_shape = input_shape
         self.type_nn = type_nn
         self.size_nn = size_nn
+        self.value_prefix = value_prefix
+        self.max_unroll_length = max_unroll_length
         self.reward_transform = reward_transform
 
         if self.type_nn in [0, 1]:
@@ -542,18 +547,22 @@ class Output_rvpi(nn.Module):
             if self.reward_transform:
                 self.reward_tran = RewardTran(vec=True)
                 self.fc_v = nn.Linear(fc_in, self.reward_tran.encoded_n) 
-                self.fc_r = nn.Linear(fc_in, self.reward_tran.encoded_n)         
+                if not self.value_prefix:
+                    self.fc_r = nn.Linear(fc_in, self.reward_tran.encoded_n)         
             else:
                 self.fc_v = nn.Linear(fc_in, 1) 
-                self.fc_r = nn.Linear(fc_in, 1)         
+                if not self.value_prefix:
+                    self.fc_r = nn.Linear(fc_in, 1)         
 
             if zero_init:
                 torch.nn.init.constant_(self.fc_v.weight, 0.)
                 torch.nn.init.constant_(self.fc_v.bias, 0.)
-                torch.nn.init.constant_(self.fc_r.weight, 0.)
-                torch.nn.init.constant_(self.fc_r.bias, 0.)
                 torch.nn.init.constant_(self.fc_logits.weight, 0.)
                 torch.nn.init.constant_(self.fc_logits.bias, 0.)
+                if not self.value_prefix:
+                    torch.nn.init.constant_(self.fc_r.weight, 0.)
+                    torch.nn.init.constant_(self.fc_r.bias, 0.)
+
         elif self.type_nn in [2, 3]:
             num_block = 1 if self.type_nn  == 2 else 2 * self.size_nn
             out_channels = 16 if self.type_nn  == 2 else 16 * self.size_nn
@@ -561,47 +570,107 @@ class Output_rvpi(nn.Module):
                 [ResBlock(c, c) for _ in range(num_block)]
             )
             self.conv1x1_v = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
-            self.conv1x1_r = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
             self.conv1x1_logits = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
-            self.bn_v = nn.BatchNorm2d(out_channels)
-            self.bn_r = nn.BatchNorm2d(out_channels)
+            self.bn_v = nn.BatchNorm2d(out_channels)            
             self.bn_logits = nn.BatchNorm2d(out_channels)
             if self.reward_transform:
                 self.reward_tran = RewardTran(vec=True)
                 out_n = self.reward_tran.encoded_n
             else:
                 out_n = 1            
-            self.fc_v = mlp(h * w * out_channels, [32], out_n, init_zero=zero_init)
-            self.fc_r = mlp(h * w * out_channels, [32], out_n, init_zero=zero_init)
-            self.fc_logits = mlp(h * w * out_channels, [32], num_actions, init_zero=zero_init)                                  
+            self.fc_v = mlp(h * w * out_channels, [32], out_n, zero_init=zero_init)            
+            self.fc_logits = mlp(h * w * out_channels, [32], num_actions, zero_init=zero_init)                                  
+            if not self.value_prefix:
+                self.conv1x1_r = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
+                self.bn_r = nn.BatchNorm2d(out_channels)
+                self.fc_r = mlp(h * w * out_channels, [32], out_n, zero_init=zero_init)
+            
+        if self.value_prefix:
+            self.conv1x1_reward = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)            
+            self.bn_r_1 = nn.BatchNorm2d(16)
+            self.lstm_input_size=16*input_shape[1]*input_shape[2]
+            self.lstm = nn.LSTM(input_size=self.lstm_input_size, hidden_size=512)
+            self.bn_r_2 = nn.BatchNorm1d(512)
+            out_n = self.reward_tran.encoded_n if self.reward_transform else 1
+            self.fc_r = mlp(512, [64], out_n, zero_init=zero_init)                
         
-    def forward(self, x):    
+    def forward(self, x, predict_reward=True, state=()):   
+        b = x.shape[0]         
         if self.type_nn in [0, 1]:
-            x = F.relu(self.conv1(x))
-            x = F.relu(self.conv2(x))
-            x = torch.flatten(x, start_dim=1)
-            x_v, x_r, x_logits = x, x, x
+            x_ = F.relu(self.conv1(x))
+            x_ = F.relu(self.conv2(x_))
+            x_ = torch.flatten(x_, start_dim=1)
+            x_v, x_logits = x_, x_
         elif self.type_nn in [2, 3]:
             for block in self.resblocks: x = block(x)
             x_v = torch.flatten(nn.functional.relu(self.bn_v(self.conv1x1_v(x))), start_dim=1)
-            x_r = torch.flatten(nn.functional.relu(self.bn_r(self.conv1x1_r(x))), start_dim=1)
             x_logits = torch.flatten(nn.functional.relu(self.bn_logits(self.conv1x1_logits(x))), start_dim=1)
-
         logits = self.fc_logits(x_logits)
         if self.reward_transform:
             v_enc_logits = self.fc_v(x_v)
             v_enc_v = F.softmax(v_enc_logits, dim=-1)
-            v_enc_s, v = self.reward_tran.decode(v_enc_v)
-
-            r_enc_logits = self.fc_r(x_r)
-            r_enc_v = F.softmax(r_enc_logits, dim=-1)
-            r_enc_s, r = self.reward_tran.decode(r_enc_v)
+            _, v = self.reward_tran.decode(v_enc_v)
         else:
             v_enc_logits = None
             v = self.fc_v(x_v).squeeze(-1)
-            r_enc_logits = None
-            r = self.fc_r(x_r).squeeze(-1)
-        return r, r_enc_logits, v, v_enc_logits, logits
+
+        if predict_reward:
+            if self.value_prefix:
+                m = state[2] < self.max_unroll_length
+                if torch.any(~m):
+                    lstm_state = (state[0] * m.float().view(b, 1), state[1] * m.float().view(b, 1))                    
+                    lstm_counter = state[2] * m.float()                            
+                    last_r = state[3] * m.float()
+                else:
+                    lstm_state = (state[0], state[1])
+                    lstm_counter = state[2] 
+                    last_r = state[3]                
+                x_r = self.conv1x1_reward(x)
+                x_r = self.bn_r_1(x_r)
+                x_r = nn.functional.relu(x_r)
+
+                x_r = x_r.view(b, self.lstm_input_size).unsqueeze(0)
+                lstm_state = (lstm_state[0].unsqueeze(0), lstm_state[1].unsqueeze(0)) # the LSTM only has a single layer
+                x_r, lstm_state = self.lstm(x_r, lstm_state)
+                lstm_state = (lstm_state[0].squeeze(0), lstm_state[1].squeeze(0))
+                x_r = x_r.squeeze(0)
+
+                state = lstm_state + (lstm_counter+1,)                
+                x_r = self.bn_r_2(x_r)
+                x_r = nn.functional.relu(x_r)
+            else:
+                if self.type_nn in [0, 1]:
+                    x_r = x_
+                elif self.type_nn in [2, 3]:
+                    x_r = torch.flatten(nn.functional.relu(self.bn_r(self.conv1x1_r(x))), start_dim=1)
+            r_out = self.fc_r(x_r)
+            if self.reward_transform:
+                r_enc_logits = r_out
+                r_enc_v = F.softmax(r_enc_logits, dim=-1)
+                _, r = self.reward_tran.decode(r_enc_v)
+            else:
+                r_enc_logits = None
+                r = r_out.squeeze(-1)
+            if self.value_prefix:
+                # if using value prefix, the r are the accumulating rewards;
+                # so the reward for a single time step is the current accum. reward
+                # minus the last accum reward
+                single_r = r - last_r
+                state = state + (r,)
+            else:
+                single_r = None
+        else:
+            single_r, r, r_enc_logits = None, None, None
+        return single_r, r, r_enc_logits, v, v_enc_logits, logits, state
+    
+    def init_state(self, bsz, device):
+        if self.value_prefix:
+            return (torch.zeros(bsz, 512, device=device), 
+                    torch.zeros(bsz, 512, device=device), 
+                    torch.zeros(bsz, device=device),
+                    torch.zeros(bsz, device=device))
+        else:
+            return ()
 
 class ModelNetBase(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        
@@ -620,10 +689,18 @@ class ModelNetBase(nn.Module):
             inplanes = 64
         elif self.type_nn == 3:
             inplanes = 128 
-        self.dynamicModel = DynamicModel(num_actions=num_actions, inplanes=inplanes, type_nn=self.type_nn, size_nn=self.size_nn)
-        self.output_rvpi = Output_rvpi(num_actions=num_actions, input_shape=(inplanes, 
-                      obs_shape[1]//16, obs_shape[1]//16), reward_transform=self.reward_transform, 
-                      zero_init=flags.model_zero_init, type_nn=self.type_nn, size_nn=self.size_nn)
+        self.dynamicModel = DynamicModel(num_actions=num_actions, 
+                                         inplanes=inplanes, 
+                                         type_nn=self.type_nn, 
+                                         size_nn=self.size_nn)        
+        self.output_rvpi = Output_rvpi(num_actions=num_actions, 
+                                       input_shape=(inplanes, obs_shape[1]//16, obs_shape[1]//16), 
+                                       value_prefix=flags.value_prefix,
+                                       max_unroll_length=flags.model_k_step_return, 
+                                       reward_transform=self.reward_transform, 
+                                       zero_init=flags.model_zero_init, 
+                                       type_nn=self.type_nn, 
+                                       size_nn=self.size_nn)
         if self.reward_transform:
             self.reward_tran = self.output_rvpi.reward_tran
 
@@ -638,7 +715,7 @@ class ModelNetBase(nn.Module):
                 self.P_2 = torch.nn.Sequential(nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512, 1024))
             self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
 
-    def supervise_loss(self, encodeds, x, actions, is_weights, one_hot=False):
+    def supervise_loss(self, encodes, x, actions, is_weights, one_hot=False):
         """
         Args:
             encodes(tensor): encodes output from forward with shape (k, B, C, H, W) in the form of z_{t+1}, ..., z_{t+k}
@@ -648,14 +725,14 @@ class ModelNetBase(nn.Module):
         Return:
             loss(tensor): scalar self-supervised loss
         """
-        k, bsz, c, h, w = encodeds.shape
+        k, bsz, c, h, w = encodes.shape
 
-        encodeds = torch.flatten(encodeds, 0, 1)        
-        encodeds = torch.flatten(encodeds, 1)
+        encodes = torch.flatten(encodes, 0, 1)        
+        encodes = torch.flatten(encodes, 1)
         if self.model_supervise_type == 0:
-            src = self.P_2(self.P_1(encodeds))
+            src = self.P_2(self.P_1(encodes))
         elif self.model_supervise_type == 1:
-            src = encodeds
+            src = encodes
         
         with torch.no_grad():
             x = torch.flatten(x, 0, 1)
@@ -684,23 +761,24 @@ class ModelNetBase(nn.Module):
             x(tensor): frames (uint8) with shape (B, C, H, W), in the form of s_t
             actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
         Return:
-            reward(tensor): predicted reward with shape (k, B), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
-            value(tensor): predicted value with shape (k+1, B), in the form of v_{t}, v_{t+1}, v_{t+2}, ..., v_{t+k}
-            policy(tensor): predicted policy with shape (k+1, B), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
-            encoded(tensor): encoded states with shape (k+1, B), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
+            reward(tensor): predicted reward with shape (k, B, ...), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
+            value(tensor): predicted value with shape (k+1, B, ...), in the form of v_{t}, v_{t+1}, v_{t+2}, ..., v_{t+k}
+            policy(tensor): predicted policy with shape (k+1, B, ...), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
+            encoded(tensor): encoded states with shape (k+1, B, ...), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
                 Recall we use the transition notation: s_t, a_t, r_{t+1}, s_{t+1}, ...
         """
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
         encoded = self.frameEncoder(x, actions[0])
-        return self.forward_encoded(encoded, actions[1:], one_hot=True)
+        state = self.output_rvpi.init_state(bsz=x.shape[0], device=x.device)
+        return self.forward_encoded(encoded, state, actions[1:], one_hot=True)
     
-    def forward_encoded(self, encoded, actions, one_hot=False):
+    def forward_encoded(self, encoded, state, actions, one_hot=False):
         if not one_hot:
             actions = F.one_hot(actions, self.num_actions)                
         
-        r, r_enc_logits, v, v_enc_logits, logits = self.output_rvpi(encoded)
-        r_list, v_list, logits_list = [], [v.unsqueeze(0)], [logits.unsqueeze(0)]
+        _, _, _, v, v_enc_logits, logits, _ = self.output_rvpi(encoded, predict_reward=False, state=())
+        single_r_list, r_list, v_list, logits_list = [], [], [v.unsqueeze(0)], [logits.unsqueeze(0)]
         if self.reward_transform: 
             r_enc_logits_list = []
             v_enc_logits_list = [v_enc_logits.unsqueeze(0)]
@@ -709,20 +787,21 @@ class ModelNetBase(nn.Module):
         
         for k in range(actions.shape[0]):            
             encoded = self.dynamicModel(encoded, actions[k])
-            r, r_enc_logits, v, v_enc_logits, logits = self.output_rvpi(encoded)
+            sinlge_r, r, r_enc_logits, v, v_enc_logits, logits, state = self.output_rvpi(encoded, predict_reward=True, state=state)
+            if sinlge_r is not None:  single_r_list.append(sinlge_r.unsqueeze(0))
             r_list.append(r.unsqueeze(0))
             v_list.append(v.unsqueeze(0))
             logits_list.append(logits.unsqueeze(0))
             encoded_list.append(encoded.unsqueeze(0))      
             if self.reward_transform: 
                 r_enc_logits_list.append(r_enc_logits.unsqueeze(0))
-                v_enc_logits_list.append(v_enc_logits.unsqueeze(0))
-        
+                v_enc_logits_list.append(v_enc_logits.unsqueeze(0))        
         
         rs = torch.concat(r_list, dim=0) if len(r_list) > 0 else None            
+        single_rs = torch.concat(single_r_list, dim=0) if len(single_r_list) > 0 else None   
         vs = torch.concat(v_list, dim=0)
         logits = torch.concat(logits_list, dim=0)
-        encodeds = torch.concat(encoded_list, dim=0)        
+        encodes = torch.concat(encoded_list, dim=0)        
 
         if self.reward_transform:            
             r_enc_logits = torch.concat(r_enc_logits_list, dim=0) if len(r_enc_logits_list) > 0 else None
@@ -730,8 +809,18 @@ class ModelNetBase(nn.Module):
         else:
             r_enc_logits = None
             v_enc_logits = None
+
+        #print("actions: ", actions)
+        #print("forward encoded out rs: ", rs)
         
-        return rs, r_enc_logits, vs, v_enc_logits, logits, encodeds        
+        return ModelNetOut(rs=rs, 
+                           r_enc_logits=r_enc_logits, 
+                           vs=vs, 
+                           v_enc_logits=v_enc_logits, 
+                           logits=logits, 
+                           encodes=encodes, 
+                           state=state,
+                           single_rs=single_rs)
 
     def get_weights(self):
         return {k: v.cpu() for k, v in self.state_dict().items()}

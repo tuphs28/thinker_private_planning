@@ -249,19 +249,23 @@ class ModelLearner():
         if self.flags.perfect_model: 
             gym_env_out_ = gym_env_out[:train_len] # the last k elem are not needed         
             action = train_model_out.action[:train_len]
-            _, _, vs, v_enc_logits, logits, _ = self.model_net(
+            model_net_out = self.model_net(
                 x=gym_env_out_.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
                 actions=action.reshape(1, -1),  one_hot=False)
-            vs = vs.reshape(k, b)
-            if v_enc_logits is not None: v_enc_logits = v_enc_logits.reshape(k, b, -1)
-            logits = logits.reshape(k, b, -1)
+            vs = model_net_out.vs.reshape(k, b)
+            if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits.reshape(k, b, -1)
+            logits = model_net_out.logits.reshape(k, b, -1)
         else:        
             action = train_model_out.action[:train_len+1]
-            rs, r_enc_logits, vs, v_enc_logits, logits, encodeds = self.model_net(
-                x=gym_env_out[0], actions=action, one_hot=False)
-            vs = vs[:-1]
-            v_enc_logits = v_enc_logits[:-1]
-            logits = logits[:-1]
+            model_net_out = self.model_net(
+                x=gym_env_out[0], actions=action, one_hot=False)           
+
+            rs = model_net_out.rs
+            r_enc_logits = model_net_out.r_enc_logits
+            vs = model_net_out.vs[:-1]
+            if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits[:-1]
+            logits = model_net_out.logits[:-1]
+            encodes = model_net_out.encodes
 
         target_rewards = train_model_out.reward[1:train_len+1]
         target_logits = train_model_out.policy_logits[1:train_len+1]
@@ -286,6 +290,9 @@ class ModelLearner():
                 if self.flags.model_supervise:
                     gym_env_out[t+1, done] = gym_env_out[t, done]    
         
+        if self.flags.value_prefix:
+            target_rewards = torch.cumsum(target_rewards, dim=1)
+
         # compute final loss
 
         #huberloss = torch.nn.HuberLoss(reduction='none', delta=1.0)    
@@ -323,7 +330,7 @@ class ModelLearner():
             logits, target_logits.detach(), is_weights)   
 
         if self.flags.model_supervise:
-            sup_loss = self.model_net.supervise_loss(encodeds=encodeds[1:], x=gym_env_out[1:train_len+1], 
+            sup_loss = self.model_net.supervise_loss(encodeds=encodes[1:], x=gym_env_out[1:train_len+1], 
                 actions=train_model_out.action[1:train_len+1], is_weights=is_weights, one_hot=False)
         else:
             sup_loss = None

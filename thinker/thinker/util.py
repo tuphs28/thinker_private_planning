@@ -131,7 +131,9 @@ def parse(args=None, override=True):
     parser.add_argument("--model_size_nn", default=1,
                         type=int, help="Model size multipler.")       
     parser.add_argument("--model_zero_init", action="store_true",
-                        help="Zero initialisation for the model output")            
+                        help="Zero initialisation for the model output") 
+    parser.add_argument("--value_prefix", action="store_true",
+                        help="Whether to use value prefix in model")                 
                                                            
     
     # Actor loss settings

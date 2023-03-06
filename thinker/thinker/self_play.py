@@ -343,7 +343,8 @@ class SelfPlayWorker():
         return False, None
 
     def po_model(self, env_out, model_net):
-        _, _, _, _, policy_logits, _ = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)    
+        model_net_out = model_net(env_out.gym_env_out[0], env_out.last_action[:,:,0], one_hot=False)    
+        policy_logits = model_net_out.logits
         action = torch.multinomial(F.softmax(policy_logits[0], dim=1), num_samples=1).unsqueeze(0)
         actor_out = util.construct_tuple(ActorOut, policy_logits=policy_logits, action=action)        
         # policy_logits has shape (T, B, num_actions)
@@ -378,8 +379,8 @@ class SelfPlayWorker():
                     _, _, sub_q_ret = self.nstep(env, model_net, discounting, n-1, temp)
                     ret = reward + discounting * torch.max(sub_q_ret, dim=1)[0] * (~done).float()
                 else:
-                    _, _, baseline, _, _, _ = model_net(obs, action.unsqueeze(0).unsqueeze(-1), one_hot=False)
-                    ret = reward + discounting * baseline[0].cpu() * (~done).float()
+                    model_net_out = model_net(obs, action.unsqueeze(0).unsqueeze(-1), one_hot=False)
+                    ret = reward + discounting * model_net_out.vs[0].cpu() * (~done).float()
                 q_ret[:, act] = ret
                 env.restore_state(state, [n for n in range(self.num_p_actors)])
             policy_logits = q_ret / temp
