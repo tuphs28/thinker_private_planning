@@ -13,13 +13,16 @@ from thinker.self_play import SelfPlayWorker, TrainModelOut, PO_MODEL
 from thinker.env import Environment
 import thinker.util as util
 
-def compute_cross_entropy_loss(logits, target_logits, is_weights):
+def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None):
+    k, b, *_ = logits.shape
     target_policy = F.softmax(target_logits, dim=-1)
     loss = torch.nn.CrossEntropyLoss(reduction="none")(
                     input = torch.flatten(logits, 0, 1),
                     target = torch.flatten(target_policy, 0, 1)
                 )
-    loss = torch.sum(loss.reshape(target_logits.shape[:-1]), dim=0)
+    loss = loss.view(k, b)
+    if mask is not None: loss = loss * mask
+    loss = torch.sum(loss, dim=0)
     loss = is_weights * loss
     return torch.sum(loss)
 
@@ -256,39 +259,41 @@ class ModelLearner():
             if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits.reshape(k, b, -1)
             logits = model_net_out.logits.reshape(k, b, -1)
         else:        
-            action = train_model_out.action[:train_len+1]
+            action = train_model_out.action[:train_len+1] # a_-1, a_0, ..., a_k-1
             model_net_out = self.model_net(
-                x=gym_env_out[0], actions=action, one_hot=False)           
-
-            rs = model_net_out.rs
-            r_enc_logits = model_net_out.r_enc_logits
-            vs = model_net_out.vs[:-1]
+                x=gym_env_out[0], actions=action, one_hot=False)  # unroll for k step
+            rs = model_net_out.rs # predicted reward r_1, r_2, ..., r_k
+            r_enc_logits = model_net_out.r_enc_logits # predicted reward logits            
+            vs = model_net_out.vs[:-1] # vs stores predicted value v_0, v_1, v_2, ... v_k-1
             if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits[:-1]
-            logits = model_net_out.logits[:-1]
-            encodes = model_net_out.encodes
+            logits = model_net_out.logits[:-1] # logits stores predicted logits l_0, l_1, ..., l_k-1
+            encodes = model_net_out.encodes # encoding z_0, z_1, ...z_k
 
-        target_rewards = train_model_out.reward[1:train_len+1]
-        target_logits = train_model_out.policy_logits[1:train_len+1]
+        target_rewards = train_model_out.reward[1:train_len+1]  # true reward r_1, r_2, ..., r_k
+        target_logits = train_model_out.policy_logits[1:train_len+1] # true logits l_0, l_1, ..., l_k-1
 
-        target_vs = train_model_out.baseline[k:train_len+k]
+        target_vs = train_model_out.baseline[k:train_len+k] # baseline ranges from v_k, v_k+1, ... v_2k
         for t in range(k, 0, -1):
             target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]
+        # target_vs[0] is now r_1 + gamma r_2 + ... + gamma ** (k-1) * r_k + gamma ** (k) * v_k; i.e. k step return for s_1
 
-        # if done on step j, r_{j}, v_{j-1}, a_{j-1} has the last valid loss 
-        # we set all target r_{j+1}, v_{j}, a_{j} to 0, 0, and last a_{j+1}
-        # rs is stored in the form of r_{t+1}, ..., r_{t+k}
-        # vs is stored in the form of v_{t}, ..., v_{t+k-1}
-        # logits is stored in the form of a{t}, ..., a_{t+k-1}        
+        # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss 
+        # we set all target r_j+1, v_j, a_j to 0, 0, and last a_{j+1} 
 
         if not self.flags.perfect_model:
             done = torch.zeros(b, dtype=torch.bool, device=self.device)
+            done_mask = torch.zeros(train_len, b, dtype=torch.bool, device=self.device) 
+            # done_mask stores accumulated done: True, adone_1, adone_2, ..., adone_k-1
             for t in range(train_len-1):
                 done = torch.logical_or(done, train_model_out.done[t+1])
+                done_mask[t+1] = done
                 target_rewards[t+1, done] = 0.
                 target_logits[t+1, done] = target_logits[t, done]
                 target_vs[t+1, done] = 0.
                 if self.flags.model_supervise:
-                    gym_env_out[t+1, done] = gym_env_out[t, done]    
+                    gym_env_out[t+1, done] = gym_env_out[t, done] 
+
+        done_mask = (~done_mask).float() if self.flags.model_done_mask else None
         
         if self.flags.value_prefix:
             target_rewards = torch.cumsum(target_rewards, dim=0)
@@ -301,37 +306,42 @@ class ModelLearner():
             rs_loss =  None
         else:
             if not self.flags.reward_transform:
-                rs_loss = torch.sum(((rs - target_rewards) ** 2), dim=0)
+                rs_loss = (rs - target_rewards) ** 2
             else:
                 _, target_rs_enc_v = self.model_net.reward_tran.encode(target_rewards)
                 rs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
                         input = torch.flatten(r_enc_logits[:train_len], 0, 1),
-                        target = torch.flatten(target_rs_enc_v, 0, 1)
+                        target = torch.flatten(target_rs_enc_v, 0, 1),
                       )
-                rs_loss = torch.sum(rs_loss.reshape(target_rs_enc_v.shape[:-1]), dim=0)
+                rs_loss = rs_loss.view(train_len, b)
+            if self.flags.model_done_mask:
+                rs_loss = rs_loss * done_mask
+            rs_loss = torch.sum(rs_loss, dim=0)
             rs_loss = rs_loss * is_weights
             rs_loss = torch.sum(rs_loss)
             
         #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()))
         if not self.flags.reward_transform:
-            vs_loss = torch.sum(((vs[:train_len] - target_vs.detach()) ** 2), dim=0)
+            vs_loss = (vs[:train_len] - target_vs.detach()) ** 2
         else:
             _, target_vs_enc_v = self.model_net.reward_tran.encode(target_vs)
             vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
                         input = torch.flatten(v_enc_logits[:train_len], 0, 1),
                         target = torch.flatten(target_vs_enc_v.detach(), 0, 1)
                       )
-            vs_loss = torch.sum(vs_loss.reshape(target_vs_enc_v.shape[:-1]), dim=0)
-
+            vs_loss = vs_loss.view(train_len, b)
+        if self.flags.model_done_mask:
+            vs_loss = vs_loss * done_mask
+        vs_loss = torch.sum(vs_loss, dim=0)
         vs_loss = vs_loss * is_weights
         vs_loss = torch.sum(vs_loss)
 
         logits_loss = compute_cross_entropy_loss(
-            logits, target_logits.detach(), is_weights)   
+            logits, target_logits.detach(), is_weights, mask=done_mask)   
 
         if self.flags.model_supervise:
             sup_loss = self.model_net.supervise_loss(encodes=encodes[1:], x=gym_env_out[1:train_len+1], 
-                actions=train_model_out.action[1:train_len+1], is_weights=is_weights, one_hot=False)
+                actions=train_model_out.action[1:train_len+1], is_weights=is_weights, mask=done_mask, one_hot=False)
         else:
             sup_loss = None
 

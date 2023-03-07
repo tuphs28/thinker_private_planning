@@ -173,12 +173,13 @@ def parse(args=None, override=True):
     parser.add_argument("--model_sup_loss_cost", default=1, type=float,
                        help="Multipler to self-supervise loss when training the model.")                                                                         
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
-                       help="0 for mean root value, 1 for max root value, 2 for actor'svalue.")     
+                       help="0 for mean root value, 1 for max root value, 2 for actor's value.")     
     parser.add_argument("--model_supervise", action="store_true",
                         help="Whether to add self-supervised loss in model training")    
     parser.add_argument("--model_supervise_type", default=0, type=int,
                        help="0 for efficientZero, 1 for direct cosine similarity.")                            
-
+    parser.add_argument("--model_done_mask", action="store_true",
+                        help="Whether to mask the loss after done")   
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 

@@ -715,17 +715,18 @@ class ModelNetBase(nn.Module):
                 self.P_2 = torch.nn.Sequential(nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512, 1024))
             self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
 
-    def supervise_loss(self, encodes, x, actions, is_weights, one_hot=False):
+    def supervise_loss(self, encodes, x, actions, is_weights, mask, one_hot=False):
         """
         Args:
             encodes(tensor): encodes output from forward with shape (k, B, C, H, W) in the form of z_{t+1}, ..., z_{t+k}
             x(tensor): frames (uint8) with shape (k, B, C, H, W), in the form of s_{t+1}, ..., s{t+k}
             actions(tensor): action (int64) with shape (k, B), in the form of a_{t}, a_{t}, a_{t+1}, .. a_{t+k}
+            mask(tensor): mask (float) with shape (k, B)
             im_weights(tensor): importance weight with shape (B) for each sample;  
         Return:
             loss(tensor): scalar self-supervised loss
         """
-        k, bsz, c, h, w = encodes.shape
+        k, b, c, h, w = encodes.shape
 
         encodes = torch.flatten(encodes, 0, 1)        
         encodes = torch.flatten(encodes, 1)
@@ -745,7 +746,9 @@ class ModelNetBase(nn.Module):
                 tgt = tgt_encodes
         
         loss = -self.cos(src, tgt.detach())
-        loss = torch.sum(loss.reshape(k, bsz), dim=0)
+        loss = loss.view(k, b)
+        if mask is not None: loss = loss * mask
+        loss = torch.sum(loss, dim=0)
         loss = loss * is_weights
         return torch.sum(loss)
     
