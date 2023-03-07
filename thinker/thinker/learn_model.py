@@ -291,8 +291,8 @@ class ModelLearner():
                     gym_env_out[t+1, done] = gym_env_out[t, done]    
         
         if self.flags.value_prefix:
-            target_rewards = torch.cumsum(target_rewards, dim=1)
-
+            target_rewards = torch.cumsum(target_rewards, dim=0)
+            
         # compute final loss
 
         #huberloss = torch.nn.HuberLoss(reduction='none', delta=1.0)    
