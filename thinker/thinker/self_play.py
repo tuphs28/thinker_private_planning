@@ -16,7 +16,8 @@ import thinker.util as util
 #_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item != 'gym_env_out')
 _fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc_s"])
 TrainActorOut = namedtuple('TrainActorOut', _fields + ('id',))
-TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 'action', 'reward', 'done', 'baseline'])
+TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 
+    'action', 'reward', 'done', 'truncated_done', 'baseline'])
 
 PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
 
@@ -292,12 +293,14 @@ class SelfPlayWorker():
             action=torch.zeros(pre_shape, dtype=torch.long, device=self.device),
             reward=torch.zeros(pre_shape, dtype=torch.float32, device=self.device),
             done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
+            truncated_done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
             baseline=torch.zeros(pre_shape, dtype=torch.float32, device=self.device)) 
 
     def write_single_model_buffer(self, n: int, t: int, env_out: EnvOut, actor_out: ActorOut, baseline:torch.tensor):
         self.model_local_buffer[n].gym_env_out[t] = env_out.gym_env_out[0]       
         self.model_local_buffer[n].reward[t] = env_out.reward[0,:,0]
         self.model_local_buffer[n].done[t] = env_out.done[0]
+        self.model_local_buffer[n].truncated_done[t] = env_out.truncated_done[0]
         self.model_local_buffer[n].policy_logits[t] = actor_out.policy_logits[0]
         self.model_local_buffer[n].action[t] = actor_out.action[0]
         if baseline is not None:

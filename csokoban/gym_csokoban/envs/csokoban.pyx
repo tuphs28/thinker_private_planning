@@ -41,8 +41,9 @@ cdef class cSokoban:
 		#cdef unsigned char obs[160*160*3]
 		cdef float reward = 0.
 		cdef bool done = False
-		self.c_sokoban.step(act, &obs_view[0], reward, done)
-		return obs.reshape(self.obs_x,self.obs_y,3), reward, done, {"step_n": self.step_n}
+		cdef bool truncated_done = False
+		self.c_sokoban.step(act, &obs_view[0], reward, done, truncated_done)
+		return obs.reshape(self.obs_x,self.obs_y,3), reward, done, {"step_n": self.step_n, "truncated_done": truncated_done}
 
 	def clone_state(self):
 		cdef np.ndarray room_status = np.zeros((10*10), dtype=np.dtype("u1"))

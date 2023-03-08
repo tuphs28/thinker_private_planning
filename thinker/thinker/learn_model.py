@@ -275,6 +275,11 @@ class ModelLearner():
         target_vs = train_model_out.baseline[k:train_len+k] # baseline ranges from v_k, v_k+1, ... v_2k
         for t in range(k, 0, -1):
             target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]
+            if self.flags.model_done_mask:
+                t_done = train_model_out.truncated_done[t:train_len+t]
+                if torch.any(t_done):
+                    target_vs[t_done] = train_model_out.baseline[t-1:train_len+t-1][t_done]
+
         # target_vs[0] is now r_1 + gamma r_2 + ... + gamma ** (k-1) * r_k + gamma ** (k) * v_k; i.e. k step return for s_1
 
         # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss 
@@ -285,13 +290,13 @@ class ModelLearner():
             done_mask = torch.zeros(train_len, b, dtype=torch.bool, device=self.device) 
             # done_mask stores accumulated done: True, adone_1, adone_2, ..., adone_k-1
             for t in range(train_len-1):
-                done = torch.logical_or(done, train_model_out.done[t+1])
-                done_mask[t+1] = done
+                done = torch.logical_or(done, train_model_out.done[t+1])                
                 target_rewards[t+1, done] = 0.
                 target_logits[t+1, done] = target_logits[t, done]
                 target_vs[t+1, done] = 0.
                 if self.flags.model_supervise:
                     gym_env_out[t+1, done] = gym_env_out[t, done] 
+                done_mask[t+1] = torch.logical_or(done_mask[t], train_model_out.truncated_done[t+1])
 
         done_mask = (~done_mask).float() if self.flags.model_done_mask else None
         

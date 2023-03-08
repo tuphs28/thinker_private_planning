@@ -280,6 +280,7 @@ cdef class cVecFullModelWrapper():
     cdef float[:, :] full_reward
     cdef bool[:] full_done
     cdef bool[:] full_real_done
+    cdef bool[:] full_truncated_done
     cdef int[:] total_step
 
     def __init__(self, env, env_n, flags, device=None, time=False):
@@ -318,6 +319,7 @@ cdef class cVecFullModelWrapper():
         self.full_reward = np.zeros((self.env_n, 2 if self.reward_type == 1 else 1), dtype=np.float32)
         self.full_done = np.zeros(self.env_n, dtype=np.bool)
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool)
+        self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool)
         self.total_step = np.zeros(self.env_n, dtype=np.intc)
         
     def reset(self, model_net):
@@ -467,6 +469,7 @@ cdef class cVecFullModelWrapper():
         if pass_inds_step.size() > 0:
             obs, reward, done, info = self.env.step(pass_action, inds=pass_inds_step) 
             real_done = [m["real_done"] if "real_done" in m else done[n] for n, m in enumerate(info)]
+            truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
         if self.time: self.timings.time("step_state")
 
         # reset needed?
@@ -627,9 +630,11 @@ cdef class cVecFullModelWrapper():
             if self.status[i] == 1:
                 self.full_done[i] = done[j]
                 self.full_real_done[i] = real_done[j]
+                self.full_truncated_done[i] = truncated_done[j]
             else:
                 self.full_done[i] = False
                 self.full_real_done[i] = False
+                self.full_truncated_done[i] = False
             if self.status[i] == 1:
                 j += 1
         # compute reset
@@ -642,7 +647,8 @@ cdef class cVecFullModelWrapper():
         # some extra info
         info = {"cur_t": torch.tensor(self.cur_t, dtype=torch.long, device=self.device),
                 "max_rollout_depth":  torch.tensor(self.max_rollout_depth_, dtype=torch.long, device=self.device),
-                "real_done": torch.tensor(self.full_real_done, dtype=torch.bool, device=self.device)}
+                "real_done": torch.tensor(self.full_real_done, dtype=torch.bool, device=self.device),
+                "truncated_done": torch.tensor(self.full_truncated_done, dtype=torch.bool, device=self.device),}
         if self.time: self.timings.time("end")
 
         return ((torch.tensor(model_out, dtype=torch.float32, device=self.device), gym_env_out, model_encodes), 
@@ -746,6 +752,7 @@ cdef class cVecModelWrapper():
     cdef float[:, :] full_reward
     cdef bool[:] full_done
     cdef bool[:] full_real_done
+    cdef bool[:] full_truncated_done
     cdef int[:] total_step
 
     def __init__(self, env, env_n, flags, device=None, time=False):
@@ -783,6 +790,7 @@ cdef class cVecModelWrapper():
         self.full_reward = np.zeros((self.env_n, 2 if self.reward_type == 1 else 1), dtype=np.float32)
         self.full_done = np.zeros(self.env_n, dtype=np.bool)
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool)
+        self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool)
         self.total_step = np.zeros(self.env_n, dtype=np.intc)
         
     def reset(self, model_net):
@@ -932,6 +940,7 @@ cdef class cVecModelWrapper():
         if pass_inds_step.size() > 0:
             obs, reward, done, info = self.env.step(pass_action, inds=pass_inds_step) 
             real_done = [m["real_done"] if "real_done" in m else done[n] for n, m in enumerate(info)]
+            truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
         if self.time: self.timings.time("step_state")
 
         # reset needed?
@@ -1089,9 +1098,11 @@ cdef class cVecModelWrapper():
             if self.status[i] == 1:
                 self.full_done[i] = done[j]
                 self.full_real_done[i] = real_done[j]
+                self.full_truncated_done[i] = truncated_done[j]
             else:
                 self.full_done[i] = False
                 self.full_real_done[i] = False
+                self.full_truncated_done[i] = False
             if self.status[i] == 1 or self.status[i] == 4:
                 j += 1
 
@@ -1106,7 +1117,8 @@ cdef class cVecModelWrapper():
         # some extra info
         info = {"cur_t": torch.tensor(self.cur_t, dtype=torch.long, device=self.device),
                 "max_rollout_depth":  torch.tensor(self.max_rollout_depth_, dtype=torch.long, device=self.device),
-                "real_done": torch.tensor(self.full_real_done, dtype=torch.bool, device=self.device)}
+                "real_done": torch.tensor(self.full_real_done, dtype=torch.bool, device=self.device),
+                "truncated_done": torch.tensor(self.full_truncated_done, dtype=torch.bool, device=self.device)}
         if self.time: self.timings.time("end")
 
         return ((torch.tensor(model_out, dtype=torch.float32, device=self.device), gym_env_out, model_encodes), 

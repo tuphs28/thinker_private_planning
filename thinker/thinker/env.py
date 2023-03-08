@@ -9,7 +9,8 @@ from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
 from thinker.cenv import cVecModelWrapper, cVecFullModelWrapper
 from thinker import util
 
-EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'model_encodes', 'see_mask', 'reward', 'done', 'real_done',
+EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'model_encodes', 
+    'see_mask', 'reward', 'done', 'real_done', 'truncated_done',
     'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
 def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
@@ -42,6 +43,11 @@ def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
 def PreWrap(env, name, test=False):
     if name == "cSokoban-v0":
         env = TransposeWrap(env)
+        # ensures env returns truncated_done in info
+        test_env = gym.make(name)
+        test_env.reset()
+        _, _, _, info = test_env.step(0)
+        assert "truncated_done" in info, "incorrect cSokoban return"
     elif name == "Sokoban-v0":
         env = NoopWrapper(env, cost=-0.01)
         env = WarpFrame(env, width=80, height=80, grayscale=False)
@@ -104,6 +110,7 @@ class PostVecModelWrapper(gym.Wrapper):
             reward=torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device),
             done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
             real_done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
+            truncated_done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
             episode_return=self.episode_return,
             episode_step=self.episode_step,
             cur_t=torch.zeros(1, self.env_n, dtype=torch.long, device=self.device) if self.model_wrap else None,
@@ -122,8 +129,10 @@ class PostVecModelWrapper(gym.Wrapper):
         out, reward, done, info = self.env.step(action[0], model_net)     
         if self.model_wrap:
             real_done = info["real_done"]
+            truncated_done = info["truncated_done"]
         else:
             real_done = [d["real_done"] for d in info] if "real_done" in info[0] else done
+            truncated_done = [d["truncated_done"] for d in info] if "truncated_done" in info[0] else False
 
         if self.model_wrap:
             model_out, gym_env_out, model_encodes = out
@@ -141,6 +150,7 @@ class PostVecModelWrapper(gym.Wrapper):
             reward = torch.tensor(reward, dtype=torch.float32, device=self.device).unsqueeze(-1)
             done = torch.tensor(done, dtype=torch.bool, device=self.device)
             real_done = torch.tensor(real_done, dtype=torch.bool, device=self.device)
+            truncated_done = torch.tensor(truncated_done, dtype=torch.bool, device=self.device)
 
         if gym_env_out is not None:
             gym_env_out = gym_env_out.unsqueeze(0)
@@ -174,6 +184,7 @@ class PostVecModelWrapper(gym.Wrapper):
             reward=reward.unsqueeze(0),
             done=done.unsqueeze(0),
             real_done=real_done.unsqueeze(0),
+            truncated_done=truncated_done.unsqueeze(0),
             episode_return=episode_return,
             episode_step=episode_step,
             cur_t=info["cur_t"].unsqueeze(0) if self.model_wrap else None,
@@ -256,7 +267,7 @@ class TimeLimit_(gym.Wrapper):
         observation, reward, done, info = self.env.step(action)
         self._elapsed_steps += 1
         if self._elapsed_steps >= self._max_episode_steps:
-            info["TimeLimit.truncated"] = not done
+            info["truncated_done"] = not done
             done = True
         return observation, reward, done, info
 

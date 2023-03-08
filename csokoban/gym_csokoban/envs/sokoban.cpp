@@ -300,15 +300,22 @@ void Sokoban::reset_level(unsigned char* obs, const int room_id) {
 	render(obs);
 }
 
-void Sokoban::step(const action a, unsigned char* obs, float& reward, bool& done) {
+void Sokoban::step(const action a, unsigned char* obs, float& reward, bool& done, bool& truncated_done) {
 	reward = move(a);		
-	if (step_n >= max_step_n - 1) this->done = true; else step_n++;	
+	if (step_n >= max_step_n - 1) {
+		this->done = true;
+		truncated_done = true;
+	}
+	else {
+		step_n++;	
+		truncated_done = false;
+	}
 	done = this->done;
 	render(obs);
 }
 
-void Sokoban::step(const int a, unsigned char* obs, float& reward, bool& done) {
-	if (a >= 0 && a <= 4) step(action(a), obs, reward, done);
+void Sokoban::step(const int a, unsigned char* obs, float& reward, bool& done, bool& truncated_done) {
+	if (a >= 0 && a <= 4) step(action(a), obs, reward, done, truncated_done);
 	else throw invalid_argument("invalid action");
 }
 
