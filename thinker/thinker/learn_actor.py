@@ -4,6 +4,7 @@ import timeit
 import os
 import numpy as np
 import argparse
+import traceback
 import ray
 import torch
 import torch.nn.functional as F
@@ -178,128 +179,139 @@ class ActorLearner():
         if self.time: self.timing = util.Timings()        
 
     def learn_data(self):
-        timer = timeit.default_timer
-        start_step = self.step
-        start_time = timer()
-        ckp_start_time = int(time.strftime("%M")) // 10
-        ckp_save_n, queue_n, eval_n = 0, 0, 0
-        n = 0
-        if self.flags.float16:
-            scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
-        
-        if self.flags.im_cost_anneal: self.anneal_c = 1
-
-        while (self.real_step < self.flags.total_steps):   
-            if self.time: self.timing.reset()            
-            # get data remotely    
-            while (True):
-                data = ray.get(self.actor_buffer.read.remote())
-                if data is not None: break                
-                time.sleep(0.01)
-                queue_n += 0.01
-            data = ray.get(data)
-            if self.time: self.timing.time("get data")
-            # start consume data
-
-            # batch and move the data to the process device
-            # data is in the form [(train_actor_out_1, initial_actor_state_1), 
-            # (train_actor_out_2, initial_actor_state_2) ...]
-
-            train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
-                else None for n in range(len(data[0][0]))))
-            actor_id = train_actor_out.id
-            initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
-            if self.time: self.timing.time("convert data")
-
-            if self.real_step < self.flags.actor_warm_up_n:
-                stats = self.compute_stat(train_actor_out, None, None, actor_id)   
-                self._logger.info("Preloading: %d/%d" % (self.real_step, self.flags.actor_warm_up_n))
-                time.sleep(5)
-                continue                           
-
-            # compute losses
+        try:
+            timer = timeit.default_timer
+            start_step = self.step
+            start_time = timer()
+            ckp_start_time = int(time.strftime("%M")) // 10
+            ckp_save_n, queue_n, eval_n = 0, 0, 0
+            n = 0
             if self.flags.float16:
-                with torch.autocast(device_type='cuda', dtype=torch.float16):                
+                scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
+            
+            if self.flags.im_cost_anneal: self.anneal_c = 1
+
+            while (self.real_step < self.flags.total_steps):   
+                if self.time: self.timing.reset()            
+                # get data remotely    
+                while (True):
+                    data = ray.get(self.actor_buffer.read.remote())
+                    if data is not None: break                
+                    time.sleep(0.01)
+                    queue_n += 0.01
+                data = ray.get(data)
+                if self.time: self.timing.time("get data")
+                # start consume data
+
+                # batch and move the data to the process device
+                # data is in the form [(train_actor_out_1, initial_actor_state_1), 
+                # (train_actor_out_2, initial_actor_state_2) ...]
+
+                train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
+                    else None for n in range(len(data[0][0]))))
+                actor_id = train_actor_out.id
+                initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
+                if self.time: self.timing.time("convert data")
+
+                if self.real_step < self.flags.actor_warm_up_n:
+                    stats = self.compute_stat(train_actor_out, None, None, actor_id)   
+                    self._logger.info("Preloading: %d/%d" % (self.real_step, self.flags.actor_warm_up_n))
+                    time.sleep(5)
+                    continue                           
+
+                # compute losses
+                if self.flags.float16:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):                
+                        losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
+                else:
                     losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
-            else:
-                losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
-            total_loss = losses["total_loss"]
-            if self.time: self.timing.time("compute loss")    
+                total_loss = losses["total_loss"]
+                if self.time: self.timing.time("compute loss")    
 
-            # gradient descent on loss
-            self.optimizer.zero_grad()
-            if self.flags.float16:
-                scaler.scale(total_loss).backward()
-            else:
-                total_loss.backward()
-            if self.time: self.timing.time("compute gradient")
+                # gradient descent on loss
+                self.optimizer.zero_grad()
+                if self.flags.float16:
+                    scaler.scale(total_loss).backward()
+                else:
+                    total_loss.backward()
+                if self.time: self.timing.time("compute gradient")
 
-            optimize_params = self.optimizer.param_groups[0]['params']
-            if self.flags.float16: scaler.unscale_(self.optimizer)
-            if self.flags.grad_norm_clipping > 0:                
-                total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
-                total_norm = total_norm.detach().cpu().item()
-            else:
-                total_norm = util.compute_grad_norm(optimize_params)     
-            if self.time: self.timing.time("compute norm")
+                optimize_params = self.optimizer.param_groups[0]['params']
+                if self.flags.float16: scaler.unscale_(self.optimizer)
+                if self.flags.grad_norm_clipping > 0:                
+                    total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
+                    total_norm = total_norm.detach().cpu().item()
+                else:
+                    total_norm = util.compute_grad_norm(optimize_params)     
+                if self.time: self.timing.time("compute norm")
 
-            if self.flags.float16:
-                scaler.step(self.optimizer)
-                scaler.update()
-            else:
-                self.optimizer.step()            
-            if self.time: self.timing.time("grad descent")
+                if self.flags.float16:
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    self.optimizer.step()            
+                if self.time: self.timing.time("grad descent")
 
-            self.scheduler.step()          
+                self.scheduler.step()          
 
-            if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
-            
-            # statistic output
-            stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)       
+                if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
+                
+                # statistic output
+                stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)       
 
-            # write to log file
-            self.plogger.log(stats)
-            if self.flags.use_wandb:
-                self.wlogger.wandb.log(stats, step=stats['real_step'])
-                # upload files
-                if self.flags.use_wandb and self.flags.wandb_ckp_freq > 0 and self.real_step > ckp_save_n:
-                    self._logger.info("Uploading files to wandb...")
-                    ckp_save_n = self.real_step + self.flags.wandb_ckp_freq
-                    self.wlogger.wandb.save(os.path.join(self.flags.savedir,  self.flags.xpid, "*"),
-                                            os.path.join(self.flags.savedir,  self.flags.xpid))            
+                # write to log file
+                self.plogger.log(stats)
+                if self.flags.use_wandb:
+                    self.wlogger.wandb.log(stats, step=stats['real_step'])
+                    # upload files
+                    if self.flags.use_wandb and self.flags.wandb_ckp_freq > 0 and self.real_step > ckp_save_n:
+                        self._logger.info("Uploading files to wandb...")
+                        ckp_save_n = self.real_step + self.flags.wandb_ckp_freq
+                        self.wlogger.wandb.save(os.path.join(self.flags.savedir,  self.flags.xpid, "*"),
+                                                os.path.join(self.flags.savedir,  self.flags.xpid))            
 
-            # print statistics
-            if timer() - start_time > 5:
-                sps = (self.step - start_step) / (timer() - start_time)                
-                print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. (T_q: %.2f) Eps %i. Return %f (%f). Loss %.2f" % (
-                    n, self.real_step, self.step, float(self.step)/float(self.real_step), sps, queue_n, self.tot_eps, 
-                    stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
-                print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
-                               "baseline_loss", "im_pg_loss", "im_baseline_loss", 
-                               "entropy_loss", "reg_loss", "total_norm"]
-                for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
-                self._logger.info(print_str)
-                start_step = self.step
-                start_time = timer()                    
-                queue_n = 0
-                if self.time: print(self.timing.summary()) 
-            
-            if int(time.strftime("%M")) // 10 != ckp_start_time:
-                self.save_checkpoint()
-                ckp_start_time = int(time.strftime("%M")) // 10
+                # print statistics
+                if timer() - start_time > 5:
+                    sps = (self.step - start_step) / (timer() - start_time)                
+                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. (T_q: %.2f) Eps %i. Return %f (%f). Loss %.2f" % (
+                        n, self.real_step, self.step, float(self.step)/float(self.real_step), sps, queue_n, self.tot_eps, 
+                        stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
+                    print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
+                                "baseline_loss", "im_pg_loss", "im_baseline_loss", 
+                                "entropy_loss", "reg_loss", "total_norm"]
+                    for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
+                    self._logger.info(print_str)
+                    start_step = self.step
+                    start_time = timer()                    
+                    queue_n = 0
+                    if self.time: print(self.timing.summary()) 
+                
+                if int(time.strftime("%M")) // 10 != ckp_start_time:
+                    self.save_checkpoint()
+                    ckp_start_time = int(time.strftime("%M")) // 10
 
-            if self.time: self.timing.time("misc")  
-            del train_actor_out, losses, total_loss, stats, total_norm
-            torch.cuda.empty_cache()
+                if self.time: self.timing.time("misc")  
+                del train_actor_out, losses, total_loss, stats, total_norm
+                torch.cuda.empty_cache()
 
-            # update shared buffer's weights
-            if n % 1 == 0:
-                self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
-            n += 1
-            if self.time: self.timing.time("set weight")  
-            
+                # update shared buffer's weights
+                if n % 1 == 0:
+                    self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
+                n += 1
+                if self.time: self.timing.time("set weight")                  
+        
+            self.close(0)  
+            return True        
+        
+        except Exception as e:
+            self._logger.error("Exception detected in learn_actor")
+            self._logger.error(traceback.format_exc())
+            self.close(1)            
+            return False
+
+    def close(self, exit_code=0):
         self.plogger.close()
-        return True
+        if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
 
     def compute_losses(self, train_actor_out: TrainActorOut, initial_actor_state: tuple):
         # compute loss and then discard the first step in train_actor_out

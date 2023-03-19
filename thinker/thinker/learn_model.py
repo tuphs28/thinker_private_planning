@@ -3,6 +3,7 @@ import numpy as np
 import argparse
 import time
 import timeit
+import traceback
 import ray
 import torch
 import torch.nn.functional as F
@@ -96,152 +97,166 @@ class ModelLearner():
             flags=flags) for n in range(10)]
 
     def learn_data(self):
-        timer = timeit.default_timer
-        start_step = self.step
-        start_step_test = self.step
-        start_time = timer()
-        ckp_start_time = int(time.strftime("%M")) // 10
-        last_psteps = 0
-        
-        r_tester = None
-        all_returns = None
-        
-        numel_per_step = self.flags.model_batch_size * (
-                self.flags.model_k_step_return if not self.flags.model_batch_mode else 
-                self.flags.model_unroll_length)
+        try:
+            timer = timeit.default_timer
+            start_step = self.step
+            start_step_test = self.step
+            start_time = timer()
+            ckp_start_time = int(time.strftime("%M")) // 10
+            last_psteps = 0
+            
+            r_tester = None
+            all_returns = None
+            
+            numel_per_step = self.flags.model_batch_size * (
+                    self.flags.model_k_step_return if not self.flags.model_batch_mode else 
+                    self.flags.model_unroll_length)
 
-        max_diff = 200000
-        # stop training the model at the last 200k real steps
+            max_diff = 200000
+            # stop training the model at the last 200k real steps
 
-        n = 0
-        if self.flags.float16:
-            scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
-
-        while (self.real_step < self.flags.total_steps - max_diff):                    
-            c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
-            beta = self.flags.priority_beta * (1 - c) + 1. * c
-
-            # get data remotely    
-            while (True):
-                data = ray.get(self.model_buffer.read.remote(beta))
-                if data is not None: break            
-                time.sleep(0.01)
-                if timer() - start_time > 5:
-                    tran_n = ray.get(self.model_buffer.get_processed_n.remote())
-                    self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
-                    start_time = timer()                
-
-            # start consume data
-            train_model_out, is_weights, inds, new_psteps = data            
-            self.real_step += new_psteps - last_psteps            
-            last_psteps = new_psteps
-
-            # move the data to the process device
-            train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
-            is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
-                        
-            # compute losses
+            n = 0
             if self.flags.float16:
-                with torch.autocast(device_type='cuda', dtype=torch.float16):      
-                    losses, priorities = self.compute_losses(train_model_out, is_weights)
-            else:
-                losses, priorities = self.compute_losses(train_model_out, is_weights)
-            total_loss = losses["total_loss"]
-            self.model_buffer.update_priority.remote(inds, priorities)
-            
-            # gradient descent on loss
-            self.optimizer.zero_grad()
-            if self.flags.float16:
-                scaler.scale(total_loss).backward()
-            else:
-                total_loss.backward()
+                scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
 
-            optimize_params = self.optimizer.param_groups[0]['params']
-            if self.flags.float16: scaler.unscale_(self.optimizer)
-            if self.flags.model_grad_norm_clipping > 0:
-                total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
-            else:
-                total_norm = util.compute_grad_norm(optimize_params)     
-            
-            if self.flags.float16:
-                scaler.step(self.optimizer)
-                scaler.update()
-            else:
-                self.optimizer.step()
-                
-            self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
-            self.scheduler.step()                 
-            
-            self.step += numel_per_step
-            # print statistics
-            if timer() - start_time > 5:
-                sps = (self.step - start_step) / (timer() - start_time)                
-                print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f) total_norm %.2f" % (
-                                n, 
-                                self.real_step, 
-                                self.step, 
-                                self.step_per_transition(), 
-                                sps, 
-                                np.mean(all_returns) if all_returns is not None else 0.,
-                                np.std(all_returns) if all_returns is not None else 0.,
-                                total_norm.item())
-                print_stats = ["total_loss", "vs_loss", "logits_loss", "rs_loss", "sup_loss"]
-                for k in print_stats: 
-                    if losses[k] is not None:
-                        print_str += " %s %.2f" % (k, losses[k].item() / numel_per_step)
-                self._logger.info(print_str)
-                start_step = self.step
-                start_time = timer()      
+            while (self.real_step < self.flags.total_steps - max_diff):                    
+                c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
+                beta = self.flags.priority_beta * (1 - c) + 1. * c
 
-                # write to log file
-                stats = {"step": self.step,
-                         "real_step": self.real_step,
-                         "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
-                         "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
-                         "model_total_norm": total_norm.item()}
-                for k in print_stats: 
-                    stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
+                # get data remotely    
+                while (True):
+                    data = ray.get(self.model_buffer.read.remote(beta))
+                    if data is not None: break            
+                    time.sleep(0.01)
+                    if timer() - start_time > 5:
+                        tran_n = ray.get(self.model_buffer.get_processed_n.remote())
+                        self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
+                        start_time = timer()                
 
-                self.plogger.log(stats)
-                if self.flags.use_wandb:
-                    self.wlogger.wandb.log(stats, step=stats['real_step'])
-            
-            if int(time.strftime("%M")) // 10 != ckp_start_time:
-                self.save_checkpoint()
-                ckp_start_time = int(time.strftime("%M")) // 10
-            
-            # update shared buffer's weights
-            if n % 1 == 0:
-                self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
-
-            # test the model policy returns
-            if self.step - start_step_test > 250000 * self.flags.rec_t:
-                start_step_test = self.step
-                if r_tester is not None: 
-                    ray.get(r_tester)[0]
-                    all_returns = ray.get(self.test_buffer.get_data.remote("episode_returns"))
-                    self.test_buffer.set_data.remote("episode_returns", [])
-                    #self._logger.info("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
-                    #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
-                r_tester = [x.gen_data.remote(test_eps_n=20, verbose=False) for x in self.model_tester]                                        
-
-            # control the number of learning step per transition
-            while (self.flags.model_max_step_per_transition > 0 and 
-                self.step_per_transition() > self.flags.model_max_step_per_transition):
-                time.sleep(0.1)
-                self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
-                new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
+                # start consume data
+                train_model_out, is_weights, inds, new_psteps = data            
                 self.real_step += new_psteps - last_psteps            
-                last_psteps = new_psteps                
-            
-            if self.flags.model_min_step_per_transition > 0:
-                if self.step_per_transition() < self.flags.model_min_step_per_transition:
-                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", True)
-                else:
-                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
+                last_psteps = new_psteps
 
-            n += 1
-        return True
+                # move the data to the process device
+                train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
+                is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
+                            
+                # compute losses
+                if self.flags.float16:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):      
+                        losses, priorities = self.compute_losses(train_model_out, is_weights)
+                else:
+                    losses, priorities = self.compute_losses(train_model_out, is_weights)
+                total_loss = losses["total_loss"]
+                self.model_buffer.update_priority.remote(inds, priorities)
+                
+                # gradient descent on loss
+                self.optimizer.zero_grad()
+                if self.flags.float16:
+                    scaler.scale(total_loss).backward()
+                else:
+                    total_loss.backward()
+
+                optimize_params = self.optimizer.param_groups[0]['params']
+                if self.flags.float16: scaler.unscale_(self.optimizer)
+                if self.flags.model_grad_norm_clipping > 0:
+                    total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
+                else:
+                    total_norm = util.compute_grad_norm(optimize_params)     
+                
+                if self.flags.float16:
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    self.optimizer.step()
+                    
+                self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
+                self.scheduler.step()                 
+                
+                self.step += numel_per_step
+                # print statistics
+                if timer() - start_time > 5:
+                    sps = (self.step - start_step) / (timer() - start_time)                
+                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f) total_norm %.2f" % (
+                                    n, 
+                                    self.real_step, 
+                                    self.step, 
+                                    self.step_per_transition(), 
+                                    sps, 
+                                    np.mean(all_returns) if all_returns is not None else 0.,
+                                    np.std(all_returns) if all_returns is not None else 0.,
+                                    total_norm.item())
+                    print_stats = ["total_loss", "vs_loss", "logits_loss", 
+                                "rs_loss", "sup_loss", "img_loss", "done_loss"]
+                    for k in print_stats: 
+                        if losses[k] is not None:
+                            print_str += " %s %.6f" % (k, losses[k].item() / numel_per_step)
+                    self._logger.info(print_str)
+                    start_step = self.step
+                    start_time = timer()      
+
+                    # write to log file
+                    stats = {"step": self.step,
+                            "real_step": self.real_step,
+                            "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
+                            "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
+                            "model_total_norm": total_norm.item()}
+                    for k in print_stats: 
+                        stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
+
+                    self.plogger.log(stats)
+                    if self.flags.use_wandb:
+                        self.wlogger.wandb.log(stats, step=stats['real_step'])
+                
+                if int(time.strftime("%M")) // 10 != ckp_start_time:
+                    self.save_checkpoint()
+                    ckp_start_time = int(time.strftime("%M")) // 10
+                
+                # update shared buffer's weights
+                if n % 1 == 0:
+                    self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
+
+                # test the model policy returns
+                if self.step - start_step_test > 250000 * self.flags.rec_t:
+                    start_step_test = self.step
+                    if r_tester is not None: 
+                        ray.get(r_tester)[0]
+                        all_returns = ray.get(self.test_buffer.get_data.remote("episode_returns"))
+                        self.test_buffer.set_data.remote("episode_returns", [])
+                        #self._logger.info("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
+                        #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
+                    r_tester = [x.gen_data.remote(test_eps_n=20, verbose=False) for x in self.model_tester]                                        
+
+                # control the number of learning step per transition
+                while (self.flags.model_max_step_per_transition > 0 and 
+                    self.step_per_transition() > self.flags.model_max_step_per_transition):
+                    time.sleep(0.1)
+                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
+                    new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
+                    self.real_step += new_psteps - last_psteps            
+                    last_psteps = new_psteps                
+                
+                if self.flags.model_min_step_per_transition > 0:
+                    if self.step_per_transition() < self.flags.model_min_step_per_transition:
+                        self.param_buffer.update_dict_item.remote("self_play_signals", "halt", True)
+                    else:
+                        self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
+
+                n += 1            
+            
+            self.close(0)  
+            return True        
+        
+        except Exception as e:
+            self._logger.error("Exception detected in learn_model")
+            self._logger.error(traceback.format_exc())
+            self.close(1)            
+            return False
+
+    def close(self, exit_code):
+        self.plogger.close()
+        if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
 
     def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor):
         k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
@@ -249,64 +264,74 @@ class ModelLearner():
         # each elem in train_model_out is in the shape of (train_len + k, b, ...)
     
         gym_env_out = train_model_out.gym_env_out
+
         if self.flags.perfect_model: 
             gym_env_out_ = gym_env_out[:train_len] # the last k elem are not needed         
             action = train_model_out.action[:train_len]
             model_net_out = self.model_net(
-                x=gym_env_out_.reshape((-1,) + train_model_out.gym_env_out.shape[2:]),
-                actions=action.reshape(1, -1),  one_hot=False)
-            vs = model_net_out.vs.reshape(k, b)
+                xs=gym_env_out_.view((-1,) + train_model_out.gym_env_out.shape[2:]),
+                actions=action.view(1, -1),  
+                one_hot=False,
+                compute_true_z=False,
+                inference=False)
+            vs = model_net_out.vs.view(k, b)            
             if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits.reshape(k, b, -1)
-            logits = model_net_out.logits.reshape(k, b, -1)
+            logits = model_net_out.logits.view(k, b, -1)
         else:        
-            action = train_model_out.action[:train_len+1] # a_-1, a_0, ..., a_k-1
             model_net_out = self.model_net(
-                x=gym_env_out[0], actions=action, one_hot=False)  # unroll for k step
+                xs=gym_env_out[:train_len+1], # s_0, ..., s_k-1   
+                actions=train_model_out.action[:train_len+1], # a_-1, ..., a_k-1      
+                one_hot=False,
+                compute_true_z=self.flags.model_sup_loss_cost > 0. or self.model_net.type_nn in [4],
+                inference=self.model_net.type_nn not in [4],
+                )  # unroll for k step
             rs = model_net_out.rs # predicted reward r_1, r_2, ..., r_k
             r_enc_logits = model_net_out.r_enc_logits # predicted reward logits            
+            pred_done_logits = model_net_out.done_logits # predicted done d_1, d_2, ..., d_k
             vs = model_net_out.vs[:-1] # vs stores predicted value v_0, v_1, v_2, ... v_k-1
             if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits[:-1]
-            logits = model_net_out.logits[:-1] # logits stores predicted logits l_0, l_1, ..., l_k-1
-            encodes = model_net_out.encodes # encoding z_0, z_1, ...z_k
+            logits = model_net_out.logits[:-1] # logits stores predicted logits l_0, l_1, ..., l_k-1            
 
-        target_rewards = train_model_out.reward[1:train_len+1]  # true reward r_1, r_2, ..., r_k
+        target_rewards = train_model_out.reward[1:train_len+1]  # true reward r_1, r_2, ..., r_k       
+
         target_logits = train_model_out.policy_logits[1:train_len+1] # true logits l_0, l_1, ..., l_k-1
-
         target_vs = train_model_out.baseline[k:train_len+k] # baseline ranges from v_k, v_k+1, ... v_2k
         for t in range(k, 0, -1):
-            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]
-            if self.flags.model_done_mask:
-                t_done = train_model_out.truncated_done[t:train_len+t]
-                if torch.any(t_done):
-                    target_vs[t_done] = train_model_out.baseline[t-1:train_len+t-1][t_done]
+            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]            
+            t_done = train_model_out.truncated_done[t:train_len+t]
+            if torch.any(t_done):
+                target_vs[t_done] = train_model_out.baseline[t-1:train_len+t-1][t_done]
 
         # target_vs[0] is now r_1 + gamma r_2 + ... + gamma ** (k-1) * r_k + gamma ** (k) * v_k; i.e. k step return for s_1
 
         # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss 
         # we set all target r_j+1, v_j, a_j to 0, 0, and last a_{j+1} 
-
-        if not self.flags.perfect_model:
-            done = torch.zeros(b, dtype=torch.bool, device=self.device)
-            done_mask = torch.zeros(train_len, b, dtype=torch.bool, device=self.device) 
-            # done_mask stores accumulated done: True, adone_1, adone_2, ..., adone_k-1
-            for t in range(train_len-1):
-                done = torch.logical_or(done, train_model_out.done[t+1])                
-                target_rewards[t+1, done] = 0.
-                target_logits[t+1, done] = target_logits[t, done]
-                target_vs[t+1, done] = 0.
-                if self.flags.model_supervise:
-                    gym_env_out[t+1, done] = gym_env_out[t, done] 
-                done_mask[t+1] = torch.logical_or(done_mask[t], train_model_out.truncated_done[t+1])
-
-        done_mask = (~done_mask).float() if self.flags.model_done_mask else None
         
+        if not self.flags.perfect_model:
+            trun_done = torch.zeros(train_len+1, b, dtype=torch.bool, device=self.device) 
+            true_done = torch.zeros(train_len+1, b, dtype=torch.bool, device=self.device) 
+            # done_mask stores accumulated done: True, adone_1, adone_2, ..., adone_k
+            for t in range(1, train_len+1):             
+                trun_done[t] = torch.logical_or(trun_done[t-1], train_model_out.truncated_done[t])
+                true_done[t] = torch.logical_or(true_done[t-1], train_model_out.done[t])
+                if not self.flags.model_done_loss_cost > 0.:  gym_env_out[t, true_done[t]] = 0.                 
+                if t < train_len:
+                    target_rewards[t, true_done[t]] = 0.
+                    target_logits[t, true_done[t]] = target_logits[t-1, true_done[t]]
+                    target_vs[t, true_done[t]] = 0.                     
+            if self.flags.model_done_loss_cost > 0.:
+                done_mask = (~torch.logical_or(trun_done,  true_done)).float()
+                target_done =  torch.logical_and(~trun_done,  true_done).float()[1:]
+            else:
+                done_mask = (~trun_done).float()              
+        else:
+            done_mask = torch.ones(train_len, b, device=self.device) 
+
         if self.flags.value_prefix:
             target_rewards = torch.cumsum(target_rewards, dim=0)
             
         # compute final loss
-
-        #huberloss = torch.nn.HuberLoss(reduction='none', delta=1.0)    
-        #rs_loss = torch.sum(huberloss(rs, target_rewards.detach()) * (~done_masks).float())
+        # compute rs loss
         if self.flags.perfect_model:
             rs_loss =  None
         else:
@@ -319,13 +344,12 @@ class ModelLearner():
                         target = torch.flatten(target_rs_enc_v, 0, 1),
                       )
                 rs_loss = rs_loss.view(train_len, b)
-            if self.flags.model_done_mask:
-                rs_loss = rs_loss * done_mask
+            rs_loss = rs_loss * done_mask[:-1]
             rs_loss = torch.sum(rs_loss, dim=0)
             rs_loss = rs_loss * is_weights
             rs_loss = torch.sum(rs_loss)
             
-        #vs_loss = torch.sum(huberloss(vs[:-1], target_vs.detach()))
+        # compute vs loss
         if not self.flags.reward_transform:
             vs_loss = (vs[:train_len] - target_vs.detach()) ** 2
         else:
@@ -335,30 +359,59 @@ class ModelLearner():
                         target = torch.flatten(target_vs_enc_v.detach(), 0, 1)
                       )
             vs_loss = vs_loss.view(train_len, b)
-        if self.flags.model_done_mask:
-            vs_loss = vs_loss * done_mask
+        vs_loss = vs_loss * done_mask[:-1]
         vs_loss = torch.sum(vs_loss, dim=0)
         vs_loss = vs_loss * is_weights
         vs_loss = torch.sum(vs_loss)
 
+        # compute logit loss
         logits_loss = compute_cross_entropy_loss(
-            logits, target_logits.detach(), is_weights, mask=done_mask)   
+            logits, target_logits.detach(), is_weights, mask=done_mask[:-1]) 
 
-        if self.flags.model_supervise:
-            sup_loss = self.model_net.supervise_loss(encodes=encodes[1:], x=gym_env_out[1:train_len+1], 
-                actions=train_model_out.action[1:train_len+1], is_weights=is_weights, mask=done_mask, one_hot=False)
+        # compute done loss
+        if self.flags.model_done_loss_cost > 0.:
+            done_loss = torch.nn.BCEWithLogitsLoss(reduction='none')(
+                pred_done_logits, target_done)       
+            done_loss = done_loss * (~trun_done).float()[:-1]
+            done_loss = torch.sum(done_loss, dim=0)
+            done_loss = done_loss * is_weights
+            done_loss = torch.sum(done_loss)
+        else:
+            done_loss = None
+
+        # compute supervise loss
+        if self.flags.model_sup_loss_cost > 0.:
+            sup_loss = self.model_net.supervise_loss(
+                xs=gym_env_out[:train_len+1],
+                model_net_out=model_net_out,
+                is_weights=is_weights, 
+                mask=done_mask, 
+                one_hot=False)
         else:
             sup_loss = None
-
+        
+        if self.flags.model_img_loss_cost > 0.:
+            img_loss = self.model_net.img_loss(
+                xs=gym_env_out[:train_len+1],
+                model_net_out=model_net_out,
+                is_weights=is_weights, 
+                mask=done_mask)
+        else:
+            img_loss = None
+        
         total_loss = self.flags.model_vs_loss_cost * vs_loss + self.flags.model_logits_loss_cost * logits_loss
         if rs_loss is not None: total_loss = total_loss + self.flags.model_rs_loss_cost * rs_loss
+        if done_loss is not None: total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
         if sup_loss is not None: total_loss = total_loss + self.flags.model_sup_loss_cost * sup_loss
+        if img_loss is not None: total_loss = total_loss + self.flags.model_img_loss_cost * img_loss
 
         losses = {"total_loss": total_loss,
                    "vs_loss": vs_loss,
                    "logits_loss": logits_loss,
                    "rs_loss": rs_loss,
-                   "sup_loss": sup_loss }
+                   "done_loss": done_loss,
+                   "sup_loss": sup_loss,
+                   "img_loss": img_loss}
 
         # compute priorities
         if not self.flags.model_batch_mode:            

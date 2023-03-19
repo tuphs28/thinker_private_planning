@@ -5,8 +5,10 @@ import argparse
 import subprocess
 import os 
 import logging
+from matplotlib import pyplot as plt
 import numpy as np
 import torch
+import re
 
 def parse(args=None, override=True):
     parser = argparse.ArgumentParser(description="Thinker v1")
@@ -19,7 +21,7 @@ def parse(args=None, override=True):
     # Environment settings
     parser.add_argument("--use_wandb", action="store_true",
                         help="Whether to use wandb logging")
-    parser.add_argument("--wandb_ckp_freq", type=int, default="500000",
+    parser.add_argument("--wandb_ckp_freq", type=int, default=500000,
                         help="Checkpoint frequency of wandb.")    
     parser.add_argument("--env", type=str, default="cSokoban-v0",
                         help="Gym environment.")
@@ -73,7 +75,7 @@ def parse(args=None, override=True):
     # Model Training settings. 
     parser.add_argument("--disable_train_model", action="store_false", dest="train_model",
                         help="Disable training of model.")
-    parser.add_argument("--model_batch_size", default=128, type=int, 
+    parser.add_argument("--model_batch_size", default=256, type=int, 
                         help="Model learner batch size.")   
     parser.add_argument("--model_batch_mode", action="store_true",
                         help="Whether to use the full rollout from model buffer in training.")                                            
@@ -93,20 +95,20 @@ def parse(args=None, override=True):
                         help="Number of transition accumulated before model start learning.")     
     parser.add_argument("--test_policy_type", default=1, type=int, 
                         help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
-    parser.add_argument("--model_min_step_per_transition", default=14, type=int, 
+    parser.add_argument("--model_min_step_per_transition", default=5, type=int, 
                         help="Minimum number of model learning step on one transition")                         
-    parser.add_argument("--model_max_step_per_transition", default=15, type=int, 
+    parser.add_argument("--model_max_step_per_transition", default=6, type=int, 
                         help="Maximum number of model learning step on one transition")                                                 
                             
   
     # Actor architecture settings
-    parser.add_argument("--actor_net_ver", default=0, type=int, 
+    parser.add_argument("--actor_net_ver", default=1, type=int, 
                         help="Version of actor net.")    
-    parser.add_argument("--tran_dim", default=96, type=int, 
+    parser.add_argument("--tran_dim", default=128, type=int, 
                         help="Size of transformer hidden dim.")
     parser.add_argument("--tran_mem_n", default=40, type=int, 
                         help="Size of transformer memory.")
-    parser.add_argument("--tran_layer_n", default=3, type=int,
+    parser.add_argument("--tran_layer_n", default=4, type=int,
                         help="Number of transformer layer.")
     parser.add_argument("--tran_t", default=1, type=int, 
                         help="Number of recurrent step for transformer.")   
@@ -115,11 +117,15 @@ def parse(args=None, override=True):
     parser.add_argument("--tran_attn_b", default=5,
                         type=float, help="Bias attention for current position.")        
     parser.add_argument("--actor_see_p", default=0,
-                        type=float, help="Probability of allowing actor to see state.")                                
+                        type=float, help="Probability of allowing actor to see state.")                                    
     parser.add_argument("--actor_see_encode",  action="store_true",
                         help="Whether to see the encoded state")        
     parser.add_argument("--actor_see_double_encode",  action="store_true",
-                        help="Whether to see double encoded state (need to be eanabled with actor_see_encode)")                                          
+                        help="Whether to see double encoded state (need to be eanabled with actor_see_encode)")        
+    parser.add_argument("--actor_see_h",  action="store_true",
+                        help="Whether to see the model hidden state (need to be eanabled with actor_see_encode)")                                               
+    parser.add_argument("--actor_only_see_h",  action="store_true",  
+                        help="Whether to see only the model hidden state (need to be eanabled with actor_see_encode)")                                                   
     parser.add_argument("--actor_drc", action="store_true",
                         help="Whether to use drc in encoding state")    
     parser.add_argument("--actor_encode_concat_type",  default=0,
@@ -131,9 +137,13 @@ def parse(args=None, override=True):
     parser.add_argument("--model_size_nn", default=1,
                         type=int, help="Model size multipler.")       
     parser.add_argument("--model_zero_init", action="store_true",
-                        help="Zero initialisation for the model output") 
+                        help="Zero initialisation for the model output")  
+    parser.add_argument("--model_disable_bn", action="store_true",
+                        help="Whether to disable batch norm in dynamic and output network")     
     parser.add_argument("--value_prefix", action="store_true",
-                        help="Whether to use value prefix in model")                 
+                        help="Whether to use value prefix in model")         
+    parser.add_argument("--duel_net", action="store_true",
+                        help="Whether to use duel net as model")            
                                                            
     
     # Actor loss settings
@@ -170,16 +180,26 @@ def parse(args=None, override=True):
                        help="Multipler to vs loss when training the model.")                           
     parser.add_argument("--model_rs_loss_cost", default=1, type=float,
                        help="Multipler to rs loss when training the model.")                                                  
-    parser.add_argument("--model_sup_loss_cost", default=1, type=float,
+    parser.add_argument("--model_done_loss_cost", default=0, type=float,
+                       help="Multipler to done loss when training the model.")                                                      
+    parser.add_argument("--model_sup_loss_cost", default=0, type=float,
                        help="Multipler to self-supervise loss when training the model.")                                                                         
+    parser.add_argument("--model_img_loss_cost", default=0,  type=float,
+                       help="Multipler to image reconstruction loss when training the model.")                  
+    parser.add_argument("--model_kl_alpha", default=0.8, type=float,
+                       help="Alpha for computing KL divergence in sup_loss when model_supervise_type is 3.")                                                                                
+    parser.add_argument("--model_sup_ignore_first", action="store_true",
+                        help="Whether to ignore the first step in img_loss and sup_loss")   
+    parser.add_argument("--model_img_loss_use_pred_zs", action="store_true",
+                        help="Whether to use predicted zs instead of true zs in img_loss")       
+    parser.add_argument("--model_stop_vpi_grad", action="store_true",
+                        help="Whether to stop gradient passing through h in value and logit predictor")   
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
                        help="0 for mean root value, 1 for max root value, 2 for actor's value.")     
-    parser.add_argument("--model_supervise", action="store_true",
-                        help="Whether to add self-supervised loss in model training")    
+    parser.add_argument("--model_hz_tran", action="store_true",
+                        help="Whether to add a residual block between h and z")         
     parser.add_argument("--model_supervise_type", default=0, type=int,
-                       help="0 for efficientZero, 1 for direct cosine similarity.")                            
-    parser.add_argument("--model_done_mask", action="store_true",
-                        help="Whether to mask the loss after done")   
+                       help="0 for efficientZero, 1 for direct cosine similarity, 2 for direct L2 loss, 3 for KL div.")                                                          
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
@@ -200,7 +220,7 @@ def parse(args=None, override=True):
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,
                         type=float, help="Learning rate for actor learne.")
-    parser.add_argument("--model_learning_rate", default=0.00002,
+    parser.add_argument("--model_learning_rate", default=0.0002,
                         type=float, help="Learning rate for model learner.")                        
     parser.add_argument("--grad_norm_clipping", default=600, type=float,
                         help="Global gradient norm clip for actor learner.")
@@ -237,6 +257,23 @@ def tuple_map(x, f):
     else:
         return type(x)(*(f(y) if y is not None else None for y in x))
 
+def safe_squeeze(x, dim=0):
+    if x is None: 
+        return None
+    else:
+        return x.squeeze(dim)
+    
+def safe_unsqueeze(x, dim=0):
+    if x is None: 
+        return None
+    else:
+        return x.unsqueeze(dim)    
+    
+def safe_concat(xs, attr, dim=0):
+    if len(xs) == 0: return None
+    if getattr(xs[0], attr) is None: return None
+    return torch.concat([getattr(i, attr).unsqueeze(dim) for i in xs], dim=dim)
+
 def construct_tuple(x, **kwargs):
     return x(**{k: kwargs[k] if k in kwargs else None for k in x._fields})
 
@@ -268,6 +305,7 @@ def decode_model_out(model_out, num_actions, reward_tran):
         "reset": model_out[0,:,idx2],
         "time": model_out[0,:,idx2+1:-1],
         "derec": model_out[0,:,[-1]],
+        "raw": model_out[0]
     }
 
 def enc(x):
@@ -357,6 +395,10 @@ class Wandb():
         import wandb
         self.wandb = wandb
         exp_name = flags.xpid + subname
+        tags = []
+        if subname == '_model': tags.append('model')
+        m = re.match(r'^v\d+', exp_name)
+        if m: tags.append(m[0])
         self.wandb.init(
             project='thinker',
             config=flags,
@@ -366,6 +408,7 @@ class Wandb():
             resume="allow",
             id=exp_name,
             name=exp_name,
+            tags=tags,
         )
         self.wandb.config.update(flags, allow_val_change=True)
 
@@ -377,3 +420,14 @@ def compute_grad_norm(parameters, norm_type=2.0):
     device = grads[0].device
     total_norm = torch.norm(torch.stack([torch.norm(g.detach(), norm_type).to(device) for g in grads]), norm_type)
     return total_norm
+
+def plot_gym_env_out(x, ax=None, title=None, savepath=None):
+    if ax is None: _, ax = plt.subplots()
+    x = torch.swapaxes(torch.swapaxes(x[0,-3:].detach().cpu(),0,2),0,1).numpy()
+    if x.dtype == float: x = np.clip(x, 0, 1)
+    if x.dtype == int: x = np.clip(x, 0, 255)
+    ax.imshow(x, interpolation='nearest', aspect="auto")
+    if title is not None: ax.set_title(title)
+    if savepath is not None: 
+        plt.savefig(os.path.join(savepath, title+".png"))
+        plt.close()

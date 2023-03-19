@@ -1,6 +1,5 @@
 import time
-import numpy as np
-import argparse
+import traceback
 import ray
 import torch
 from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL
@@ -62,6 +61,10 @@ if __name__ == "__main__":
                 flags.gpu_learn_model = 0            
                 flags.gpu_self_play = 1
 
+    #flags.use_wandb = False
+    #flags.model_warm_up_n = 6400
+    #flags.model_buffer_n = 6400
+
     actor_buffer = ActorBuffer.remote(batch_size=flags.batch_size, num_p_actors=flags.num_p_actors)
     model_buffer = ModelBuffer.remote(flags) if flags.train_model else None
     param_buffer = GeneralBuffer.remote()        
@@ -101,7 +104,7 @@ if __name__ == "__main__":
     if flags.train_model:
         model_learner = ModelLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_model).remote(param_buffer, model_buffer, 0, flags)
         r_learner.append(model_learner.learn_data.remote())
-
+      
     if len(r_learner) >= 1: ray.get(r_learner)
     actor_buffer.set_finish.remote()    
     ray.get(r_worker)
