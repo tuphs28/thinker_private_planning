@@ -91,7 +91,7 @@ def parse(args=None, override=True):
                         help="Type 0: update priority for all time step; Type 1: update priority for the first time step (mean of all error); Type 2: update priority for the first time step (first-step error)")                        
     parser.add_argument("--model_buffer_n", default=200000, type=int, 
                         help="Maximum number of transition in model buffer.") 
-    parser.add_argument("--model_warm_up_n", default=400000, type=int, 
+    parser.add_argument("--model_warm_up_n", default=200000, type=int, 
                         help="Number of transition accumulated before model start learning.")     
     parser.add_argument("--test_policy_type", default=1, type=int, 
                         help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
