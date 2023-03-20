@@ -325,7 +325,7 @@ class ModelLearner():
             else:
                 done_mask = (~trun_done).float()              
         else:
-            done_mask = torch.ones(train_len, b, device=self.device) 
+            done_mask = torch.ones(train_len+1, b, device=self.device) 
 
         if self.flags.value_prefix:
             target_rewards = torch.cumsum(target_rewards, dim=0)
