@@ -10,7 +10,7 @@ from thinker.cenv import cVecModelWrapper, cVecFullModelWrapper
 from thinker import util
 
 EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'model_encodes', 
-    'see_mask', 'reward', 'done', 'real_done', 'truncated_done',
+    'reward', 'done', 'real_done', 'truncated_done',
     'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
 def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
@@ -77,9 +77,6 @@ class PostVecModelWrapper(gym.Wrapper):
         self.num_actions = num_actions
         self.flags = flags
         self.model_wrap = model_wrap        
-
-        self.actor_see_p = flags.actor_see_p 
-        self.actor_see_encode = flags.actor_see_encode
         self.model_out_shape = env.model_out_shape if self.model_wrap else None
         self.gym_env_out_shape = env.gym_env_out_shape if self.model_wrap else env.observation_space.shape[1:]
         self.reward_type = flags.reward_type if model_wrap else 0
@@ -100,13 +97,12 @@ class PostVecModelWrapper(gym.Wrapper):
             model_encodes = None
 
         gym_env_out = gym_env_out.unsqueeze(0)
-        if self.model_wrap and self.actor_see_encode: model_encodes = model_encodes.unsqueeze(0)
+        if model_encodes is not None: model_encodes = model_encodes.unsqueeze(0)
 
         ret = EnvOut(
             gym_env_out=gym_env_out,
             model_out=model_out,
             model_encodes=model_encodes,
-            see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p),
             reward=torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device),
             done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
             real_done=torch.ones(1, self.env_n, dtype=torch.bool, device=self.device),
@@ -154,7 +150,7 @@ class PostVecModelWrapper(gym.Wrapper):
 
         if gym_env_out is not None:
             gym_env_out = gym_env_out.unsqueeze(0)
-        if self.actor_see_encode and self.model_wrap: model_encodes = model_encodes.unsqueeze(0)
+        if model_encodes is not None: model_encodes = model_encodes.unsqueeze(0)
 
         self.episode_step += 1
         self.episode_return = self.episode_return + reward.unsqueeze(0)
@@ -180,7 +176,6 @@ class PostVecModelWrapper(gym.Wrapper):
             gym_env_out=gym_env_out,
             model_out=model_out,
             model_encodes=model_encodes,
-            see_mask=torch.rand(size=(1, self.env_n), device=self.device) > (1 - self.actor_see_p) if self.model_wrap else None,
             reward=reward.unsqueeze(0),
             done=done.unsqueeze(0),
             real_done=real_done.unsqueeze(0),

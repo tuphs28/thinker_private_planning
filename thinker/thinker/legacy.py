@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from thinker.core.rnn import ConvAttnLSTM
-from thinker.net import RewardTran, FrameEncoder, ActorOut
+from thinker.net import *
 
 class LegacyActorNet(nn.Module):    
     def __init__(self, obs_shape, gym_obs_shape, num_actions, flags):
@@ -20,8 +20,10 @@ class LegacyActorNet(nn.Module):
         self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim        
         self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 2 for planning rewards)
-        self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
-        self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
+        #self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
+        self.actor_see_p = 1 if flags.actor_see_type >=0 else 0
+        #self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
+        self.actor_see_encode = flags.actor_see_type >= 1
         self.actor_see_double_encode = flags.actor_see_double_encode # Whether the actor see the model encoded state or the raw env state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
@@ -359,3 +361,365 @@ class ModelNetRNN(nn.Module):
 
     def set_weights(self, weights):
         self.load_state_dict(weights)   
+
+
+class ModelNetBase(nn.Module):    
+    def __init__(self, obs_shape, num_actions, flags):        
+        super(ModelNetBase, self).__init__()      
+        self.rnn = False
+        self.flags = flags        
+        self.obs_shape = obs_shape
+        self.num_actions = num_actions          
+        self.reward_transform = flags.reward_transform
+        self.hz_tran = flags.model_hz_tran
+        self.kl_alpha = flags.model_kl_alpha        
+        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
+        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
+        self.frameEncoder = FrameEncoder(num_actions=num_actions, 
+                                         input_shape=obs_shape, 
+                                         type_nn=self.type_nn, 
+                                         size_nn=self.size_nn,
+                                         decoder=self.flags.model_img_loss_cost > 0.)
+        f_shape = self.frameEncoder.out_shape
+        inplanes = (f_shape[0] if self.type_nn not in [4] else 
+                    f_shape[0] * f_shape[1])
+
+        self.dynamicModel = DynamicModel(num_actions=num_actions, 
+                                         inplanes=inplanes, 
+                                         type_nn=self.type_nn, 
+                                         size_nn=self.size_nn,
+                                         disable_bn=self.flags.model_disable_bn)  
+        d_outplanes = self.dynamicModel.outplanes
+        
+        input_shape = (f_shape if self.type_nn not in [4] else 
+                    (f_shape[0] * f_shape[1] + d_outplanes,))
+        
+        self.output_rvpi = Output_rvpi(num_actions=num_actions, 
+                                       input_shape=input_shape, 
+                                       value_prefix=flags.value_prefix,
+                                       max_unroll_length=flags.model_k_step_return, 
+                                       reward_transform=self.reward_transform,
+                                       stop_vpi_grad=flags.model_stop_vpi_grad, 
+                                       zero_init=flags.model_zero_init, 
+                                       type_nn=self.type_nn, 
+                                       size_nn=self.size_nn,
+                                       predict_done=self.flags.model_done_loss_cost > 0.,
+                                       disable_bn=self.flags.model_disable_bn)
+        
+        if self.reward_transform:
+            self.reward_tran = self.output_rvpi.reward_tran
+
+        self.supervise = flags.model_sup_loss_cost > 0.
+        self.model_supervise_type = flags.model_supervise_type
+
+        if self.supervise:                        
+            if self.model_supervise_type == 0:
+                flatten_in_dim = (obs_shape[1]//16)*(obs_shape[2])//16*inplanes          
+                self.P_1 = nn.Sequential(nn.Linear(flatten_in_dim, 512), nn.BatchNorm1d(512), nn.ReLU(),
+                                         nn.Linear(512, 512), nn.BatchNorm1d(512), nn.ReLU(),
+                                         nn.Linear(512, 1024), nn.BatchNorm1d(1024))
+                self.P_2 = nn.Sequential(nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(), nn.Linear(512, 1024))
+            self.cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+        
+        if self.hz_tran:
+            if self.type_nn in [0, 1, 2, 3]:
+                self.h_to_z_conv = nn.Sequential(
+                    ResBlock(inplanes=inplanes, disable_bn=self.flags.model_disable_bn), 
+                    conv3x3(inplanes, inplanes))
+                self.z_to_h_conv = nn.Sequential(
+                    ResBlock(inplanes=inplanes, disable_bn=self.flags.model_disable_bn), 
+                    conv3x3(inplanes, inplanes))
+            elif self.type_nn in [4]:
+                self.h_to_z_mlp = mlp(d_outplanes, [d_outplanes], inplanes, 
+                    activation=nn.ELU, norm=False)
+                
+        assert not (self.type_nn == 4 and not self.hz_tran), "dreamer net must be used with hz separation"
+
+    def h_to_z(self, h, action=None, flatten=False):
+        if not self.hz_tran: return h, None
+        if flatten:
+            h_ = torch.flatten(h, 0, 1)   
+        else:
+            h_ = h
+        if self.type_nn in [4]: 
+            b = h_.shape[0]
+            s_size = 32 * self.size_nn
+            z_logit = self.h_to_z_mlp(h).view(b, s_size, s_size)
+            z_p = F.softmax(z_logit, dim=2)
+            z = torch.multinomial(z_p.view(b*s_size, s_size), num_samples=1).view(b, s_size)
+            z = F.one_hot(z, num_classes=s_size)
+            z = z + z_p - z_p.detach()
+        else:                        
+            z = self.h_to_z_conv(h_)
+            z_logit = None
+        if flatten:
+            z = z.view(h.shape[:2] + z.shape[1:])
+            z_logit = z_logit.view(h.shape[:2] + z_logit.shape[1:]) if z_logit is not None else None            
+        return z, z_logit
+    
+    def z_to_h(self, z, flatten=False):
+        if self.type_nn in [4]: 
+            in_shape = z.shape[0] if not flatten else (z.shape[0] * z.shape[1])
+            h = self.dynamicModel.init_state(in_shape, device=z.device)[0]            
+        else:
+            if not self.hz_tran: return z
+            if flatten:    
+                z_ = torch.flatten(z, 0, 1)   
+            else:
+                z_ = z
+            h = self.z_to_h_conv(z_)
+        if flatten:
+            h = h.view(z.shape[:2] + h.shape[1:])
+        return h
+
+    def supervise_loss(self, xs, model_net_out, is_weights, mask, one_hot=False):
+        """
+        Args:
+            xs(tensor): state s with shape (k+1, B, *) in the form of s_t, s_{t+1}, ..., s_{t+k}
+            model_net_out(tensor): model_net_out from forward
+            mask(tensor): mask (float) with shape (k, B)
+            im_weights(tensor): importance weight with shape (B) for each sample;  
+        Return:
+            loss(tensor): scalar self-supervised loss
+        """
+        k, b, *_ = xs.shape
+        k = k - 1        
+        
+        if self.model_supervise_type in [0, 1, 2]:
+            # 0 for SimSiam loss (efficient zero)
+            # 1 for direct cos loss
+            # 2 for direct L2 loss
+            # 3 for dreamer loss
+            true_zs = model_net_out.true_zs[1:]       
+            pred_zs = torch.flatten(model_net_out.pred_zs[1:], 0, 1)        
+            pred_zs = torch.flatten(pred_zs, 1)
+            if self.model_supervise_type == 0:
+                src = self.P_2(self.P_1(pred_zs))
+            elif self.model_supervise_type in [1, 2]:
+                src = pred_zs
+            
+            with torch.no_grad():
+                true_zs = torch.flatten(true_zs, 0, 1)
+                true_zs = torch.flatten(true_zs, 1)
+                if self.model_supervise_type == 0:
+                    tgt = self.P_1(true_zs)
+                elif self.model_supervise_type in [1, 2]:
+                    tgt = true_zs
+            
+            if self.model_supervise_type in [0, 1]:
+                sup_loss = -self.cos(src, tgt.detach())
+            elif self.model_supervise_type == 2:
+                sup_loss = torch.mean((src - tgt.detach())**2, dim=-1)            
+            sup_loss = sup_loss.view(k, b)
+            s_mask = mask[1:]
+
+        elif self.model_supervise_type in [3]:
+            if self.flags.model_sup_ignore_first:
+                true_z_logits = model_net_out.true_z_logits[1:]
+                pred_z_logits = model_net_out.pred_z_logits[1:]
+                k_ = k 
+            else:
+                true_z_logits = model_net_out.true_z_logits
+                pred_z_logits = model_net_out.pred_z_logits
+                k_ = k + 1
+
+            _, _, c1, c2 = true_z_logits.shape
+            true_z_logits = true_z_logits.reshape(k_*b*c1, c2)
+            pred_z_logits = pred_z_logits.reshape(k_*b*c1, c2)
+
+            alpha = self.kl_alpha
+            target = F.softmax(true_z_logits, dim=-1)
+            sup_loss_pre = torch.nn.CrossEntropyLoss(reduction="none")(
+                    input = pred_z_logits,
+                    target = target.detach())
+            sup_loss_post = torch.nn.CrossEntropyLoss(reduction="none")(
+                    input = pred_z_logits.detach(),
+                    target = target)
+            sup_loss = alpha  * sup_loss_pre + (1 - alpha) * sup_loss_post
+            sup_loss = sup_loss.view(k_, b, c1)   
+            sup_loss = torch.sum(sup_loss, dim=-1)
+
+            if self.flags.model_sup_ignore_first:
+                s_mask = mask[1:]
+            else:                
+                s_mask = mask
+                
+        if mask is not None: sup_loss = sup_loss * s_mask     
+        sup_loss = torch.sum(sup_loss, dim=0)    
+        sup_loss = sup_loss * is_weights
+        sup_loss = torch.sum(sup_loss)
+
+        return sup_loss
+
+    def img_loss(self, xs, model_net_out, is_weights, mask):
+        """
+        Args:
+            xs(tensor): state s with shape (k+1, B, *) in the form of s_t, s_{t+1}, ..., s_{t+k}
+            model_net_out(tensor): model_net_out from forward
+            mask(tensor): mask (float) with shape (k, B)
+            im_weights(tensor): importance weight with shape (B) for each sample;  
+        Return:
+            loss(tensor): scalar img reconstruction loss
+        """    
+        k, b, *_ = xs.shape
+        k = k - 1    
+
+        if self.flags.model_img_loss_cost > 0:
+            # image reconstruction loss
+
+            if self.flags.model_sup_ignore_first:
+                true_zs = model_net_out.true_zs[1:]
+                pred_zs = model_net_out.pred_zs[1:]
+                hs = model_net_out.hs[1:]
+                xs = xs[1:]
+            else:
+                true_zs = model_net_out.true_zs
+                pred_zs = model_net_out.pred_zs
+                hs = model_net_out.hs 
+                xs = xs
+
+            if self.flags.model_img_loss_use_pred_zs:
+                decoder_in = pred_zs
+            else:
+                decoder_in = true_zs
+
+            if self.type_nn in [4]:
+                h = torch.flatten(hs, 0, 1)
+            else:
+                h = None
+
+            pred_xs = self.frameEncoder.decode(torch.flatten(decoder_in, 0, 1), h)
+            xs = torch.flatten(xs, 0, 1).float() / 255.0
+            img_loss = torch.sum(torch.square(xs - pred_xs), dim=(1, 2, 3))                        
+            img_loss = img_loss.view(k if self.flags.model_sup_ignore_first else k+1, b)
+
+            if mask is not None: 
+                if self.flags.model_sup_ignore_first:
+                    i_mask = mask[1:]
+                else:
+                    i_mask = mask
+                img_loss = img_loss * i_mask
+
+            img_loss = torch.sum(img_loss, dim=0)
+            img_loss = img_loss * is_weights
+            img_loss = torch.sum(img_loss)
+        else:
+            img_loss = None
+
+        return img_loss
+        
+    def forward(self, xs, actions, one_hot=False, compute_true_z=False, inference=True):
+        """
+        Args:
+            x(tensor): frames (uint8) with shape (k+1, B, C, H, W), in the form of s_t, s_{t+1}, ..., s_{t+k}, or
+                with shape (B, C, H, W) in the form of s_t; 
+            actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
+            one_hot (bool): whether to the action use one-hot encoding      
+            true_z(bool): if True, true z will be generated (require x to be in shape (k+1, ...))
+            inference(bool): if True, predicted z will be fed back into the network, else true z
+                 (require x to be in shape (k+1, ...))
+        Return:
+            rs(tensor): predicted reward with shape (k, B, ...), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
+            vs(tensor): predicted value with shape (k+1, B, ...), in the form of v_{t}, v_{t+1}, v_{t+2}, ..., v_{t+k}
+            logits(tensor): predicted policy with shape (k+1, B, ...), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
+            pred_zs(tensor): predicted encoded states with shape (k+1, B, ...), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
+            true_zs(tensor): true encoded states with shape (k+1, B, ...), in the form of z_t, z_{t+1}, z_{t+2}, ..., z_{t+k}
+            hs(tensor): hidden state with shape (k+1, B, ...), in the form of h_t, h_{t+1}, h_{t+2}, ..., h_{t+k}
+            r_state(tensor): reward hidden state with shape (B, ...)
+            (Recall we use the transition notation: s_t, a_t, r_{t+1}, s_{t+1}, ...)                
+        """        
+        k, b, *_ = actions.shape
+        k = k - 1
+        if len(xs.shape) == 4: xs = xs.unsqueeze(0)
+        if compute_true_z or not inference:
+            assert xs.shape[0] == k + 1, "in non-inference or true_z mode, xs shape should be k+1 instead of %d" % xs.shape[0]
+
+        # initialise empty list
+        data = {key:[] for key in ModelNetOut._fields}
+        
+        if not one_hot: actions = F.one_hot(actions, self.num_actions)  
+        if self.type_nn in [0, 1, 2, 3]:
+            true_z, true_z_logit = self.frameEncoder(xs[0], actions[0], None)    
+            h = self.z_to_h(true_z, flatten=False)
+        elif self.type_nn in [4]:
+            h = self.dynamicModel.init_state(bsz=b, device=xs.device)[0]
+            true_z, true_z_logit = self.frameEncoder(xs[0], actions[0], h)  
+        r_state = self.output_rvpi.init_state(bsz=xs.shape[1], device=xs.device)
+        out_net_out = self.output_rvpi(true_z, h, predict_reward=False, state=())        
+        pred_z, pred_z_logit = self.h_to_z(h)
+
+        data["vs"].append(out_net_out.vs)
+        data["v_enc_logits"].append(out_net_out.v_enc_logits)
+        data["logits"].append(out_net_out.logits)
+        data["pred_zs"].append(pred_z)
+        data["pred_z_logits"].append(pred_z_logit)
+        data["true_zs"].append(true_z)
+        data["true_z_logits"].append(true_z_logit)
+        data["hs"].append(h)
+
+        z_in = true_z
+
+        for t in range(1, actions.shape[0]):  
+            out = self.forward_zh(z_in, h, r_state, actions[t])
+            for key in out._fields:
+                if key in ["true_zs", "true_z_logits", "r_state"]: continue
+                val = getattr(out, key)
+                if val is not None: val = val.squeeze(0)
+                data[key].append(val)
+            if compute_true_z or not inference:
+                true_z, true_z_logit = self.frameEncoder(xs[t], actions[t], data["hs"][t])    
+                data["true_zs"].append(true_z)
+                data["true_z_logits"].append(true_z_logit)
+            z_in = out.pred_zs[-1] if inference else true_z
+            h = out.hs[-1]
+            r_state = out.r_state
+        
+        for key in data.keys():
+            if len(data[key]) > 0 and data[key][0] is not None:
+                data[key] = torch.concat([val.unsqueeze(0) for val in data[key]], dim=0)
+            else:
+                data[key] = None
+        
+        data["r_state"] = r_state
+        return util.construct_tuple(ModelNetOut, **data)
+    
+    def forward_zh(self, z, h, r_state, action, one_hot=True):
+        """
+        One-step transition from z_t, h_t, a_t to predicted z_{t+1}, h_{t+1}, r_{t+1}, v_{t+1}, pi_{t+1}
+        Args:
+            z: encoded state with shape (B, ...), in the form of z_t
+            h: hidden state with shape (B, ...), in the form of h_t
+            r_state: hidden state of reward predictor with shape (B, ...)
+            action: action with shape (B, ...)
+        """
+        if not one_hot: action = F.one_hot(action, self.num_actions)                  
+        h = self.dynamicModel(z=z, h=h, actions=action)        
+        pred_z, pred_z_logit = self.h_to_z(h, action=action)
+        out_net_out = self.output_rvpi(
+                z, h, predict_reward=True, state=r_state)
+
+        return ModelNetOut(single_rs=util.safe_unsqueeze(out_net_out.single_rs, 0),
+                           rs=util.safe_unsqueeze(out_net_out.rs, 0), 
+                           r_enc_logits=util.safe_unsqueeze(out_net_out.r_enc_logits, 0), 
+                           dones=util.safe_unsqueeze(out_net_out.dones, 0), 
+                           done_logits=util.safe_unsqueeze(out_net_out.done_logits, 0), 
+                           vs=util.safe_unsqueeze(out_net_out.vs, 0), 
+                           v_enc_logits=util.safe_unsqueeze(out_net_out.v_enc_logits, 0), 
+                           logits=util.safe_unsqueeze(out_net_out.logits, 0), 
+                           pred_xs=None,
+                           pred_zs=util.safe_unsqueeze(pred_z, 0),
+                           pred_z_logits=util.safe_unsqueeze(pred_z_logit, 0),
+                           true_zs=None,
+                           true_z_logits=None,
+                           hs=util.safe_unsqueeze(h, 0), 
+                           r_state=r_state,
+                           )
+    
+    def get_weights(self):
+        return {k: v.cpu() for k, v in self.state_dict().items()}
+
+    def set_weights(self, weights):
+        device = next(self.parameters()).device
+        if device != torch.device("cpu"):
+            weights = {k: v.to(device) for k, v in weights.items()}
+        self.load_state_dict(weights)          

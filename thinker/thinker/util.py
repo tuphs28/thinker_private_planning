@@ -116,16 +116,10 @@ def parse(args=None, override=True):
                         help="Whether to disable attention in LSTM-transformer.")
     parser.add_argument("--tran_attn_b", default=5,
                         type=float, help="Bias attention for current position.")        
-    parser.add_argument("--actor_see_p", default=0,
-                        type=float, help="Probability of allowing actor to see state.")                                    
-    parser.add_argument("--actor_see_encode",  action="store_true",
-                        help="Whether to see the encoded state")        
+    parser.add_argument("--actor_see_type", default=2, type=int,
+                        help="What actor sees from model: -1 for nothing, 0. for predicted / true frame, 1. for z, 2. for h.")      
     parser.add_argument("--actor_see_double_encode",  action="store_true",
                         help="Whether to see double encoded state (need to be eanabled with actor_see_encode)")        
-    parser.add_argument("--actor_see_h",  action="store_true",
-                        help="Whether to see the model hidden state (need to be eanabled with actor_see_encode)")                                               
-    parser.add_argument("--actor_only_see_h",  action="store_true",  
-                        help="Whether to see only the model hidden state (need to be eanabled with actor_see_encode)")                                                   
     parser.add_argument("--actor_drc", action="store_true",
                         help="Whether to use drc in encoding state")    
     parser.add_argument("--actor_encode_concat_type",  default=0,
@@ -187,20 +181,10 @@ def parse(args=None, override=True):
     parser.add_argument("--model_sup_loss_cost", default=0, type=float,
                        help="Multipler to self-supervise loss when training the model.")                                                                         
     parser.add_argument("--model_img_loss_cost", default=0,  type=float,
-                       help="Multipler to image reconstruction loss when training the model.")                  
-    parser.add_argument("--model_kl_alpha", default=0.8, type=float,
-                       help="Alpha for computing KL divergence in sup_loss when model_supervise_type is 3.")                                                                                
-    parser.add_argument("--model_sup_ignore_first", action="store_true",
-                        help="Whether to ignore the first step in img_loss and sup_loss")   
-    parser.add_argument("--model_img_loss_use_pred_zs", action="store_true",
-                        help="Whether to use predicted zs instead of true zs in img_loss")       
-    parser.add_argument("--model_stop_vpi_grad", action="store_true",
-                        help="Whether to stop gradient passing through h in value and logit predictor")   
+                       help="Multipler to image reconstruction loss when training the model.")     
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
-                       help="0 for mean root value, 1 for max root value, 2 for actor's value.")     
-    parser.add_argument("--model_hz_tran", action="store_true",
-                        help="Whether to add a residual block between h and z")         
-    parser.add_argument("--model_supervise_type", default=0, type=int,
+                       help="0 for mean root value, 1 for max root value, 2 for actor's value.")    
+    parser.add_argument("--model_supervise_type", default=1, type=int,
                        help="0 for efficientZero, 1 for direct cosine similarity, 2 for direct L2 loss, 3 for KL div.")                                                          
 
     # Model wrapper settings
@@ -234,8 +218,10 @@ def parse(args=None, override=True):
     else:
         flags = parser.parse_args(args)  
 
-    assert not (not flags.perfect_model and flags.actor_see_p > 0 and not flags.actor_see_encode), "learned model cannot see gym_env_out directly"
-    
+    assert not (flags.duel_net and flags.perfect_model), "no need duel net if using perfect model"
+    assert not (not flags.perfect_model and not flags.duel_net and flags.actor_see_type == 0), (
+        "to see the frame, either use perfect model or duel net")
+
     fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor"]    
     for f in fs:
         path = getattr(flags, f)
@@ -258,6 +244,12 @@ def tuple_map(x, f):
         return tuple(f(y) if y is not None else None for y in x)
     else:
         return type(x)(*(f(y) if y is not None else None for y in x))
+
+def safe_view(x, dims):
+    if x is None:
+        return None
+    else:
+        return x.view(*dims)
 
 def safe_squeeze(x, dim=0):
     if x is None: 

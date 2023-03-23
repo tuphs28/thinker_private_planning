@@ -54,16 +54,21 @@ class ModelLearner():
         self.step = 0
         self.real_step = 0
         
-        self.optimizer = torch.optim.Adam(self.model_net.parameters(),lr=flags.model_learning_rate)
         lr_lambda = lambda epoch: 1 - min(epoch, self.flags.total_steps) / self.flags.total_steps
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+        if self.flags.duel_net:
+            self.optimizer_m = torch.optim.Adam(self.model_net.model_net.parameters(),lr=flags.model_learning_rate)            
+            self.scheduler_m = torch.optim.lr_scheduler.LambdaLR(self.optimizer_m, lr_lambda)
+        self.optimizer_p = torch.optim.Adam(self.model_net.pred_net.parameters(),lr=flags.model_learning_rate)        
+        self.scheduler_p = torch.optim.lr_scheduler.LambdaLR(self.optimizer_p, lr_lambda)
 
         if self.flags.preload_model and not flags.load_checkpoint:
             checkpoint = torch.load(self.flags.preload_model, map_location=torch.device('cpu'))
             self.model_net.set_weights(checkpoint["model_state_dict" if "model_state_dict" in checkpoint else "model_net_state_dict"])  
             self._logger.info("Loadded model network from %s" % self.flags.preload_model)
             if "model_net_optimizer_state_dict" in checkpoint:
-                self.optimizer.load_state_dict(checkpoint["model_net_optimizer_state_dict"])  
+                if self.flags.duel_net:
+                    self.optimizer_m.load_state_dict(checkpoint["model_net_optimizer_m_state_dict"])  
+                self.optimizer_p.load_state_dict(checkpoint["model_net_optimizer_p_state_dict"])  
                 self._logger.info("Loadded model network's optimizer from %s" % self.flags.preload_model)            
 
         if flags.load_checkpoint:
@@ -81,7 +86,8 @@ class ModelLearner():
 
         # move network and optimizer to process device
         self.model_net.to(self.device)
-        util.optimizer_to(self.optimizer, self.device)
+        if self.flags.duel_net: util.optimizer_to(self.optimizer_m, self.device)
+        util.optimizer_to(self.optimizer_p, self.device)
 
         # model tester
         self.test_buffer = GeneralBuffer.remote()   
@@ -117,7 +123,7 @@ class ModelLearner():
 
             n = 0
             if self.flags.float16:
-                scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
+                self.scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
 
             while (self.real_step < self.flags.total_steps - max_diff):                    
                 c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
@@ -141,44 +147,37 @@ class ModelLearner():
                 # move the data to the process device
                 train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
                 is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
-                            
-                # compute losses
+                target = self.prepare_data(train_model_out)
+
+                if self.flags.duel_net:                            
+                    # compute losses for model_net
+                    if self.flags.float16:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):      
+                            losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
+                    else:
+                        losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
+                    total_norm_m = self.gradient_step(losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m)                    
+                else:
+                    losses_m = {}
+                    total_norm_m = torch.zeros(1, device=self.device)
+                    pred_xs = None
+
                 if self.flags.float16:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):      
-                        losses, priorities = self.compute_losses(train_model_out, is_weights)
+                        losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
                 else:
-                    losses, priorities = self.compute_losses(train_model_out, is_weights)
-                total_loss = losses["total_loss"]
-                self.model_buffer.update_priority.remote(inds, priorities)
-                
-                # gradient descent on loss
-                self.optimizer.zero_grad()
-                if self.flags.float16:
-                    scaler.scale(total_loss).backward()
-                else:
-                    total_loss.backward()
-
-                optimize_params = self.optimizer.param_groups[0]['params']
-                if self.flags.float16: scaler.unscale_(self.optimizer)
-                if self.flags.model_grad_norm_clipping > 0:
-                    total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
-                else:
-                    total_norm = util.compute_grad_norm(optimize_params)     
-                
-                if self.flags.float16:
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                else:
-                    self.optimizer.step()
-                    
-                self.scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
-                self.scheduler.step()                 
-                
+                    losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
+                total_norm_p = self.gradient_step(losses_p["total_loss_p"], self.optimizer_p, self.scheduler_p)
+                if self.flags.priority_alpha > 0:
+                    self.model_buffer.update_priority.remote(inds, priorities)                
                 self.step += numel_per_step
+
+                losses = losses_m
+                losses.update(losses_p)
                 # print statistics
                 if timer() - start_time > 5:
                     sps = (self.step - start_step) / (timer() - start_time)                
-                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f) total_norm %.2f" % (
+                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f) norm_m %.2f norm_p %.2f" % (
                                     n, 
                                     self.real_step, 
                                     self.step, 
@@ -186,11 +185,12 @@ class ModelLearner():
                                     sps, 
                                     np.mean(all_returns) if all_returns is not None else 0.,
                                     np.std(all_returns) if all_returns is not None else 0.,
-                                    total_norm.item())
-                    print_stats = ["total_loss", "vs_loss", "logits_loss", 
-                                "rs_loss", "sup_loss", "img_loss", "done_loss"]
+                                    total_norm_m.item(),
+                                    total_norm_p.item())
+                    print_stats = ["total_loss_m", "total_loss_p", "vs_loss", "logits_loss", 
+                                   "rs_loss", "sup_loss", "img_loss", "done_loss"]
                     for k in print_stats: 
-                        if losses[k] is not None:
+                        if k in losses and losses[k] is not None:
                             print_str += " %s %.6f" % (k, losses[k].item() / numel_per_step)
                     self._logger.info(print_str)
                     start_step = self.step
@@ -201,9 +201,10 @@ class ModelLearner():
                             "real_step": self.real_step,
                             "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
                             "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
-                            "model_total_norm": total_norm.item()}
+                            "model_total_norm_m": total_norm_m.item(),
+                            "model_total_norm_p": total_norm_p.item()}
                     for k in print_stats: 
-                        stats[k] = losses[k].item() / numel_per_step if losses[k] is not None else None
+                        stats[k] = losses[k].item() / numel_per_step if k in losses and losses[k] is not None else None
 
                     self.plogger.log(stats)
                     if self.flags.use_wandb:
@@ -254,68 +255,190 @@ class ModelLearner():
             self.close(1)            
             return False
 
-    def close(self, exit_code):
-        self.plogger.close()
-        if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
-
-    def compute_losses(self, train_model_out: TrainModelOut, is_weights: torch.Tensor):
-        k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
-        train_len = train_model_out.gym_env_out.shape[0] - k
-        # each elem in train_model_out is in the shape of (train_len + k, b, ...)
+    def compute_rs_loss(self, target, rs, r_enc_logits, reward_tran, is_weights):
+        k, b = self.flags.model_k_step_return, target["rewards"].shape[1]
+        done_mask = target["done_mask"]
+        if not self.flags.reward_transform:
+                rs_loss = (rs - target["rewards"]) ** 2
+        else:
+            _, target_rs_enc_v = reward_tran.encode(target["rewards"])
+            rs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                    input = torch.flatten(r_enc_logits, 0, 1),
+                    target = torch.flatten(target_rs_enc_v, 0, 1),
+                    )
+            rs_loss = rs_loss.view(k, b)
+        rs_loss = rs_loss * done_mask[:-1]
+        rs_loss = torch.sum(rs_loss, dim=0)
+        rs_loss = rs_loss * is_weights
+        rs_loss = torch.sum(rs_loss)
+        return rs_loss
     
-        gym_env_out = train_model_out.gym_env_out
+    def compute_done_loss(self, target, pred_done_logits, is_weights):
+        if self.flags.model_done_loss_cost > 0.:
+            done_loss = torch.nn.BCEWithLogitsLoss(reduction='none')(
+                pred_done_logits, target["dones"])       
+            done_loss = done_loss * (~target["trun_done"]).float()[:-1]
+            done_loss = torch.sum(done_loss, dim=0)
+            done_loss = done_loss * is_weights
+            done_loss = torch.sum(done_loss)
+        else:
+            done_loss = None
+        return done_loss
 
-        if self.flags.perfect_model: 
-            gym_env_out_ = gym_env_out[:train_len] # the last k elem are not needed         
-            action = train_model_out.action[:train_len]
-            model_net_out = self.model_net(
-                xs=gym_env_out_.view((-1,) + train_model_out.gym_env_out.shape[2:]),
-                actions=action.view(1, -1),  
-                one_hot=False,
-                compute_true_z=False,
-                inference=False)
-            vs = model_net_out.vs.view(k, b)            
-            if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits.reshape(k, b, -1)
-            logits = model_net_out.logits.view(k, b, -1)
-        else:        
-            model_net_out = self.model_net(
-                xs=gym_env_out[:train_len+1], # s_0, ..., s_k-1   
-                actions=train_model_out.action[:train_len+1], # a_-1, ..., a_k-1      
-                one_hot=False,
-                compute_true_z=self.flags.model_sup_loss_cost > 0. or self.model_net.type_nn in [4],
-                inference=self.model_net.type_nn not in [4],
-                )  # unroll for k step
-            rs = model_net_out.rs # predicted reward r_1, r_2, ..., r_k
-            r_enc_logits = model_net_out.r_enc_logits # predicted reward logits            
-            pred_done_logits = model_net_out.done_logits # predicted done d_1, d_2, ..., d_k
-            vs = model_net_out.vs[:-1] # vs stores predicted value v_0, v_1, v_2, ... v_k-1
-            if model_net_out.v_enc_logits is not None: v_enc_logits = model_net_out.v_enc_logits[:-1]
-            logits = model_net_out.logits[:-1] # logits stores predicted logits l_0, l_1, ..., l_k-1            
+    def compute_losses_m(self, train_model_out, target, is_weights):
+        k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
+        out = self.model_net.model_net.forward(
+            x=train_model_out.gym_env_out[0].float()/255.,
+            actions=train_model_out.action[:k+1],
+            one_hot=False
+        )
+        rs_loss = self.compute_rs_loss(target, out.rs, out.r_enc_logits, 
+                                       self.model_net.model_net.reward_tran,
+                                       is_weights)        
+        done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
+        img_loss = torch.mean(torch.square(target["xs"] - out.xs), dim=(2, 3, 4))
+        img_loss = img_loss * target["done_mask"][1:]
+        img_loss = torch.sum(img_loss, dim=0)
+        img_loss = img_loss * is_weights
+        img_loss = torch.sum(img_loss)
 
-        target_rewards = train_model_out.reward[1:train_len+1]  # true reward r_1, r_2, ..., r_k       
+        total_loss = self.flags.model_rs_loss_cost * rs_loss
+        total_loss = total_loss + self.flags.model_img_loss_cost * img_loss
+        if self.flags.model_done_loss_cost > 0.:
+            total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
+        return {"rs_loss": rs_loss,
+                "done_loss": done_loss,
+                "img_loss": img_loss,
+                "total_loss_m": total_loss,
+            }, out.xs.detach()
+    
+    def compute_losses_p(self, train_model_out, target, is_weights, pred_xs):
+        k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
+        first_x = train_model_out.gym_env_out[[0]].float()/255.
+        if self.flags.duel_net:            
+            xs = torch.concat([first_x, pred_xs], dim=0)
+        else:
+            xs = torch.concat([first_x, target["xs"]], dim=0)
+        
+        if self.flags.perfect_model:
+            out = self.model_net.pred_net.forward(
+                xs=xs[:k].view((k*b,) + xs.shape[2:]),
+                actions=train_model_out.action[:k].view(1, k*b),  
+                one_hot=False)
+            vs = out.vs.view(k, b)   
+            v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
+            logits = out.logits.view(k, b, -1)
+        else:
+            out = self.model_net.pred_net.forward(
+                xs=xs[:k+1], # s_0, ..., s_k   
+                actions=train_model_out.action[:k+1], # a_-1, ..., a_k-1      
+                one_hot=False)
+            vs = out.vs[:-1].view(k, b)   
+            if out.v_enc_logits is not None:
+                v_enc_logits = util.safe_view(out.v_enc_logits[:-1], (k, b, -1))
+            else:
+                v_enc_logits = None
+            logits = out.logits[:-1].view(k, b, -1)
+        
+        done_mask = target["done_mask"]
+        if self.model_net.pred_net.predict_rd:
+            rs_loss = self.compute_rs_loss(target, out.rs, out.r_enc_logits, 
+                                           self.model_net.pred_net.reward_tran, 
+                                           is_weights)        
+            done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
 
-        target_logits = train_model_out.policy_logits[1:train_len+1] # true logits l_0, l_1, ..., l_k-1
-        target_vs = train_model_out.baseline[k:train_len+k] # baseline ranges from v_k, v_k+1, ... v_2k
+        # compute vs loss
+        if not self.flags.reward_transform:
+            vs_loss = (vs[:k] - target["vs"].detach()) ** 2
+        else:
+            _, target_vs_enc_v = self.model_net.pred_net.reward_tran.encode(target["vs"])
+            vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                        input = torch.flatten(v_enc_logits[:k], 0, 1),
+                        target = torch.flatten(target_vs_enc_v.detach(), 0, 1)
+                      )
+            vs_loss = vs_loss.view(k, b)
+        vs_loss = vs_loss * done_mask[:-1]
+        vs_loss = torch.sum(vs_loss, dim=0)
+        vs_loss = vs_loss * is_weights
+        vs_loss = torch.sum(vs_loss)
+
+        # compute logit loss
+        logits_loss = compute_cross_entropy_loss(
+            logits, target["logits"].detach(), is_weights, mask=done_mask[:-1]) 
+        
+        # compute sup loss
+        if self.flags.model_sup_loss_cost > 0.:
+            tgt = out.true_zs[1:].detach().flatten(2)
+            src = out.pred_zs[1:].flatten(2)
+            if self.flags.model_supervise_type == 1:                
+                sup_loss = -torch.nn.CosineSimilarity(dim=2, eps=1e-6)(tgt, src)
+            elif self.flags.model_supervise_type == 2:
+                sup_loss = torch.mean(torch.square(tgt-src), dim=-1)
+            else:
+                raise Exception("supervise loss type not supported:", self.flags.model_supervise_type)
+            sup_loss = sup_loss * done_mask[1:]
+            sup_loss = torch.sum(sup_loss, dim=0)
+            sup_loss = sup_loss * is_weights
+            sup_loss = torch.sum(sup_loss)
+        else:
+            sup_loss = None
+        
+        losses = {"vs_loss": vs_loss,
+                  "logits_loss": logits_loss,
+                  "sup_loss": sup_loss}        
+        total_loss = self.flags.model_vs_loss_cost * vs_loss + self.flags.model_logits_loss_cost * logits_loss
+        if self.model_net.pred_net.predict_rd: 
+            total_loss = total_loss + self.flags.model_rs_loss_cost * rs_loss
+            losses["rs_loss"] = rs_loss
+            if self.flags.model_done_loss_cost > 0.:
+                total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
+                losses["done_loss"] = done_loss
+        if self.flags.model_sup_loss_cost > 0.:
+            total_loss = total_loss +  self.flags.model_sup_loss_cost * sup_loss
+
+        losses["total_loss_p"] = total_loss
+
+        # compute priorities
+        if self.flags.priority_alpha > 0.:
+            if not self.flags.model_batch_mode:            
+                priorities = torch.absolute(vs - target["vs"])
+                if self.flags.priority_type in [1, 2] and not self.flags.perfect_model:    
+                    # when the model is imperfect, we only reset the priority of the first time step
+                    if self.flags.priority_type == 1:
+                        priorities[0] = torch.mean(priorities, dim=0)
+                    priorities[1:] = torch.nan                 
+                priorities = priorities.detach().cpu().numpy()
+            else:
+                priorities = (torch.absolute(vs[0] - target["vs"][0])).detach().cpu().numpy()
+        else:
+            priorities = None
+
+        return losses, priorities
+
+    def prepare_data(self, train_model_out):
+        k, b = self.flags.model_k_step_return, train_model_out.gym_env_out.shape[1]
+        target_xs = train_model_out.gym_env_out.float() / 255.
+        target_rewards = train_model_out.reward[1:k+1]  # true reward r_1, r_2, ..., r_k    
+        target_logits = train_model_out.policy_logits[1:k+1] # true logits l_0, l_1, ..., l_k-1
+        target_vs = train_model_out.baseline[k:k+k] # baseline ranges from v_k, v_k+1, ... v_2k
         for t in range(k, 0, -1):
-            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:train_len+t]).float() + train_model_out.reward[t:train_len+t]            
-            t_done = train_model_out.truncated_done[t:train_len+t]
+            target_vs = target_vs * self.flags.discounting * (~train_model_out.done[t:k+t]).float() + train_model_out.reward[t:k+t]            
+            t_done = train_model_out.truncated_done[t:k+t]
             if torch.any(t_done):
-                target_vs[t_done] = train_model_out.baseline[t-1:train_len+t-1][t_done]
-
-        # target_vs[0] is now r_1 + gamma r_2 + ... + gamma ** (k-1) * r_k + gamma ** (k) * v_k; i.e. k step return for s_1
-
+                target_vs[t_done] = train_model_out.baseline[t-1:k+t-1][t_done]
+        
         # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss 
         # we set all target r_j+1, v_j, a_j to 0, 0, and last a_{j+1} 
         
         if not self.flags.perfect_model:
-            trun_done = torch.zeros(train_len+1, b, dtype=torch.bool, device=self.device) 
-            true_done = torch.zeros(train_len+1, b, dtype=torch.bool, device=self.device) 
+            trun_done = torch.zeros(k+1, b, dtype=torch.bool, device=self.device) 
+            true_done = torch.zeros(k+1, b, dtype=torch.bool, device=self.device) 
             # done_mask stores accumulated done: True, adone_1, adone_2, ..., adone_k
-            for t in range(1, train_len+1):             
+            for t in range(1, k+1):             
                 trun_done[t] = torch.logical_or(trun_done[t-1], train_model_out.truncated_done[t])
                 true_done[t] = torch.logical_or(true_done[t-1], train_model_out.done[t])
-                if not self.flags.model_done_loss_cost > 0.:  gym_env_out[t, true_done[t]] = 0.                 
-                if t < train_len:
+                if not self.flags.model_done_loss_cost > 0.:  target_xs[t, true_done[t]] = 0.                 
+                if t < k:
                     target_rewards[t, true_done[t]] = 0.
                     target_logits[t, true_done[t]] = target_logits[t-1, true_done[t]]
                     target_vs[t, true_done[t]] = 0.                     
@@ -324,107 +447,47 @@ class ModelLearner():
                 target_done =  torch.logical_and(~trun_done,  true_done).float()[1:]
             else:
                 done_mask = (~trun_done).float()              
+                target_done = None
         else:
-            done_mask = torch.ones(train_len+1, b, device=self.device) 
+            done_mask = torch.ones(k+1, b, device=self.device) 
+            trun_done = None
+            target_done = None
 
         if self.flags.value_prefix:
             target_rewards = torch.cumsum(target_rewards, dim=0)
-            
-        # compute final loss
-        # compute rs loss
-        if self.flags.perfect_model:
-            rs_loss =  None
-        else:
-            if not self.flags.reward_transform:
-                rs_loss = (rs - target_rewards) ** 2
-            else:
-                _, target_rs_enc_v = self.model_net.reward_tran.encode(target_rewards)
-                rs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
-                        input = torch.flatten(r_enc_logits[:train_len], 0, 1),
-                        target = torch.flatten(target_rs_enc_v, 0, 1),
-                      )
-                rs_loss = rs_loss.view(train_len, b)
-            rs_loss = rs_loss * done_mask[:-1]
-            rs_loss = torch.sum(rs_loss, dim=0)
-            rs_loss = rs_loss * is_weights
-            rs_loss = torch.sum(rs_loss)
-            
-        # compute vs loss
-        if not self.flags.reward_transform:
-            vs_loss = (vs[:train_len] - target_vs.detach()) ** 2
-        else:
-            _, target_vs_enc_v = self.model_net.reward_tran.encode(target_vs)
-            vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
-                        input = torch.flatten(v_enc_logits[:train_len], 0, 1),
-                        target = torch.flatten(target_vs_enc_v.detach(), 0, 1)
-                      )
-            vs_loss = vs_loss.view(train_len, b)
-        vs_loss = vs_loss * done_mask[:-1]
-        vs_loss = torch.sum(vs_loss, dim=0)
-        vs_loss = vs_loss * is_weights
-        vs_loss = torch.sum(vs_loss)
 
-        # compute logit loss
-        logits_loss = compute_cross_entropy_loss(
-            logits, target_logits.detach(), is_weights, mask=done_mask[:-1]) 
-
-        # compute done loss
-        if self.flags.model_done_loss_cost > 0.:
-            done_loss = torch.nn.BCEWithLogitsLoss(reduction='none')(
-                pred_done_logits, target_done)       
-            done_loss = done_loss * (~trun_done).float()[:-1]
-            done_loss = torch.sum(done_loss, dim=0)
-            done_loss = done_loss * is_weights
-            done_loss = torch.sum(done_loss)
+        return {"xs": target_xs[1:k+1],
+                "rewards": target_rewards,
+                "logits": target_logits,
+                "vs": target_vs,
+                "dones": target_done,
+                "trun_done": trun_done,
+                "done_mask": done_mask,
+            }
+    
+    def gradient_step(self, loss, optimizer, scheduler):
+        # gradient descent on loss
+        optimizer.zero_grad()
+        if self.flags.float16:
+            self.scaler.scale(loss).backward()
         else:
-            done_loss = None
-
-        # compute supervise loss
-        if self.flags.model_sup_loss_cost > 0.:
-            sup_loss = self.model_net.supervise_loss(
-                xs=gym_env_out[:train_len+1],
-                model_net_out=model_net_out,
-                is_weights=is_weights, 
-                mask=done_mask, 
-                one_hot=False)
+            loss.backward()        
+        optimize_params = optimizer.param_groups[0]['params']
+        if self.flags.float16: self.scaler.unscale_(optimizer)
+        if self.flags.model_grad_norm_clipping > 0:
+            total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.model_grad_norm_clipping)
         else:
-            sup_loss = None
+            total_norm = util.compute_grad_norm(optimize_params)     
         
-        if self.flags.model_img_loss_cost > 0.:
-            img_loss = self.model_net.img_loss(
-                xs=gym_env_out[:train_len+1],
-                model_net_out=model_net_out,
-                is_weights=is_weights, 
-                mask=done_mask)
+        if self.flags.float16:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
         else:
-            img_loss = None
-        
-        total_loss = self.flags.model_vs_loss_cost * vs_loss + self.flags.model_logits_loss_cost * logits_loss
-        if rs_loss is not None: total_loss = total_loss + self.flags.model_rs_loss_cost * rs_loss
-        if done_loss is not None: total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
-        if sup_loss is not None: total_loss = total_loss + self.flags.model_sup_loss_cost * sup_loss
-        if img_loss is not None: total_loss = total_loss + self.flags.model_img_loss_cost * img_loss
-
-        losses = {"total_loss": total_loss,
-                   "vs_loss": vs_loss,
-                   "logits_loss": logits_loss,
-                   "rs_loss": rs_loss,
-                   "done_loss": done_loss,
-                   "sup_loss": sup_loss,
-                   "img_loss": img_loss}
-
-        # compute priorities
-        if not self.flags.model_batch_mode:            
-            priorities = torch.absolute(vs - target_vs)
-            if self.flags.priority_type in [1, 2] and not self.flags.perfect_model:    
-                # when he model is imperfect, we only reset the priority of the first time step
-                if self.flags.priority_type == 1:
-                    priorities[0] = torch.mean(priorities, dim=0)
-                priorities[1:] = torch.nan                 
-            priorities = priorities.detach().cpu().numpy()
-        else:
-            priorities = (torch.absolute(vs[0] - target_vs[0])).detach().cpu().numpy()
-        return losses, priorities
+            optimizer.step()            
+        scheduler.last_epoch = self.real_step - 1  # scheduler does not support setting epoch directly
+        scheduler.step()   
+        optimizer.zero_grad(set_to_none=True)
+        return total_norm              
 
     def step_per_transition(self):
         return self.step / (self.real_step - self.flags.model_warm_up_n + 1) 
@@ -436,22 +499,32 @@ class ModelLearner():
             os.makedirs(basepath, exist_ok=True)
 
         self._logger.info("Saving model checkpoint to %s" % self.check_point_path)
-        torch.save(
-            { "step": self.step,
+        d = { "step": self.step,
               "real_step": self.real_step,
-              "model_net_optimizer_state_dict": self.optimizer.state_dict(),
-              "model_net_scheduler_state_dict": self.scheduler.state_dict(),
+              "model_net_optimizer_p_state_dict": self.optimizer_p.state_dict(),
+              "model_net_scheduler_p_state_dict": self.scheduler_p.state_dict(),
               "model_net_state_dict": self.model_net.state_dict(),
               "flags":  vars(self.flags)
-            },
-            self.check_point_path,
-        )
+            }        
+        if self.flags.duel_net:
+            d.update({
+              "model_net_optimizer_m_state_dict": self.optimizer_m.state_dict(),
+              "model_net_scheduler_m_state_dict": self.scheduler_m.state_dict(),
+              })
+        torch.save(d, self.check_point_path)
 
     def load_checkpoint(self, check_point_path: str):
         train_checkpoint = torch.load(check_point_path, torch.device("cpu"))
         self.step = train_checkpoint["step"]
         self.real_step = train_checkpoint["real_step"]
-        self.optimizer.load_state_dict(train_checkpoint["model_net_optimizer_state_dict"])         
-        self.scheduler.load_state_dict(train_checkpoint["model_net_scheduler_state_dict"])       
+        if self.flags.duel_net:
+            self.optimizer_m.load_state_dict(train_checkpoint["model_net_optimizer_m_state_dict"])         
+            self.scheduler_m.load_state_dict(train_checkpoint["model_net_scheduler_m_state_dict"])       
+        self.optimizer_p.load_state_dict(train_checkpoint["model_net_optimizer_p_state_dict"])         
+        self.scheduler_p.load_state_dict(train_checkpoint["model_net_scheduler_p_state_dict"])                   
         self.model_net.set_weights(train_checkpoint["model_net_state_dict"])        
-        self._logger.info("Loaded model checkpoint from %s" % check_point_path)   
+        self._logger.info("Loaded model checkpoint from %s" % check_point_path)  
+
+    def close(self, exit_code):
+        self.plogger.close()
+        if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
