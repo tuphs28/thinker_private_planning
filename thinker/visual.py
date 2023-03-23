@@ -169,6 +169,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
     saveimg_dir = "/home/sc/RS/thinker/test/data/"
 
     flags = util.parse(['--load_checkpoint', check_point_path])
+    #flags.actor_net_ver = 0
     name = "%s-%s"%(flags.xpid, time.strftime("%Y%m%d-%H%M%S"))
 
     if saveimg:
@@ -214,6 +215,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
     gym_env_out_ = env_out.gym_env_out
     model_out = util.decode_model_out(env_out.model_out, num_actions, flags.reward_transform)
     end_gym_env_outs, end_titles = [], []
+    ini_max_q = model_out["root_max_v"][0].item()
 
     step = 0
     returns, model_logits, attn_output = [], [], [], 
@@ -277,7 +279,8 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
         if (saveimg or visualize) and env_out.cur_t[0,0] == 0:
             fig, axs = plt.subplots(1, 5, figsize=(30,6))      
             title = "%d; v: %.2f (%.2f)" % (step, model_out_["root_v"][0], agent_v)
-            title += " max_q: %.2f mean_q_0: %.2f" % (env.env.baseline_max_q[0], env.env.baseline_mean_q[0])
+            title += " max_q: %.2f ini_max_q: %.2f mean_q_0: %.2f" % (
+                model_out_["root_max_v"][0].item(), ini_max_q, env.env.baseline_mean_q[0])
             for k in im_list: 
                 if im_dict[k][0] is not None:
                     im_dict[k] = torch.concat(im_dict[k], dim=0)            
@@ -322,6 +325,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
             gym_env_out_ = gym_env_out
             im_dict = {k: [] for k in im_list}
             model_logits, attn_output, end_gym_env_outs, end_titles = [], [], [], []
+            ini_max_q = model_out["root_max_v"][0].item()
 
         if torch.any(env_out.real_done):
             step = 0

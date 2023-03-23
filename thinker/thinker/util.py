@@ -162,7 +162,9 @@ def parse(args=None, override=True):
     parser.add_argument("--im_cost", default=1,
                         type=float, help="Imaginary reward cost/multiplier.")   
     parser.add_argument("--im_cost_anneal", action="store_true", 
-                        help="Whether to anneal im_cost to zero.")                        
+                        help="Whether to anneal im_cost to zero.")       
+    parser.add_argument("--im_cost_len_c", default=1,
+                        type=float, help="When im_cost is annealed to zero; 1. for the end of training.")                 
     parser.add_argument("--reset_no_im_cost", action="store_true",
                         help="Whether to disable training reset action by planning reward")                            
     parser.add_argument("--discounting", default=0.97,

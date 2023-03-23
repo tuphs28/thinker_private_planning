@@ -254,7 +254,8 @@ class ActorLearner():
 
                 self.scheduler.step()          
 
-                if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
+                if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / (
+                        self.flags.total_steps  * self.flags.im_cost_len_c), 0)
                 
                 # statistic output
                 stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)       
