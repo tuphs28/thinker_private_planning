@@ -129,7 +129,9 @@ def parse(args=None, override=True):
     parser.add_argument("--model_type_nn", default=0,
                         type=float, help="Model type.")          
     parser.add_argument("--model_size_nn", default=1,
-                        type=int, help="Model size multipler.")       
+                        type=int, help="Model size multipler.")      
+    parser.add_argument("--model_downscale_c", default=2.,
+                        type=float, help="Coefficient for downscaling number of channels")      
     parser.add_argument("--model_zero_init", action="store_true",
                         help="Zero initialisation for the model output")  
     parser.add_argument("--model_disable_bn", action="store_true",
@@ -189,7 +191,7 @@ def parse(args=None, override=True):
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 
-                        help="Reward type")     
+                        help="Reward type; 0 for no planning reward; 1 for planning reward.")     
     parser.add_argument("--im_gate", action="store_true", 
                         help="Whether to gate im reward by real advantage.")            
     parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",

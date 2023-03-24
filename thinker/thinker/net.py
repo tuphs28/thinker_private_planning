@@ -112,9 +112,9 @@ class ActorEncoder(nn.Module):
         encoder_out_channels = 32
 
         if frame_encode:
-            down_scale_c = 4
+            downscale_c = 4
             self.frame_encoder = FrameEncoder(input_shape=input_shape, num_actions=num_actions, 
-                    down_scale_c=down_scale_c, concat_action=False)
+                    downscale_c=downscale_c, concat_action=False)
             input_shape = self.frame_encoder.out_shape
 
         self.three_d_input = len(self.input_shape) == 3            
@@ -239,7 +239,8 @@ class ActorNetBase(nn.Module):
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
         self.model_type_nn = flags.model_type_nn
-        self.model_size_nn = flags.model_size_nn   
+        self.model_size_nn = flags.model_size_nn
+        self.model_downscale_c = flags.model_downscale_c
         self.flags = flags
 
         # encoder for state or encoding output        
@@ -248,7 +249,12 @@ class ActorNetBase(nn.Module):
                 input_shape = gym_obs_shape
             else:
                 if self.model_type_nn in [0, 1,  2,  3]:
-                    in_channels= 128 if self.model_type_nn in [0, 1, 3] else 64
+                    if self.model_type_nn in [0, 1]:
+                        in_channels = int(256 // flags.model_downscale_c)
+                    elif self.model_type_nn in [2]:
+                        in_channels = 128
+                    elif self.model_type_nn in [3]:
+                        in_channels = 64
                     input_shape = (in_channels, gym_obs_shape[1]//16, gym_obs_shape[2]//16)
             compress_size = 128 if self.actor_encode_concat_type == 1 else 256
             self.actor_encoder = ActorEncoder(input_shape=input_shape, num_actions=num_actions,
@@ -415,12 +421,12 @@ def ActorNet(obs_shape, gym_obs_shape, num_actions, flags):
 
 class FrameEncoder(nn.Module):    
     def __init__(self, num_actions, input_shape, type_nn=0, 
-                 size_nn=1, down_scale_c=2, concat_action=True, decoder=False):
+                 size_nn=1, downscale_c=2, concat_action=True, decoder=False):
         super(FrameEncoder, self).__init__() 
         self.num_actions = num_actions
         self.type_nn = type_nn
         self.size_nn = size_nn
-        self.down_scale_c = down_scale_c
+        self.downscale_c = downscale_c
         self.decoder = decoder
         frame_channels, h, w = input_shape
 
@@ -441,23 +447,25 @@ class FrameEncoder(nn.Module):
             elif type_nn == 1:
                 n_block = 2 * self.size_nn
 
-            self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=128//down_scale_c, kernel_size=3, stride=2, padding=1) 
-            res = [ResBlock(inplanes=128//down_scale_c) for _ in range(n_block)] # Deep: 2 blocks here
+            out_channels = int(128//downscale_c)
+
+            self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=2, padding=1) 
+            res = [ResBlock(inplanes=out_channels) for _ in range(n_block)] # Deep: 2 blocks here
             self.res1 = nn.Sequential(*res)
-            self.conv2 = nn.Conv2d(in_channels=128//down_scale_c, out_channels=256//down_scale_c, 
+            self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels*2, 
                                 kernel_size=3, stride=2, padding=1) 
-            res =  [ResBlock(inplanes=256//down_scale_c) for _ in range(n_block)] # Deep: 3 blocks here
+            res =  [ResBlock(inplanes=out_channels*2) for _ in range(n_block)] # Deep: 3 blocks here
             self.res2 = nn.Sequential(*res)
             self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
-            res = [ResBlock(inplanes=256//down_scale_c) for _ in range(n_block)] # Deep: 3 blocks here
+            res = [ResBlock(inplanes=out_channels*2) for _ in range(n_block)] # Deep: 3 blocks here
             self.res3 = nn.Sequential(*res)
             self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
-            self.out_shape = (256//down_scale_c, h//16, w//16)
+            self.out_shape = (out_channels*2, h//16, w//16)
 
             if decoder:
-                d_conv = [ResBlock(inplanes=256//down_scale_c) for _ in range(n_block)]
+                d_conv = [ResBlock(inplanes=out_channels*2) for _ in range(n_block)]
                 kernel_sizes = [4, 4, 4, 4]
-                conv_channels = [frame_channels, 128//down_scale_c, 256//down_scale_c, 256//down_scale_c, 256//down_scale_c]
+                conv_channels = [frame_channels, out_channels, out_channels*2, out_channels*2, out_channels*2]
                 for i in range(4):
                     if i in [1, 3]:
                         d_conv.extend([ResBlock(inplanes=conv_channels[4-i]) for _ in range(n_block)])
@@ -807,11 +815,13 @@ class ModelNetV(nn.Module):
         self.num_actions = num_actions          
         self.reward_transform = flags.reward_transform
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
-        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
+        self.size_nn = flags.model_size_nn # size_nn: int to adjust for the depth of model net (for model_type_nn == 3 only)
+        self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
         self.encoder = FrameEncoder(num_actions=num_actions, 
                                          input_shape=obs_shape, 
                                          type_nn=self.type_nn, 
                                          size_nn=self.size_nn,
+                                         downscale_c=self.downscale_c,
                                          decoder=True)
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]
@@ -912,6 +922,7 @@ class PredNetV(nn.Module):
         self.reward_transform = flags.reward_transform
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
+        self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
         self.use_rnn = not flags.perfect_model # dont use rnn if we have perfect dynamic
         self.receive_z = flags.duel_net # rnn receives z only when we are using duel net
         self.predict_rd = not flags.duel_net and not flags.perfect_model # network also predicts reward and done if not duel net under non-perfect dynamic
@@ -920,6 +931,7 @@ class PredNetV(nn.Module):
                                         input_shape=obs_shape, 
                                         type_nn=self.type_nn, 
                                         size_nn=self.size_nn,
+                                        downscale_c=self.downscale_c,
                                         decoder=False)
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]

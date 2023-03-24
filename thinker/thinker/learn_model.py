@@ -480,7 +480,7 @@ class ModelLearner():
             total_norm = util.compute_grad_norm(optimize_params)     
         
         if self.flags.float16:
-            self.scaler.step(self.optimizer)
+            self.scaler.step(optimizer)
             self.scaler.update()
         else:
             optimizer.step()            
