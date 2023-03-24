@@ -405,7 +405,7 @@ class ActorLearner():
                 rewards=rewards[:, :, 1],
                 values=new_actor_out.baseline[:, :, 1],
                 values_enc_s=new_actor_out.baseline_enc_s[:, :, 1] if self.flags.reward_transform else None,
-                reward_tran=self.actor_net.reward_tran if self.flags.reward_transform and not self.return_norm else None,
+                reward_tran=self.actor_net.reward_tran if self.flags.reward_transform and not self.flags.return_norm else None,
                 bootstrap_value=bootstrap_value[:, 1],
                 lamb=self.flags.lamb
             )
