@@ -359,7 +359,7 @@ class ActorLearner():
         )    
 
         advs = vtrace_returns.pg_advantages
-        if self.return_norm:
+        if self.flags.return_norm:
             new_lq = torch.quantile(advs,  0.05)
             new_uq = torch.quantile(advs,  0.95)
             if self.return_lq is not None:
@@ -411,7 +411,7 @@ class ActorLearner():
             )
 
             advs = vtrace_returns.pg_advantages
-            if self.return_norm:
+            if self.flags.return_norm:
                 new_lq = torch.quantile(advs,  0.05)
                 new_uq = torch.quantile(advs,  0.95)
                 if self.im_return_lq is not None:
