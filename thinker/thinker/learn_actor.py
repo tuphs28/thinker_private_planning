@@ -178,6 +178,13 @@ class ActorLearner():
         util.optimizer_to(self.optimizer, self.device)
         if self.time: self.timing = util.Timings()        
 
+        if self.flags.return_norm:
+            self.return_lq = None
+            self.return_uq = None
+            self.im_return_lq = None
+            self.im_return_uq = None
+
+
     def learn_data(self):
         try:
             timer = timeit.default_timer
@@ -346,12 +353,23 @@ class ActorLearner():
             rewards=rewards[:, :, 0],
             values=new_actor_out.baseline[:, :, 0],
             values_enc_s=new_actor_out.baseline_enc_s[:, :, 0] if self.flags.reward_transform else None,
-            reward_tran=self.actor_net.reward_tran if self.flags.reward_transform else None,
+            reward_tran=self.actor_net.reward_tran if self.flags.reward_transform and not self.flags.return_norm else None,
             bootstrap_value=bootstrap_value[:, 0],
             lamb=self.flags.lamb
         )    
 
-        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )          
+        advs = vtrace_returns.pg_advantages
+        if self.return_norm:
+            new_lq = torch.quantile(advs,  0.05)
+            new_uq = torch.quantile(advs,  0.95)
+            if self.return_lq is not None:
+                self.return_lq = self.return_lq * 0.99 + new_lq * 0.01
+                self.return_uq = self.return_uq * 0.99 + new_uq * 0.01
+            else:
+                self.return_lq = new_lq
+                self.return_uq = new_uq
+            advs = advs / torch.max(self.return_uq - self.return_lq, torch.tensor([1], device=self.device))
+        pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)          
 
         if not self.flags.reward_transform:
             baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
@@ -387,11 +405,24 @@ class ActorLearner():
                 rewards=rewards[:, :, 1],
                 values=new_actor_out.baseline[:, :, 1],
                 values_enc_s=new_actor_out.baseline_enc_s[:, :, 1] if self.flags.reward_transform else None,
-                reward_tran=self.actor_net.reward_tran if self.flags.reward_transform else None,
+                reward_tran=self.actor_net.reward_tran if self.flags.reward_transform and not self.return_norm else None,
                 bootstrap_value=bootstrap_value[:, 1],
                 lamb=self.flags.lamb
             )
-            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, vtrace_returns.pg_advantages, )   
+
+            advs = vtrace_returns.pg_advantages
+            if self.return_norm:
+                new_lq = torch.quantile(advs,  0.05)
+                new_uq = torch.quantile(advs,  0.95)
+                if self.im_return_lq is not None:
+                    self.im_return_lq = self.im_return_lq * 0.99 + new_lq * 0.01
+                    self.im_return_uq = self.im_return_uq * 0.99 + new_uq * 0.01
+                else:
+                    self.im_return_lq = new_lq
+                    self.im_return_uq = new_uq
+                advs = advs / torch.max(self.im_return_uq - self.im_return_lq, torch.tensor([1], device=self.device))
+            im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)   
+
             if not self.flags.reward_transform:
                 im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
                     vtrace_returns.vs - new_actor_out.baseline[:, :, 1], masks_ls = [zero_mask], c_ls = [

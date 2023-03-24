@@ -69,6 +69,8 @@ def parse(args=None, override=True):
                         help="The unroll length (time dimension).")
     parser.add_argument("--actor_warm_up_n", default=0, type=int, 
                         help="Number of transition accumulated before actor start learning.")                                                                        
+    parser.add_argument("--return_norm", action="store_true",
+                        help="Whether to use return normalization in actor training.") 
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
