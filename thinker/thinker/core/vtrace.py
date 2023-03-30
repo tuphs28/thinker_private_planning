@@ -41,10 +41,11 @@ VTraceFromLogitsReturns = collections.namedtuple(
         "log_rhos",
         "behavior_action_log_probs",
         "target_action_log_probs",
+        "norm_stat"
     ],
 )
 
-VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages")
+VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages norm_stat")
 
 
 def action_log_probs(policy_logits, actions):
@@ -63,9 +64,11 @@ def from_logits(
     rewards,
     values,
     bootstrap_value,
+    flags,
     clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0,
     lamb=1.0,
+    norm_stat=None,    
 ):
     """V-trace for softmax policies."""
 
@@ -78,9 +81,11 @@ def from_logits(
         rewards=rewards,
         values=values,
         bootstrap_value=bootstrap_value,
+        flags=flags,
         clip_rho_threshold=clip_rho_threshold,
         clip_pg_rho_threshold=clip_pg_rho_threshold,
-        lamb=lamb
+        lamb=lamb,
+        norm_stat=norm_stat
     )
     return VTraceFromLogitsReturns(
         log_rhos=log_rhos,
@@ -99,9 +104,12 @@ def from_importance_weights(
     values_enc_s,
     reward_tran,
     bootstrap_value,
+    flags,
     clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0,
-    lamb=1.0
+    lamb=1.0,
+    return_norm=False,
+    norm_stat=None
 ):
     """V-trace from log importance weights."""
     with torch.no_grad():
@@ -138,10 +146,31 @@ def from_importance_weights(
             clipped_pg_rhos = torch.clamp(rhos, max=clip_pg_rho_threshold)
         else:
             clipped_pg_rhos = rhos
-        if reward_tran is None:
-            pg_advantages = clipped_pg_rhos * (rewards + discounts * vs_t_plus_1 - values)
+        target_values = rewards + discounts * vs_t_plus_1
+        if flags.return_norm:
+            if flags.return_norm_type == 0:
+                norm_v = target_values 
+            elif flags.return_norm_type == 1:
+                norm_v = clipped_pg_rhos * (target_values - values)
+            new_lq = torch.quantile(norm_v,  0.05).detach()
+            new_uq = torch.quantile(norm_v,  0.95).detach()            
+            if norm_stat is None:
+                norm_stat = (new_lq, new_uq)
+            else:
+                norm_stat = (norm_stat[0]*0.99 + new_lq*0.01,
+                             norm_stat[1]*0.99 + new_uq*0.01,)
+            norm_factor = torch.max(norm_stat[1] - norm_stat[0], torch.tensor([
+                flags.return_norm_b], device=target_values.device))        
         else:
-            pg_advantages = clipped_pg_rhos * (reward_tran.encode(rewards + discounts * vs_t_plus_1) - values_enc_s)
+            norm_stat = None
+
+        if reward_tran is None or flags.return_norm:
+            pg_advantages = clipped_pg_rhos * (target_values - values)
+            if return_norm:
+                pg_advantages = pg_advantages / norm_factor
+        else:
+            pg_advantages = clipped_pg_rhos * (reward_tran.encode(target_values) - values_enc_s)
+        
 
         # Make sure no gradients backpropagated through the returned values.
-        return VTraceReturns(vs=vs, pg_advantages=pg_advantages)
+        return VTraceReturns(vs=vs, pg_advantages=pg_advantages, norm_stat=norm_stat)

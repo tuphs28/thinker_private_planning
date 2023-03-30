@@ -68,10 +68,11 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     assert(len(logits_ls) == len(masks_ls) == len(c_ls))
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
         logits = torch.flatten(logits, 0, 1)
-        ent = -torch.nn.CrossEntropyLoss(reduction="sum")(
+        ent = -torch.nn.CrossEntropyLoss(reduction="none")(
             input = logits,
             target = F.softmax(logits, dim=-1))
-        loss = loss + torch.sum(ent) * c 
+        ent = ent.view_as(masks)  
+        loss = loss + torch.sum(ent * (1-masks)) * c 
     return loss
 
 def action_log_probs(policy_logits, actions):
@@ -81,8 +82,8 @@ def action_log_probs(policy_logits, actions):
             
 def from_logits(
     behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
-    discounts, rewards, values, values_enc_s, reward_tran, bootstrap_value, clip_rho_threshold=1.0,
-    clip_pg_rho_threshold=1.0, lamb=1.0,):
+    discounts, rewards, values, values_enc_s, reward_tran, bootstrap_value, flags,
+    clip_rho_threshold=1.0, clip_pg_rho_threshold=1.0, lamb=1.0, norm_stat=None):
     """V-trace for softmax policies."""
     assert(len(behavior_logits_ls) == len(target_logits_ls) == len(actions_ls) == len(masks_ls))
     log_rhos = 0.       
@@ -101,9 +102,11 @@ def from_logits(
         values_enc_s=values_enc_s, 
         reward_tran=reward_tran,
         bootstrap_value=bootstrap_value,
+        flags=flags,
         clip_rho_threshold=clip_rho_threshold,
         clip_pg_rho_threshold=clip_pg_rho_threshold,
-        lamb=lamb
+        lamb=lamb,
+        norm_stat=norm_stat
     )
     return VTraceFromLogitsReturns(
         log_rhos=log_rhos,
@@ -179,11 +182,8 @@ class ActorLearner():
         if self.time: self.timing = util.Timings()        
 
         if self.flags.return_norm:
-            self.return_lq = None
-            self.return_uq = None
-            self.im_return_lq = None
-            self.im_return_uq = None
-
+            self.norm_stat = None
+            self.im_norm_stat = None
 
     def learn_data(self):
         try:
@@ -355,20 +355,13 @@ class ActorLearner():
             values_enc_s=new_actor_out.baseline_enc_s[:, :, 0] if self.flags.reward_transform else None,
             reward_tran=self.actor_net.reward_tran if self.flags.reward_transform and not self.flags.return_norm else None,
             bootstrap_value=bootstrap_value[:, 0],
-            lamb=self.flags.lamb
+            flags=self.flags,
+            lamb=self.flags.lamb,
+            norm_stat=self.norm_stat
         )    
+        self.norm_stat = vtrace_returns.norm_stat
 
         advs = vtrace_returns.pg_advantages
-        if self.flags.return_norm:
-            new_lq = torch.quantile(advs,  0.05)
-            new_uq = torch.quantile(advs,  0.95)
-            if self.return_lq is not None:
-                self.return_lq = self.return_lq * 0.99 + new_lq * 0.01
-                self.return_uq = self.return_uq * 0.99 + new_uq * 0.01
-            else:
-                self.return_lq = new_lq
-                self.return_uq = new_uq
-            advs = advs / torch.max(self.return_uq - self.return_lq, torch.tensor([1], device=self.device))
         pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)          
 
         if not self.flags.reward_transform:
@@ -407,20 +400,13 @@ class ActorLearner():
                 values_enc_s=new_actor_out.baseline_enc_s[:, :, 1] if self.flags.reward_transform else None,
                 reward_tran=self.actor_net.reward_tran if self.flags.reward_transform and not self.flags.return_norm else None,
                 bootstrap_value=bootstrap_value[:, 1],
-                lamb=self.flags.lamb
-            )
+                flags=self.flags,
+                lamb=self.flags.lamb,
+                norm_stat=self.im_norm_stat
+            )    
+            self.im_norm_stat = vtrace_returns.norm_stat
 
             advs = vtrace_returns.pg_advantages
-            if self.flags.return_norm:
-                new_lq = torch.quantile(advs,  0.05)
-                new_uq = torch.quantile(advs,  0.95)
-                if self.im_return_lq is not None:
-                    self.im_return_lq = self.im_return_lq * 0.99 + new_lq * 0.01
-                    self.im_return_uq = self.im_return_uq * 0.99 + new_uq * 0.01
-                else:
-                    self.im_return_lq = new_lq
-                    self.im_return_uq = new_uq
-                advs = advs / torch.max(self.im_return_uq - self.im_return_lq, torch.tensor([1], device=self.device))
             im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)   
 
             if not self.flags.reward_transform:

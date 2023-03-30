@@ -71,6 +71,10 @@ def parse(args=None, override=True):
                         help="Number of transition accumulated before actor start learning.")                                                                        
     parser.add_argument("--return_norm", action="store_true",
                         help="Whether to use return normalization in actor training.") 
+    parser.add_argument("--return_norm_type", default=0, type=int, 
+                        help="Return norm type; 0 for value normalization, 1 for advantage normalization")           
+    parser.add_argument("--return_norm_b", default=1, type=float, 
+                        help="Minimum normalization coef")               
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
