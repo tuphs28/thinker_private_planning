@@ -62,7 +62,7 @@ def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantag
         loss = loss + torch.sum(adv_cross_entropy * (1-masks)) * c
     return loss  
 
-def compute_entropy_loss(logits_ls, masks_ls, c_ls):
+def compute_entropy_loss(logits_ls, masks_ls, c_ls, mask_ent):
     """Return the entropy loss, i.e., the negative entropy of the policy."""
     loss = 0.
     assert(len(logits_ls) == len(masks_ls) == len(c_ls))
@@ -72,7 +72,8 @@ def compute_entropy_loss(logits_ls, masks_ls, c_ls):
             input = logits,
             target = F.softmax(logits, dim=-1))
         ent = ent.view_as(masks)  
-        loss = loss + torch.sum(ent * (1-masks)) * c 
+        if mask_ent: ent = ent * (1-masks)
+        loss = loss + torch.sum(ent) * c 
     return loss
 
 def action_log_probs(policy_logits, actions):
@@ -429,7 +430,7 @@ class ActorLearner():
         im_ent_c = self.flags.im_entropy_cost * (self.flags.real_im_cost + ((
             self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c) if self.flags.reward_type == 1 else 0))
         c_ls = [self.flags.entropy_cost * self.flags.real_cost, im_ent_c, im_ent_c]
-        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)    
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls, self.flags.entropy_type==1)    
 
         reg_loss = self.flags.reg_cost * torch.sum(new_actor_out.reg_loss)
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss         

@@ -153,6 +153,8 @@ def parse(args=None, override=True):
                         type=float, help="Entropy cost/multiplier.")
     parser.add_argument("--im_entropy_cost", default=0.000005,
                         type=float, help="Imagainary Entropy cost/multiplier.")         
+    parser.add_argument("--entropy_type", default=0,
+                        type=int, help="Entropy mask type; 0 for no masking; 1 for masking.")      
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=0.01,
