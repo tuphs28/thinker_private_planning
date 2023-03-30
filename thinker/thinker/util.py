@@ -190,6 +190,9 @@ def parse(args=None, override=True):
                        help="0 for mean root value, 1 for max root value, 2 for actor's value.")    
     parser.add_argument("--model_supervise_type", default=1, type=int,
                        help="0 for efficientZero, 1 for direct cosine similarity, 2 for direct L2 loss, 3 for KL div.")                                                          
+    parser.add_argument("--model_img_type", default=0, type=int,
+                       help="0 for L2 loss on frame; 1 for encoding-loss on frame; 2 for predicting encoding directly.")                                                          
+    
 
     # Model wrapper settings
     parser.add_argument("--reward_type", default=1, type=int, 

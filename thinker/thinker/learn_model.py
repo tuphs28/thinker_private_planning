@@ -296,7 +296,19 @@ class ModelLearner():
                                        self.model_net.model_net.reward_tran,
                                        is_weights)        
         done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
-        img_loss = torch.mean(torch.square(target["xs"] - out.xs), dim=(2, 3, 4))
+        if self.flags.model_img_type == 0:
+            diff = target["xs"] - out.xs
+        elif self.flags.model_img_type == 1:
+            with torch.no_grad():
+                action = F.one_hot(train_model_out.action[1:k+1], 
+                                   self.model_net.pred_net.num_actions) 
+                target_enc = self.model_net.pred_net.encoder(target["xs"], 
+                    action, flatten=True)
+            pred_enc = self.model_net.pred_net.encoder(out.xs, 
+                    action, flatten=True)
+            diff = target_enc - pred_enc
+
+        img_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
         img_loss = img_loss * target["done_mask"][1:]
         img_loss = torch.sum(img_loss, dim=0)
         img_loss = img_loss * is_weights
