@@ -182,9 +182,8 @@ class ActorLearner():
         util.optimizer_to(self.optimizer, self.device)
         if self.time: self.timing = util.Timings()        
 
-        if self.flags.return_norm:
-            self.norm_stat = None
-            self.im_norm_stat = None
+        self.norm_stat = None
+        self.im_norm_stat = None
 
     def learn_data(self):
         try:
