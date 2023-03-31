@@ -108,7 +108,6 @@ def from_importance_weights(
     clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0,
     lamb=1.0,
-    return_norm=False,
     norm_stat=None
 ):
     """V-trace from log importance weights."""
@@ -147,7 +146,9 @@ def from_importance_weights(
         else:
             clipped_pg_rhos = rhos
         target_values = rewards + discounts * vs_t_plus_1
-        if flags.return_norm:
+        if flags.return_norm_type == -1:
+            norm_stat = None
+        else:
             if flags.return_norm_type == 0:
                 norm_v = target_values 
             elif flags.return_norm_type == 1:
@@ -158,15 +159,14 @@ def from_importance_weights(
                 norm_stat = (new_lq, new_uq)
             else:
                 norm_stat = (norm_stat[0]*0.99 + new_lq*0.01,
-                             norm_stat[1]*0.99 + new_uq*0.01,)
+                                norm_stat[1]*0.99 + new_uq*0.01,)
             norm_factor = torch.max(norm_stat[1] - norm_stat[0], torch.tensor([
-                flags.return_norm_b], device=target_values.device))        
-        else:
-            norm_stat = None
+                flags.return_norm_b], device=target_values.device))   
+            
 
-        if reward_tran is None or flags.return_norm:
+        if reward_tran is None or not flags.return_norm_type == -1:
             pg_advantages = clipped_pg_rhos * (target_values - values)
-            if return_norm:
+            if not flags.return_norm_type == -1:
                 pg_advantages = pg_advantages / norm_factor
         else:
             pg_advantages = clipped_pg_rhos * (reward_tran.encode(target_values) - values_enc_s)
