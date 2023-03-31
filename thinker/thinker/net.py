@@ -618,7 +618,8 @@ class DynamicModel(nn.Module):
 class Output_rvpi(nn.Module):   
     def __init__(self, num_actions, input_shape, value_prefix, max_unroll_length, 
             reward_transform, stop_vpi_grad, zero_init, type_nn, size_nn,
-            predict_v_pi=True, predict_r=True, predict_done=False, disable_bn=False):         
+            predict_v_pi=True, predict_r=True, predict_done=False, disable_bn=False,
+            prefix=""):         
         super(Output_rvpi, self).__init__()    
         
         self.input_shape = input_shape
@@ -631,6 +632,7 @@ class Output_rvpi(nn.Module):
         self.predict_v_pi = predict_v_pi
         self.predict_r = predict_r
         self.predict_done = predict_done
+        self.prefix = prefix
 
         c, h, w = input_shape
         if self.reward_transform:
@@ -703,10 +705,11 @@ class Output_rvpi(nn.Module):
             out_n = self.reward_tran.encoded_n if self.reward_transform else 1
             self.fc_r = mlp(512, [64], out_n, zero_init=zero_init, norm=not disable_bn)                
         
-    def forward(self, h, predict_reward=True, state=()):   
+    def forward(self, h, predict_reward=True, state={}):   
         if self.stop_vpi_grad: h = h.detach()
         x = h
         b = x.shape[0]       
+        state_ = {}
         if self.type_nn in [0, 1]:
             x_ = F.relu(self.conv1(x))
             x_ = F.relu(self.conv2(x_))
@@ -740,15 +743,15 @@ class Output_rvpi(nn.Module):
 
         if self.predict_r and predict_reward:
             if self.value_prefix:
-                m = state["r_lstm_c"] < self.max_unroll_length
+                m = state[self.prefix + "r_lstm_c"] < self.max_unroll_length
                 if torch.any(~m):
-                    lstm_state = (state["r_lstm_0"] * m.float().view(b, 1), state["r_lstm_1"] * m.float().view(b, 1))                    
-                    lstm_counter = state["r_lstm_c"] * m.float()                            
-                    last_r = state["r_last_r"] * m.float()
+                    lstm_state = (state[self.prefix + "r_lstm_0"] * m.float().view(b, 1), state[self.prefix + "r_lstm_1"] * m.float().view(b, 1))                    
+                    lstm_counter = state[self.prefix + "r_lstm_c"] * m.float()                            
+                    last_r = state[self.prefix + "r_last_r"] * m.float()
                 else:
-                    lstm_state = (state["r_lstm_0"], state["r_lstm_1"])
-                    lstm_counter = state["r_lstm_c"] 
-                    last_r = state["r_last_r"]              
+                    lstm_state = (state[self.prefix + "r_lstm_0"], state[self.prefix + "r_lstm_1"])
+                    lstm_counter = state[self.prefix + "r_lstm_c"] 
+                    last_r = state[self.prefix + "r_last_r"]              
                 x_r = self.conv1x1_reward(x)
                 x_r = self.bn_r_1(x_r)
                 x_r = nn.functional.relu(x_r)
@@ -758,10 +761,10 @@ class Output_rvpi(nn.Module):
                 lstm_state = (lstm_state[0].squeeze(0), lstm_state[1].squeeze(0))
                 x_r = x_r.squeeze(0)
 
-                state = {"r_lstm_0": lstm_state[0],
-                         "r_lstm_1": lstm_state[1],
-                         "r_lstm_c": lstm_counter+1,
-                        }
+                state_.update({self.prefix + "r_lstm_0": lstm_state[0],
+                         self.prefix + "r_lstm_1": lstm_state[1],
+                         self.prefix + "r_lstm_c": lstm_counter+1,
+                        })
                 x_r = self.bn_r_2(x_r)
                 x_r = nn.functional.relu(x_r)
             else:
@@ -782,7 +785,7 @@ class Output_rvpi(nn.Module):
                 # so the reward for a single time step is the current accum. reward
                 # minus the last accum reward
                 single_r = r - last_r
-                state["r_last_r"] = r
+                state_[self.prefix + "r_last_r"] = r
             else:
                 single_r = None
         else:
@@ -795,15 +798,15 @@ class Output_rvpi(nn.Module):
                          vs=v, 
                          v_enc_logits=v_enc_logit, 
                          logits=logits, 
-                         state=state)
+                         state=state_)
         return out
     
     def init_state(self, bsz, device):
-        if self.value_prefix:
-            return {"r_lstm_0": torch.zeros(bsz, 512, device=device), 
-                    "r_lstm_1": torch.zeros(bsz, 512, device=device), 
-                    "r_lstm_c": torch.zeros(bsz, device=device),
-                    "r_last_r": torch.zeros(bsz, device=device)}
+        if self.predict_r and self.value_prefix:
+            return {self.prefix + "r_lstm_0": torch.zeros(bsz, 512, device=device), 
+                    self.prefix + "r_lstm_1": torch.zeros(bsz, 512, device=device), 
+                    self.prefix + "r_lstm_c": torch.zeros(bsz, device=device),
+                    self.prefix + "r_last_r": torch.zeros(bsz, device=device)}
         else:
             return {}
       
@@ -843,7 +846,8 @@ class ModelNetV(nn.Module):
                                 predict_v_pi=False,
                                 predict_r=True,
                                 predict_done=self.flags.model_done_loss_cost > 0.,
-                                disable_bn=self.flags.model_disable_bn)
+                                disable_bn=self.flags.model_disable_bn,
+                                prefix="m_")
         self.reward_tran = self.out.reward_tran
         
     def forward(self, x, actions, one_hot=False):
@@ -955,7 +959,8 @@ class PredNetV(nn.Module):
                                    predict_v_pi=True,
                                    predict_r=self.predict_rd,
                                    predict_done=self.predict_rd and self.flags.model_done_loss_cost > 0.,
-                                   disable_bn=self.flags.model_disable_bn)
+                                   disable_bn=self.flags.model_disable_bn,
+                                   prefix="p_")
         
         if not self.receive_z:
             self.h_to_z_conv = nn.Sequential(

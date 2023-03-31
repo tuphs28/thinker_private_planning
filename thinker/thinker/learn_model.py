@@ -188,7 +188,7 @@ class ModelLearner():
                                     total_norm_m.item(),
                                     total_norm_p.item())
                     print_stats = ["total_loss_m", "total_loss_p", "vs_loss", "logits_loss", 
-                                   "rs_loss", "sup_loss", "img_loss", "done_loss"]
+                                   "rs_loss", "sup_loss", "img_loss", "done_loss", "reg_loss"]
                     for k in print_stats: 
                         if k in losses and losses[k] is not None:
                             print_str += " %s %.6f" % (k, losses[k].item() / numel_per_step)
@@ -394,10 +394,24 @@ class ModelLearner():
             sup_loss = torch.sum(sup_loss)
         else:
             sup_loss = None
+
+        # compute reg loss
+        if self.flags.model_reg_loss_cost > 0.:
+            if self.flags.perfect_model:
+                pred_zs = out.pred_zs.view(k, b, -1)
+            else:
+                pred_zs = out.pred_zs.view(k+1, b, -1)
+            reg_loss = torch.mean(torch.square(pred_zs), dim=-1)
+            if not self.flags.perfect_model:
+                reg_loss = reg_loss * done_mask
+            reg_loss = torch.sum(reg_loss)
+        else:
+            reg_loss = None
         
         losses = {"vs_loss": vs_loss,
                   "logits_loss": logits_loss,
-                  "sup_loss": sup_loss}        
+                  "sup_loss": sup_loss,
+                  "reg_loss": reg_loss}        
         total_loss = self.flags.model_vs_loss_cost * vs_loss + self.flags.model_logits_loss_cost * logits_loss
         if self.model_net.pred_net.predict_rd: 
             total_loss = total_loss + self.flags.model_rs_loss_cost * rs_loss
@@ -407,6 +421,8 @@ class ModelLearner():
                 losses["done_loss"] = done_loss
         if self.flags.model_sup_loss_cost > 0.:
             total_loss = total_loss +  self.flags.model_sup_loss_cost * sup_loss
+        if self.flags.model_reg_loss_cost > 0.:
+            total_loss = total_loss + self.flags.model_reg_loss_cost * reg_loss
 
         losses["total_loss_p"] = total_loss
 

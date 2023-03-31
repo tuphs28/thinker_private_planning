@@ -190,6 +190,8 @@ def parse(args=None, override=True):
                        help="Multipler to self-supervise loss when training the model.")                                                                         
     parser.add_argument("--model_img_loss_cost", default=0,  type=float,
                        help="Multipler to image reconstruction loss when training the model.")     
+    parser.add_argument("--model_reg_loss_cost", default=0, type=float,
+                       help="Multipler to L2 reg loss for predictor encoding when training the model.")                                                                             
     parser.add_argument("--model_bootstrap_type", default=0, type=int,
                        help="0 for mean root value, 1 for max root value, 2 for actor's value.")    
     parser.add_argument("--model_supervise_type", default=1, type=int,
