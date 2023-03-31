@@ -96,6 +96,8 @@ if __name__ == "__main__":
     if flags.gpu_self_play > 0:
         num_self_play_gpu = num_gpus_self_play // flags.gpu_self_play
         logger.info("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.num_actors))
+    else:
+        num_self_play_gpu = -1
         
     logger.info("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
     self_play_workers = [SelfPlayWorker.options(
