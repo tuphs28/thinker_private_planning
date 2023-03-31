@@ -53,6 +53,7 @@ class FileWriter:
         rootdir: str = "~/logs",
         symlink_to_latest: bool = True,
         suffix: str = "",
+        overwrite: bool = False,
     ):
         if not xpid:
             # Make unique id.
@@ -113,9 +114,13 @@ class FileWriter:
 
         self._logger.info("Saving arguments to %s", self.paths["meta"])
         if os.path.exists(self.paths["meta"]):
-            self._logger.warning(
-                "Path to meta file already exists. " "Not overriding meta."
-            )
+            if not overwrite:
+                self._logger.warning(
+                    "Path to meta file already exists. " "Not overriding meta."
+                )
+            else:
+                os.remove(self.paths["meta"])
+                self._save_metadata()
         else:
             self._save_metadata()
 

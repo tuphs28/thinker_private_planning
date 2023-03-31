@@ -1,5 +1,6 @@
 import time
 import traceback
+import sys
 import ray
 import torch
 from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL
@@ -17,6 +18,7 @@ if __name__ == "__main__":
     ray.init()
     st_time = time.time()
     flags = util.parse()
+    flags.cmd = ' '.join(sys.argv)    
 
     num_gpus_available = torch.cuda.device_count()
     logger.info("Detected %d GPU" % num_gpus_available)    

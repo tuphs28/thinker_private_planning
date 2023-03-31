@@ -77,7 +77,8 @@ class ModelLearner():
             self.flags.xpid = os.path.split(self.flags.load_checkpoint)[-1]    
 
         self.flags.git_revision = util.get_git_revision_hash()
-        self.plogger = FileWriter(xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir, suffix="_model")
+        self.plogger = FileWriter(xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir, 
+                                  suffix="_model", overwrite=not self.flags.load_checkpoint)
 
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_model.tar")
 

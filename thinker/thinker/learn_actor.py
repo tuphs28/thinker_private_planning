@@ -170,7 +170,8 @@ class ActorLearner():
 
         # initialize file logs                        
         self.flags.git_revision = util.get_git_revision_hash()
-        self.plogger = FileWriter(xpid=flags.xpid, xp_args=flags.__dict__, rootdir=flags.savedir)
+        self.plogger = FileWriter(xpid=flags.xpid, xp_args=flags.__dict__, 
+                                  rootdir=flags.savedir, overwrite=not self.flags.load_checkpoint)
 
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_actor.tar")       
 
@@ -286,8 +287,13 @@ class ActorLearner():
                         stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
                     print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
                                 "baseline_loss", "im_pg_loss", "im_baseline_loss", 
-                                "entropy_loss", "reg_loss", "total_norm"]
+                                "entropy_loss", "reg_loss", "total_norm"]                    
                     for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
+                    if self.flags.return_norm_type != -1:
+                        print_str += " norm_stat (%.4f:%.4f)" % self.norm_stat
+                        if self.im_norm_stat is not None:
+                            print_str += " im_norm_stat (%.4f:%.4f)" % self.im_norm_stat
+
                     self._logger.info(print_str)
                     start_step = self.step
                     start_time = timer()                    
