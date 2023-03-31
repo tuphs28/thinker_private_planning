@@ -35,6 +35,8 @@ def parse(args=None, override=True):
     # Resources settings.
     parser.add_argument("--disable_auto_res", action="store_true",
                         help="Whether to allocate resources automatically")    
+    parser.add_argument("--self_play_cpu", action="store_true",
+                        help="Whether to use cpu for self-play actors.")     
     parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
                         help="Number of gpu per actor learning.") 
     parser.add_argument("--gpu_learn_model", default=0.5, type=float,

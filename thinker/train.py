@@ -22,46 +22,57 @@ if __name__ == "__main__":
 
     num_gpus_available = torch.cuda.device_count()
     logger.info("Detected %d GPU" % num_gpus_available)    
-    
+
     if not flags.disable_auto_res:
-        if num_gpus_available == 1:
-            flags.num_actors = 1
-            flags.num_p_actors = 32
-            flags.gpu_learn_actor = 0.5
-            flags.gpu_learn_model = 0.25
-            flags.gpu_self_play = 0.25
-        elif num_gpus_available == 2:
-            flags.num_actors = 2
-            flags.num_p_actors = 32
-            flags.gpu_learn_actor = 1
-            flags.gpu_learn_model = 0.5
-            flags.gpu_self_play = 0.25
-        elif num_gpus_available == 3:
-            flags.num_actors = 2
-            flags.num_p_actors = 32
-            flags.gpu_learn_actor = 1
-            flags.gpu_learn_model = 1
-            flags.gpu_self_play = 0.5        
-        elif num_gpus_available == 4:
-            flags.num_actors = 2
-            flags.num_p_actors = 32
-            flags.gpu_learn_actor = 1
-            flags.gpu_learn_model = 1
-            flags.gpu_self_play = 1
-        if not flags.train_model:
+        if flags.self_play_cpu:
+            flags.num_actors = 32
+            flags.num_p_actors = 2  
+            flags.gpu_self_play = 0          
             if num_gpus_available == 1:
-                flags.gpu_learn_model = 0
-                flags.num_actors = 2      
-            if num_gpus_available == 2:  
-                flags.gpu_learn_model = 0
-                flags.gpu_self_play = 0.5
-            if num_gpus_available == 3:  
-                flags.gpu_learn_model = 0
+                flags.gpu_learn_actor = 0.5
+                flags.gpu_learn_model = 0.5
+            else:
+                flags.gpu_learn_actor = 1
+                flags.gpu_learn_model = 1
+        else: 
+            if num_gpus_available == 1:
+                flags.num_actors = 1
+                flags.num_p_actors = 32
+                flags.gpu_learn_actor = 0.5
+                flags.gpu_learn_model = 0.25
+                flags.gpu_self_play = 0.25
+            elif num_gpus_available == 2:
+                flags.num_actors = 2
+                flags.num_p_actors = 32
+                flags.gpu_learn_actor = 1
+                flags.gpu_learn_model = 0.5
+                flags.gpu_self_play = 0.25
+            elif num_gpus_available == 3:
+                flags.num_actors = 2
+                flags.num_p_actors = 32
+                flags.gpu_learn_actor = 1
+                flags.gpu_learn_model = 1
+                flags.gpu_self_play = 0.5        
+            elif num_gpus_available == 4:
+                flags.num_actors = 2
+                flags.num_p_actors = 32
+                flags.gpu_learn_actor = 1
+                flags.gpu_learn_model = 1
                 flags.gpu_self_play = 1
-            if num_gpus_available == 4:
-                flags.num_actors = 3
-                flags.gpu_learn_model = 0            
-                flags.gpu_self_play = 1
+            if not flags.train_model:
+                if num_gpus_available == 1:
+                    flags.gpu_learn_model = 0
+                    flags.num_actors = 2      
+                if num_gpus_available == 2:  
+                    flags.gpu_learn_model = 0
+                    flags.gpu_self_play = 0.5
+                if num_gpus_available == 3:  
+                    flags.gpu_learn_model = 0
+                    flags.gpu_self_play = 1
+                if num_gpus_available == 4:
+                    flags.num_actors = 3
+                    flags.gpu_learn_model = 0            
+                    flags.gpu_self_play = 1
 
     #flags.use_wandb = False
     #flags.model_warm_up_n = 6400
@@ -81,12 +92,15 @@ if __name__ == "__main__":
     num_gpus_available = torch.cuda.device_count()
     num_gpus_self_play = (num_gpus_available - flags.gpu_learn_actor * float(flags.train_actor) - 
         flags.gpu_learn_model * float(flags.train_model))
-    num_self_play_gpu = num_gpus_self_play // flags.gpu_self_play
-    logger.info("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.num_actors))
+    
+    if flags.gpu_self_play > 0:
+        num_self_play_gpu = num_gpus_self_play // flags.gpu_self_play
+        logger.info("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.num_actors))
         
     logger.info("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
     self_play_workers = [SelfPlayWorker.options(
-        num_cpus=0, num_gpus=flags.gpu_self_play if n < num_self_play_gpu else 0).remote(
+        num_cpus=1 if flags.gpu_self_play==0 else 0, 
+        num_gpus=flags.gpu_self_play if n < num_self_play_gpu else 0).remote(
         param_buffer=param_buffer, 
         actor_buffer=actor_buffer, 
         model_buffer=model_buffer, 
