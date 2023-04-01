@@ -25,8 +25,6 @@ if __name__ == "__main__":
 
     if not flags.disable_auto_res:
         if flags.self_play_cpu:
-            flags.num_actors = 32
-            flags.num_p_actors = 2  
             flags.gpu_self_play = 0          
             if num_gpus_available == 1:
                 flags.gpu_learn_actor = 0.5
@@ -78,8 +76,8 @@ if __name__ == "__main__":
     #flags.model_warm_up_n = 6400
     #flags.model_buffer_n = 6400
 
-    actor_buffer = ActorBuffer.remote(batch_size=flags.batch_size, num_p_actors=flags.num_p_actors)
-    model_buffer = ModelBuffer.remote(flags) if flags.train_model else None
+    actor_buffer = ActorBuffer.options(num_cpus=1).remote(batch_size=flags.batch_size, num_p_actors=flags.num_p_actors)
+    model_buffer = ModelBuffer.options(num_cpus=1).remote(flags) if flags.train_model else None
     param_buffer = GeneralBuffer.remote()        
 
     if flags.policy_type == PO_NET:

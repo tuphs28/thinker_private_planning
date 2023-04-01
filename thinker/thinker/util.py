@@ -45,9 +45,9 @@ def parse(args=None, override=True):
                         help="Number of gpu per self-play worker.")     
     parser.add_argument("--float16",  action="store_true",
                         help="Whether to use float 16 precision in training.")                                                     
-    parser.add_argument("--num_actors", default=48, type=int, 
-                        help="Number of actors (default: 48).")
-    parser.add_argument("--num_p_actors", default=1, type=int, 
+    parser.add_argument("--num_actors", default=24, type=int, 
+                        help="Number of actors (default: 24).")
+    parser.add_argument("--num_p_actors", default=2, type=int, 
                         help="Number of parallel env. per actor")                          
 
     # Preload settings.
@@ -100,7 +100,7 @@ def parse(args=None, override=True):
     parser.add_argument("--model_warm_up_n", default=200000, type=int, 
                         help="Number of transition accumulated before model start learning.")     
     parser.add_argument("--test_policy_type", default=1, type=int, 
-                        help="Policy used for testing model; 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
+                        help="Policy used for testing model; -1 for no testing, 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
     parser.add_argument("--model_min_step_per_transition", default=5, type=int, 
                         help="Minimum number of model learning step on one transition")                         
     parser.add_argument("--model_max_step_per_transition", default=6, type=int, 

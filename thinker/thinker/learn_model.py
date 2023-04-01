@@ -91,17 +91,18 @@ class ModelLearner():
         util.optimizer_to(self.optimizer_p, self.device)
 
         # model tester
-        self.test_buffer = GeneralBuffer.remote()   
-        self.model_tester = [SelfPlayWorker.remote(
-            param_buffer=param_buffer, 
-            actor_buffer=None, 
-            model_buffer=None, 
-            test_buffer=self.test_buffer, 
-            policy=self.flags.test_policy_type, 
-            policy_params=None, 
-            rank=n+1, 
-            num_p_actors=1,
-            flags=flags) for n in range(10)]
+        if self.flags.test_policy_type != -1:
+            self.test_buffer = GeneralBuffer.remote()   
+            self.model_tester = [SelfPlayWorker.remote(
+                param_buffer=param_buffer, 
+                actor_buffer=None, 
+                model_buffer=None, 
+                test_buffer=self.test_buffer, 
+                policy=self.flags.test_policy_type, 
+                policy_params=None, 
+                rank=n+1, 
+                num_p_actors=1,
+                flags=flags) for n in range(10)]
 
     def learn_data(self):
         try:
@@ -220,7 +221,7 @@ class ModelLearner():
                     self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
                 # test the model policy returns
-                if self.step - start_step_test > 250000 * self.flags.rec_t:
+                if self.flags.test_policy_type != -1 and self.step - start_step_test > 250000 * self.flags.rec_t:
                     start_step_test = self.step
                     if r_tester is not None: 
                         ray.get(r_tester)[0]
