@@ -13,7 +13,7 @@ EnvOut = namedtuple('EnvOut', ['gym_env_out', 'model_out', 'model_encodes',
     'reward', 'done', 'real_done', 'truncated_done',
     'episode_return', 'episode_step', 'cur_t', 'last_action', 'max_rollout_depth'])
 
-def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
+def Environment(flags, model_wrap=True, env_n=1, device=None, time=False, debug=False):
     """Create an environment using flags.env; first
     wrap the env with basic wrapper, then wrap it
     with a model, and finally wrap it with PosWrapper
@@ -35,7 +35,8 @@ def Environment(flags, model_wrap=True, env_n=1, device=None, time=False):
     if model_wrap:              
         wrapper = cVecModelWrapper if flags.perfect_model else cVecFullModelWrapper
         env = PostVecModelWrapper(wrapper(env, env_n, flags, 
-            device=device, time=time), env_n, num_actions, flags, model_wrap=True, device=device)
+            device=device, time=time, debug=debug), 
+            env_n, num_actions, flags, model_wrap=True, device=device)
     else:
         env = PostVecModelWrapper(env, env_n, num_actions, flags, model_wrap=False, device=device)
     return env

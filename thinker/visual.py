@@ -118,8 +118,8 @@ def plot_qn_sa(q_s_a, n_s_a, action_meanings, max_q_s_a=None, ax=None):
     ax.set_title("q_s_a and n_s_a")    
 
 def gen_video(video_stats, file_path):
-    # Generate video
     import cv2
+    # Generate video
     imgs = []
     hw = video_stats["real_imgs"][0].shape[1]
 
@@ -139,13 +139,21 @@ def gen_video(video_stats, file_path):
         img = np.flip(img, 2)
         imgs.append(img)
 
-    width = hw*2
-    hieght = hw    
-    fps = 15
-    
-    video = cv2.VideoWriter(file_path, cv2.VideoWriter_fourcc(*'mp4v'), float(fps), (width, hieght)) 
-    for img in imgs: video.write(img) 
-    video.release()        
+    enlarge_fcator = 3
+    width = hw * 2 * enlarge_fcator
+    height = hw * enlarge_fcator
+    fps = 5    
+
+    path = os.path.join(file_path, "video.avi")
+    fourcc = cv2.VideoWriter_fourcc(*'FFV1')
+    video = cv2.VideoWriter(path, fourcc, float(fps), (width, height)) 
+    video.set(cv2.CAP_PROP_BITRATE, 10000)  # set the video bitrate to 10000 kb/s
+    for img in imgs:
+        height, width, _ = img.shape
+        new_height, new_width = height * enlarge_fcator, width * enlarge_fcator
+        resized_img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+        video.write(resized_img) 
+    video.release()   
 
 def print_im_actions(im_dict, action_meanings, print_stat=False):
     lookup_dict = {k:v for k, v in enumerate(action_meanings)}
@@ -171,6 +179,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
     flags = util.parse(['--load_checkpoint', check_point_path])
     #flags.actor_net_ver = 0
     name = "%s-%s"%(flags.xpid, time.strftime("%Y%m%d-%H%M%S"))
+    seed = np.random.randint(10000)
 
     if saveimg:
         saveimg_a = os.path.join(saveimg_dir, name, "a")
@@ -179,7 +188,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
         if not (os.path.exists(saveimg_b)): os.makedirs(saveimg_b)
         print("saving images to %s" % (os.path.join(saveimg_dir, name)))
         savef = open(os.path.join(saveimg_dir, name, "logs.txt"), 'a')
-    env = Environment(flags, model_wrap=True)
+    env = Environment(flags, model_wrap=True, debug=True)
     if not flags.perfect_model: 
         flags_ = copy.deepcopy(flags)
         flags_.perfect_model = True
@@ -192,10 +201,10 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
         action_meanings = gym.make(flags.env).get_action_meanings()
     num_actions = env.num_actions
 
-    env.seed([0])
-    if not flags.perfect_model: perfect_env.seed([0])
+    env.seed([seed])
+    if not flags.perfect_model: perfect_env.seed([seed])
 
-    model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags)
+    model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags, debug=True)
     model_net.train(False)
     if not model_path: model_path = os.path.join(check_point_path,'ckp_model.tar')
     checkpoint = torch.load(model_path, torch.device("cpu"))
@@ -247,7 +256,8 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
         model_out = util.decode_model_out(env_out.model_out, num_actions, flags.reward_transform)
         if len(im_dict['reset_action']) > 0: im_dict['reset_action'][-1] = model_out["reset"]
         if not flags.perfect_model: perfect_env_out  = perfect_env.step(action, model_net)    
-        gym_env_out = env_out.gym_env_out if flags.perfect_model else perfect_env_out.gym_env_out
+        #gym_env_out = env_out.gym_env_out if flags.perfect_model else perfect_env_out.gym_env_out
+        gym_env_out = (torch.clamp(env.env.xs, 0, 1) * 255).to(torch.uint8)
         if not flags.perfect_model:
             perfect_model_out = util.decode_model_out(perfect_env_out.model_out, num_actions, flags.reward_transform)
 
@@ -337,7 +347,7 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
     savef.close()            
 
     if savevideo:
-        gen_video(video_stats, os.path.join(saveimg_dir, name, "video.mp4"))    
+        gen_video(video_stats, os.path.join(saveimg_dir, name))    
 
 if __name__ == "__main__":
     flags = util.parse(override=False)

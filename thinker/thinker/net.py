@@ -1096,7 +1096,7 @@ class PredNetV(nn.Module):
             )
 
 class DuelNetBase(nn.Module):    
-    def __init__(self, obs_shape, num_actions, flags):        
+    def __init__(self, obs_shape, num_actions, flags, debug=False):        
         super(DuelNetBase, self).__init__()      
         self.rnn = False
         self.flags = flags        
@@ -1109,6 +1109,7 @@ class DuelNetBase(nn.Module):
         if self.duel_net:
             self.model_net = ModelNetV(obs_shape, num_actions, flags)
         self.pred_net = PredNetV(obs_shape, num_actions, flags)
+        self.debug = debug
     
     def forward(self, x, actions, one_hot=False, rescale=True):
         """
@@ -1157,6 +1158,9 @@ class DuelNetBase(nn.Module):
             ys = None
 
         rd_out = model_net_out if self.duel_net else pred_net_out
+
+        if self.debug: state["pred_xs"] = xs[-1]
+
         return DuelNetOut(
             single_rs=rd_out.single_rs,
             rs=rd_out.rs,
@@ -1195,6 +1199,7 @@ class DuelNetBase(nn.Module):
             ys = None
 
         rd_out = model_net_out if self.duel_net else pred_net_out
+        if self.debug: state_["pred_xs"] = x if x is not None else None
         return DuelNetOut(
             single_rs=rd_out.single_rs,
             rs=rd_out.rs,
@@ -1214,8 +1219,8 @@ class DuelNetBase(nn.Module):
             weights = {k: v.to(device) for k, v in weights.items()}
         self.load_state_dict(weights)       
 
-def ModelNet(obs_shape, num_actions, flags):
-    return DuelNetBase(obs_shape, num_actions, flags)
+def ModelNet(obs_shape, num_actions, flags, debug):
+    return DuelNetBase(obs_shape, num_actions, flags, debug)
     
 class RewardTran(nn.Module):    
     def __init__(self, vec, support=300, eps=0.001):

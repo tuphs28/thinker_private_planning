@@ -251,6 +251,7 @@ cdef class cVecFullModelWrapper():
     cdef int obs_n    
     cdef int env_n
     cdef bool time 
+    cdef bool debug
 
     # python object
     cdef object device
@@ -260,6 +261,7 @@ cdef class cVecFullModelWrapper():
     cdef readonly baseline_mean_q    
     cdef readonly object model_out_shape
     cdef readonly object gym_env_out_shape
+    cdef readonly object xs
 
     # tree statistic
     cdef vector[Node*] cur_nodes
@@ -284,7 +286,7 @@ cdef class cVecFullModelWrapper():
     cdef bool[:] full_truncated_done
     cdef int[:] total_step
 
-    def __init__(self, env, env_n, flags, device=None, time=False):
+    def __init__(self, env, env_n, flags, device=None, time=False, debug=False):
         assert not flags.perfect_model, "this class only supports imperfect model"
         self.device = torch.device("cpu") if device is None else device
         self.env = env     
@@ -308,8 +310,9 @@ cdef class cVecFullModelWrapper():
 
         self.baseline_max_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)
         self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)        
-        self.time = time
+        self.time = time        
         self.timings = util.Timings()
+        self.debug = debug
 
         # internal variable init.
         self.depth_delta = np.zeros(self.env_n, dtype=np.float32)
@@ -384,6 +387,9 @@ cdef class cVecFullModelWrapper():
                     model_encodes = torch.concat([model_encodes, model_encodes], dim=1)
             else:
                 model_encodes = None
+
+            if self.debug:
+                self.xs =  self.compute_model_xs(self.cur_nodes)
 
             # record initial root_nodes_qmax 
             for i in range(self.env_n):
@@ -607,7 +613,8 @@ cdef class cVecFullModelWrapper():
                 model_encodes = torch.concat([model_encodes, model_encodes_], dim=1)
         else:
             model_encodes = None
-
+        if self.debug:
+            self.xs =  self.compute_model_xs(self.cur_nodes)
         if self.time: self.timings.time("compute_model_out")
         # compute reward
         j = 0
@@ -687,9 +694,17 @@ cdef class cVecFullModelWrapper():
             model_encodes.append((encoded["model_ys"] if not nodes[i][0].done 
                 else torch.zeros_like(encoded["model_ys"])).unsqueeze(0))
         model_encodes = torch.concat(model_encodes)
-
         return model_encodes
-        
+    
+    cdef compute_model_xs(self, vector[Node*] nodes):
+        xs = []
+        for i in range(self.env_n):
+            encoded = <dict>nodes[i][0].encoded
+            if "pred_xs" not in encoded["model_states"]: return None
+            xs.append((encoded["model_states"]["pred_xs"] if not nodes[i][0].done 
+                else torch.zeros_like(encoded["model_states"]["pred_xs"])).unsqueeze(0))
+        xs = torch.concat(xs)
+        return xs
 
     def close(self):
         cdef int i
@@ -735,6 +750,7 @@ cdef class cVecModelWrapper():
     cdef int obs_n    
     cdef int env_n
     cdef bool time 
+    cdef bool debug
 
     # python object
     cdef object device
@@ -768,7 +784,7 @@ cdef class cVecModelWrapper():
     cdef bool[:] full_truncated_done
     cdef int[:] total_step
 
-    def __init__(self, env, env_n, flags, device=None, time=False):
+    def __init__(self, env, env_n, flags, device=None, time=False, debug=False):
         assert flags.perfect_model, "this class only supports perfect model"
         self.device = torch.device("cpu") if device is None else device
         self.env = env     
@@ -792,6 +808,7 @@ cdef class cVecModelWrapper():
         self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float32, device=self.device)        
         self.time = time
         self.timings = util.Timings()
+        self.debug = debug
 
         # internal variable init.
         self.depth_delta = np.zeros(self.env_n, dtype=np.float32)
