@@ -8,6 +8,7 @@ import traceback
 import ray
 import torch
 import torch.nn.functional as F
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns
 from thinker.core.file_writer import FileWriter
@@ -31,21 +32,6 @@ def compute_baseline_loss_tran(baseline_enc_s, target_baseline, reward_tran, mas
     loss = 0.
     for mask, c in zip(masks_ls, c_ls):
         ce_loss = ((baseline_enc_s - target_baseline_enc_s) * (1 - mask))**2
-        loss = loss + torch.sum(ce_loss) * c
-    return loss
-
-def compute_baseline_loss_tran_(baseline_enc_logits, target_baseline, reward_tran, masks_ls, c_ls):
-    # target_baseline has shape (T, B)
-    # baseline_enc_logits has shape (T, B, logit_n)
-    assert len(masks_ls) == len(c_ls)
-    _, target_baseline_enc_logits = reward_tran.encode(target_baseline)
-    loss = 0.
-    for mask, c in zip(masks_ls, c_ls):
-        ce_loss = torch.nn.CrossEntropyLoss(reduction="none")(
-                        input = torch.flatten(baseline_enc_logits, 0, 1),
-                        target = torch.flatten(target_baseline_enc_logits, 0, 1)
-                      )
-        ce_loss = ce_loss.view_as(target_baseline) * (1 - mask)
         loss = loss + torch.sum(ce_loss) * c
     return loss
 
@@ -118,14 +104,14 @@ def from_logits(
 
 @ray.remote
 class ActorLearner():
-    def __init__(self, param_buffer: GeneralBuffer, actor_buffer: ActorBuffer, rank: int, flags: argparse.Namespace):
-        self.param_buffer = param_buffer
-        self.actor_buffer = actor_buffer
+    def __init__(self, buffers:dict, rank: int, flags: argparse.Namespace):
+        self.param_buffer = buffers["actor_param"]
+        self.actor_buffer = buffers["actor"]
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
         self.wlogger = util.Wandb(flags, subname='') if flags.use_wandb else None
-        self.time = False
+        self.time = flags.profile
 
         env = Environment(flags, model_wrap=True, env_n=1)
         self.actor_net = ActorNet(obs_shape=env.model_out_shape, 
@@ -199,42 +185,43 @@ class ActorLearner():
             
             if self.flags.im_cost_anneal: self.anneal_c = 1
 
+            data_ptr = self.actor_buffer.read.remote()
             while (self.real_step < self.flags.total_steps):   
                 if self.time: self.timing.reset()            
                 # get data remotely    
                 while (True):
-                    data = ray.get(self.actor_buffer.read.remote())
+                    data = ray.get(data_ptr)
+                    data_ptr = self.actor_buffer.read.remote()
                     if data is not None: break                
                     time.sleep(0.01)
                     queue_n += 0.01
-                data = ray.get(data)
-                if self.time: self.timing.time("get data")
+                if self.time: self.timing.time("get_data")
                 # start consume data
 
-                # batch and move the data to the process device
-                # data is in the form [(train_actor_out_1, initial_actor_state_1), 
-                # (train_actor_out_2, initial_actor_state_2) ...]
-
-                train_actor_out = TrainActorOut(*(torch.concat([torch.tensor(x[0][n]) for x in data], dim=1).to(self.device) if data[0][0][n] is not None 
-                    else None for n in range(len(data[0][0]))))
-                actor_id = train_actor_out.id
-                initial_actor_state = tuple(torch.concat([x[1][n] for x in data], dim=1).to(self.device) for n in range(len(data[0][1])))
-                if self.time: self.timing.time("convert data")
+                train_actor_out, initial_actor_state  = data
+                train_actor_out = util.tuple_map(train_actor_out, lambda x:torch.tensor(x, device=self.device))
+                initial_actor_state = util.tuple_map(initial_actor_state, lambda x:torch.tensor(x, device=self.device))
+                actor_id = train_actor_out.id                
+                if self.time: self.timing.time("convert_data")
 
                 if self.real_step < self.flags.actor_warm_up_n:
                     stats = self.compute_stat(train_actor_out, None, None, actor_id)   
                     self._logger.info("Preloading: %d/%d" % (self.real_step, self.flags.actor_warm_up_n))
                     time.sleep(5)
                     continue                           
-
+                
                 # compute losses
                 if self.flags.float16:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):                
+                    with torch.cuda.amp.autocast():
                         losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
                 else:
                     losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
                 total_loss = losses["total_loss"]
                 if self.time: self.timing.time("compute loss")    
+
+                #with profile(activities=[
+                #    ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True, with_stack=True) as prof:
+                #    with record_function("compute_grad"):
 
                 # gradient descent on loss
                 self.optimizer.zero_grad()
@@ -243,6 +230,8 @@ class ActorLearner():
                 else:
                     total_loss.backward()
                 if self.time: self.timing.time("compute gradient")
+
+                #print(prof.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=10))
 
                 optimize_params = self.optimizer.param_groups[0]['params']
                 if self.flags.float16: scaler.unscale_(self.optimizer)
@@ -290,9 +279,9 @@ class ActorLearner():
                                 "entropy_loss", "reg_loss", "total_norm"]                    
                     for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
                     if self.flags.return_norm_type != -1:
-                        print_str += " norm_stat (%.4f:%.4f)" % self.norm_stat
+                        print_str += " norm_stat (%.4f:%.4f)" % self.norm_stat[:2]
                         if self.im_norm_stat is not None:
-                            print_str += " im_norm_stat (%.4f:%.4f)" % self.im_norm_stat
+                            print_str += " im_norm_stat (%.4f:%.4f)" % self.im_norm_stat[:2]
 
                     self._logger.info(print_str)
                     start_step = self.step

@@ -51,9 +51,9 @@ class LegacyActorNet(nn.Module):
 
         last_out_size = 256
         if self.actor_see_p > 0: 
-            down_scale_c = 2 if self.actor_see_encode else 4
-            last_out_size = last_out_size + (256 if self.actor_drc else (
-                256//down_scale_c//4)*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16))
+            down_scale_c = flags.model_downscale_c if self.actor_see_encode else 4
+            last_out_size = int(last_out_size + (256 if self.actor_drc else (
+                256//down_scale_c//4)*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16)))
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
         self.policy = nn.Linear(last_out_size, self.num_actions)       
         self.baseline = nn.Linear(last_out_size, self.num_rewards)        
@@ -71,12 +71,12 @@ class LegacyActorNet(nn.Module):
                 if self.model_type_nn in [2, 3] and self.actor_see_encode:
                     in_channels=64 if self.model_type_nn == 2 else 128
                 else:
-                    in_channels=256//down_scale_c
+                    in_channels=int(256//down_scale_c)
                 if self.actor_see_double_encode: in_channels=in_channels*2 
                 self.gym_frame_conv = torch.nn.Sequential(
-                    nn.Conv2d(in_channels=in_channels, out_channels=256//down_scale_c//2, kernel_size=3, padding='same'), 
+                    nn.Conv2d(in_channels=in_channels, out_channels=int(256//down_scale_c//2), kernel_size=3, padding='same'), 
                     nn.ReLU(), 
-                    nn.Conv2d(in_channels=256//down_scale_c//2, out_channels=256//down_scale_c//4, kernel_size=3, padding='same'), 
+                    nn.Conv2d(in_channels=int(256//down_scale_c//2), out_channels=int(256//down_scale_c//4), kernel_size=3, padding='same'), 
                     nn.ReLU())
             else:
                 assert not self.actor_see_encode, "actor_drc is not compatiable with actor_see_encode"

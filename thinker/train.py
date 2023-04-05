@@ -18,13 +18,18 @@ if __name__ == "__main__":
     ray.init()
     st_time = time.time()
     flags = util.parse()
-    flags.cmd = ' '.join(sys.argv)    
+    if not hasattr(flags, 'cmd'):
+        flags.cmd = ' '.join(sys.argv)    
 
     num_gpus_available = torch.cuda.device_count()
-    logger.info("Detected %d GPU" % num_gpus_available)    
+    num_cpus_available = ray.cluster_resources()['CPU']
+    logger.info("Detected %d GPU %d CPU" % (num_gpus_available, num_cpus_available))
+
 
     if not flags.disable_auto_res:
         if flags.self_play_cpu:
+            flags.gpu_num_actors = 0
+            flags.gpu_num_p_actors = 0
             flags.gpu_self_play = 0          
             if num_gpus_available == 1:
                 flags.gpu_learn_actor = 0.5
@@ -33,34 +38,40 @@ if __name__ == "__main__":
                 flags.gpu_learn_actor = 1
                 flags.gpu_learn_model = 1
         else: 
+
+            flags.cpu_num_actors = 0 #int(num_cpus_available-8)
+            flags.cpu_num_p_actors = 1
+
             if num_gpus_available == 1:
-                flags.num_actors = 1
-                flags.num_p_actors = 32
                 flags.gpu_learn_actor = 0.5
                 flags.gpu_learn_model = 0.25
                 flags.gpu_self_play = 0.25
+                flags.gpu_num_actors = 1
+                flags.gpu_num_p_actors = 64
+
             elif num_gpus_available == 2:
-                flags.num_actors = 2
-                flags.num_p_actors = 32
                 flags.gpu_learn_actor = 1
                 flags.gpu_learn_model = 0.5
-                flags.gpu_self_play = 0.25
+                flags.gpu_self_play = 0.25                   
+                flags.gpu_num_actors = 2
+                flags.gpu_num_p_actors = 32             
+
             elif num_gpus_available == 3:
-                flags.num_actors = 2
-                flags.num_p_actors = 32
                 flags.gpu_learn_actor = 1
                 flags.gpu_learn_model = 1
-                flags.gpu_self_play = 0.5        
+                flags.gpu_self_play = 0.5                               
+                flags.gpu_num_actors = 2
+                flags.gpu_num_p_actors = 32           
             elif num_gpus_available == 4:
-                flags.num_actors = 2
-                flags.num_p_actors = 32
                 flags.gpu_learn_actor = 1
                 flags.gpu_learn_model = 1
-                flags.gpu_self_play = 1
+                flags.gpu_self_play = 1                              
+                flags.gpu_num_actors = 2
+                flags.gpu_num_p_actors = 32    
             if not flags.train_model:
                 if num_gpus_available == 1:
                     flags.gpu_learn_model = 0
-                    flags.num_actors = 2      
+                    flags.gpu_num_actors = 2      
                 if num_gpus_available == 2:  
                     flags.gpu_learn_model = 0
                     flags.gpu_self_play = 0.5
@@ -68,7 +79,7 @@ if __name__ == "__main__":
                     flags.gpu_learn_model = 0
                     flags.gpu_self_play = 1
                 if num_gpus_available == 4:
-                    flags.num_actors = 3
+                    flags.gpu_num_actors = 3
                     flags.gpu_learn_model = 0            
                     flags.gpu_self_play = 1
 
@@ -76,9 +87,14 @@ if __name__ == "__main__":
     #flags.model_warm_up_n = 6400
     #flags.model_buffer_n = 6400
 
-    actor_buffer = ActorBuffer.options(num_cpus=1).remote(batch_size=flags.batch_size, num_p_actors=flags.num_p_actors)
-    model_buffer = ModelBuffer.options(num_cpus=1).remote(flags) if flags.train_model else None
-    param_buffer = GeneralBuffer.remote()        
+    buffers = {
+        "actor": ActorBuffer.options(num_cpus=1).remote(batch_size=flags.batch_size),
+        "model": ModelBuffer.options(num_cpus=1).remote(flags) if flags.train_model else None,
+        "actor_param": GeneralBuffer.options(num_cpus=1).remote(),
+        "model_param": GeneralBuffer.options(num_cpus=1).remote(),
+        "signal": GeneralBuffer.options(num_cpus=1).remote(),
+        "test": None,
+    }
 
     if flags.policy_type == PO_NET:
         policy_str = "actor network"
@@ -93,36 +109,51 @@ if __name__ == "__main__":
     
     if flags.gpu_self_play > 0:
         num_self_play_gpu = num_gpus_self_play // flags.gpu_self_play
-        logger.info("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.num_actors))
+        logger.info("Number of self-play worker with GPU: %d/%d" % (num_self_play_gpu, flags.gpu_num_actors))
     else:
         num_self_play_gpu = -1
         
-    logger.info("Starting %d actors with %s policy" % (flags.num_actors, policy_str))
-    self_play_workers = [SelfPlayWorker.options(
-        num_cpus=1 if flags.gpu_self_play==0 else 0, 
-        num_gpus=flags.gpu_self_play if n < num_self_play_gpu else 0).remote(
-        param_buffer=param_buffer, 
-        actor_buffer=actor_buffer, 
-        model_buffer=model_buffer, 
-        test_buffer=None,
-        policy=flags.policy_type, 
-        policy_params=None, 
-        rank=n, 
-        num_p_actors=flags.num_p_actors,
-        flags=flags) for n in range(flags.num_actors)]
+    logger.info("Starting %d (gpu) self-play actors with %s policy" % (flags.gpu_num_actors, policy_str))
+    logger.info("Starting %d (cpu) self-play actors with %s policy" % (flags.cpu_num_actors, policy_str))
+
+    self_play_workers = []
+    if flags.gpu_num_actors > 0:
+        self_play_workers.extend([SelfPlayWorker.options(
+            num_cpus=1, 
+            num_gpus=flags.gpu_self_play).remote(
+            buffers=buffers,    
+            policy=flags.policy_type, 
+            policy_params=None, 
+            rank=n, 
+            num_p_actors=flags.gpu_num_p_actors,
+            flags=flags) for n in range(flags.gpu_num_actors)])
+        
+    if flags.cpu_num_actors > 0:
+        self_play_workers.extend([SelfPlayWorker.options(
+            num_cpus=1, 
+            num_gpus=0).remote(
+            buffers=buffers,    
+            policy=flags.policy_type, 
+            policy_params=None, 
+            rank=n + flags.gpu_num_actors, 
+            num_p_actors=flags.cpu_num_p_actors,
+            flags=flags) for n in range(flags.cpu_num_actors)])
+        
     r_worker = [x.gen_data.remote() for x in self_play_workers]    
     r_learner = []
 
     if flags.train_actor:
-        actor_learner = ActorLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_actor).remote(param_buffer, actor_buffer, 0, flags)
+        actor_learner = ActorLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_actor).remote(
+            buffers, 0, flags)
         r_learner.append(actor_learner.learn_data.remote())
 
     if flags.train_model:
-        model_learner = ModelLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_model).remote(param_buffer, model_buffer, 0, flags)
+        model_learner = ModelLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_model).remote(
+            buffers, 0, flags)
         r_learner.append(model_learner.learn_data.remote())
       
     if len(r_learner) >= 1: ray.get(r_learner)
-    actor_buffer.set_finish.remote()    
+    buffers["actor"].set_finish.remote()    
     ray.get(r_worker)
 
     logger.info("time required: %fs" % (time.time()-st_time))

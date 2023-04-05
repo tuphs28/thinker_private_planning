@@ -16,3 +16,4 @@ csokoban/gym_csokoban.egg-info
 thinker/build
 thinker/thinker/cenv.cpp
 thinker/wandb/
+thinker/thinker/buffer.py

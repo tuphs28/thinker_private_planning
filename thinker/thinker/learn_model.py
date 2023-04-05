@@ -29,13 +29,18 @@ def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None):
 
 @ray.remote
 class ModelLearner():
-    def __init__(self, param_buffer: GeneralBuffer, model_buffer: ModelBuffer, rank: int, flags: argparse.Namespace):
-        self.param_buffer = param_buffer
-        self.model_buffer = model_buffer
+    def __init__(self, 
+                 buffers: dict,
+                 rank: int, 
+                 flags: argparse.Namespace):        
+        self.param_buffer = buffers["model_param"]
+        self.model_buffer = buffers["model"]
+        self.signal_buffer = buffers["signal"]
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
         self.wlogger = util.Wandb(flags, subname='_model') if flags.use_wandb else None
+        self.time = flags.profile
 
         env = Environment(flags)        
         self.model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags)
@@ -89,20 +94,18 @@ class ModelLearner():
         self.model_net.to(self.device)
         if self.flags.duel_net: util.optimizer_to(self.optimizer_m, self.device)
         util.optimizer_to(self.optimizer_p, self.device)
+        if self.time: self.timing = util.Timings()  
 
         # model tester
         if self.flags.test_policy_type != -1:
-            self.test_buffer = GeneralBuffer.remote()   
-            self.model_tester = [SelfPlayWorker.remote(
-                param_buffer=param_buffer, 
-                actor_buffer=None, 
-                model_buffer=None, 
-                test_buffer=self.test_buffer, 
+            buffers["test"] = GeneralBuffer.remote()   
+            self.model_tester = [SelfPlayWorker.options(num_cpus=1).remote(
+                buffers=buffers, 
                 policy=self.flags.test_policy_type, 
                 policy_params=None, 
                 rank=n+1, 
                 num_p_actors=1,
-                flags=flags) for n in range(10)]
+                flags=flags) for n in range(5)]
 
     def learn_data(self):
         try:
@@ -115,11 +118,10 @@ class ModelLearner():
             
             r_tester = None
             all_returns = None
+            data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
             
             numel_per_step = self.flags.model_batch_size * (
-                    self.flags.model_k_step_return if not self.flags.model_batch_mode else 
-                    self.flags.model_unroll_length)
-
+                    self.flags.model_k_step_return)
             max_diff = 200000
             # stop training the model at the last 200k real steps
 
@@ -127,52 +129,64 @@ class ModelLearner():
             if self.flags.float16:
                 self.scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
 
-            while (self.real_step < self.flags.total_steps - max_diff):                    
+            while (self.real_step < self.flags.total_steps - max_diff):      
+                if self.time: self.timing.reset()     
+
                 c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
                 beta = self.flags.priority_beta * (1 - c) + 1. * c
 
                 # get data remotely    
-                while (True):
-                    data = ray.get(self.model_buffer.read.remote(beta))
-                    if data is not None: break            
+                while (True):                    
+                    data = ray.get(data_ptr)
+                    data_ptr = self.model_buffer.read.remote(beta)
+                    if data is not None: break    
                     time.sleep(0.01)
                     if timer() - start_time > 5:
                         tran_n = ray.get(self.model_buffer.get_processed_n.remote())
                         self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
-                        start_time = timer()                
+                        start_time = timer()                             
+                if self.time: self.timing.time("get_data")           
 
                 # start consume data
                 train_model_out, is_weights, inds, new_psteps = data            
-                self.real_step += new_psteps - last_psteps            
+                self.real_step += int(new_psteps) - last_psteps            
                 last_psteps = new_psteps
 
                 # move the data to the process device
-                train_model_out = util.tuple_map(train_model_out, lambda x:x.to(self.device))
+                train_model_out = util.tuple_map(train_model_out, lambda x:torch.tensor(x,device=self.device))
                 is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
                 target = self.prepare_data(train_model_out)
+                del data
+                if self.time: self.timing.time("convert_data")          
 
                 if self.flags.duel_net:                            
                     # compute losses for model_net
                     if self.flags.float16:
-                        with torch.autocast(device_type='cuda', dtype=torch.float16):      
+                        with torch.cuda.amp.autocast():
                             losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
                     else:
                         losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
+                    if self.time: self.timing.time("compute_losses_m")
                     total_norm_m = self.gradient_step(losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m)                    
+                    if self.time: self.timing.time("gradient_step_m")
                 else:
                     losses_m = {}
                     total_norm_m = torch.zeros(1, device=self.device)
                     pred_xs = None
+                
 
                 if self.flags.float16:
-                    with torch.autocast(device_type='cuda', dtype=torch.float16):      
+                    with torch.cuda.amp.autocast():    
                         losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
                 else:
                     losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
+                if self.time: self.timing.time("compute_losses_p")
                 total_norm_p = self.gradient_step(losses_p["total_loss_p"], self.optimizer_p, self.scheduler_p)
+                if self.time: self.timing.time("gradient_step_p")
                 if self.flags.priority_alpha > 0:
                     self.model_buffer.update_priority.remote(inds, priorities)                
                 self.step += numel_per_step
+                if self.time: self.timing.time("update_priority")
 
                 losses = losses_m
                 losses.update(losses_p)
@@ -211,17 +225,21 @@ class ModelLearner():
                     self.plogger.log(stats)
                     if self.flags.use_wandb:
                         self.wlogger.wandb.log(stats, step=stats['real_step'])
+                    
+                    if self.time: print(self.timing.summary()) 
                 
                 if int(time.strftime("%M")) // 10 != ckp_start_time:
                     self.save_checkpoint()
-                    ckp_start_time = int(time.strftime("%M")) // 10
+                    ckp_start_time = int(time.strftime("%M")) // 10                
+                if self.time: self.timing.time("misc")
                 
                 # update shared buffer's weights
                 if n % 1 == 0:
                     self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
+                if self.time: self.timing.time("update_weight")
 
                 # test the model policy returns
-                if self.flags.test_policy_type != -1 and self.step - start_step_test > 250000 * self.flags.rec_t:
+                if self.flags.test_policy_type != -1 and self.step - start_step_test > 500000 * self.flags.rec_t:
                     start_step_test = self.step
                     if r_tester is not None: 
                         ray.get(r_tester)[0]
@@ -230,21 +248,24 @@ class ModelLearner():
                         #self._logger.info("Steps %i Model policy returns for %i episodes: Mean (Std.) %.4f (%.4f)" % 
                         #    (n, len(all_returns), np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns))))
                     r_tester = [x.gen_data.remote(test_eps_n=20, verbose=False) for x in self.model_tester]                                        
+                if self.time: self.timing.time("test_policy_returns")
 
                 # control the number of learning step per transition
                 while (self.flags.model_max_step_per_transition > 0 and 
                     self.step_per_transition() > self.flags.model_max_step_per_transition):
                     time.sleep(0.1)
-                    self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
+                    self.signal_buffer.update_dict_item.remote("self_play_signals", "halt", False)
                     new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
                     self.real_step += new_psteps - last_psteps            
-                    last_psteps = new_psteps                
+                    last_psteps = new_psteps         
+                if self.time: self.timing.time("sign_control_1")       
                 
                 if self.flags.model_min_step_per_transition > 0:
                     if self.step_per_transition() < self.flags.model_min_step_per_transition:
-                        self.param_buffer.update_dict_item.remote("self_play_signals", "halt", True)
+                        self.signal_buffer.update_dict_item.remote("self_play_signals", "halt", True)
                     else:
-                        self.param_buffer.update_dict_item.remote("self_play_signals", "halt", False)
+                        self.signal_buffer.update_dict_item.remote("self_play_signals", "halt", False)
+                if self.time: self.timing.time("sign_control_2")       
 
                 n += 1            
             
@@ -429,17 +450,14 @@ class ModelLearner():
         losses["total_loss_p"] = total_loss
 
         # compute priorities
-        if self.flags.priority_alpha > 0.:
-            if not self.flags.model_batch_mode:            
-                priorities = torch.absolute(vs - target["vs"])
-                if self.flags.priority_type in [1, 2] and not self.flags.perfect_model:    
-                    # when the model is imperfect, we only reset the priority of the first time step
-                    if self.flags.priority_type == 1:
-                        priorities[0] = torch.mean(priorities, dim=0)
-                    priorities[1:] = torch.nan                 
-                priorities = priorities.detach().cpu().numpy()
-            else:
-                priorities = (torch.absolute(vs[0] - target["vs"][0])).detach().cpu().numpy()
+        if self.flags.priority_alpha > 0.:   
+            priorities = torch.absolute(vs - target["vs"])
+            if self.flags.priority_type in [1, 2] and not self.flags.perfect_model:    
+                # when the model is imperfect, we only reset the priority of the first time step
+                if self.flags.priority_type == 1:
+                    priorities[0] = torch.mean(priorities, dim=0)
+                priorities[1:] = torch.nan                 
+            priorities = priorities.detach().cpu().numpy()
         else:
             priorities = None
 

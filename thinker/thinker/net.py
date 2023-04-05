@@ -405,10 +405,11 @@ class ActorNetBase(nn.Module):
         return actor_out, core_state
 
     def get_weights(self):
-        return {k: v.cpu() for k, v in self.state_dict().items()}
+        return {k: v.cpu().numpy() for k, v in self.state_dict().items()}
 
     def set_weights(self, weights):
-        self.load_state_dict(weights)
+        device = next(self.parameters()).device
+        self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
 
 def ActorNet(obs_shape, gym_obs_shape, num_actions, flags):
     if flags.actor_net_ver == 1:
@@ -504,7 +505,7 @@ class FrameEncoder(nn.Module):
           x (tensor): frame with shape B, C, H, W        
           action (tensor): action with shape B, num_actions (in one-hot)
         """
-        assert x.dtype == torch.float
+        assert x.dtype in [torch.float, torch.float16]
         if flatten:
             input_shape = x.shape
             x = x.view((x.shape[0]*x.shape[1],) + x.shape[2:])
@@ -1211,13 +1212,11 @@ class DuelNetBase(nn.Module):
         )
     
     def get_weights(self):
-        return {k: v.cpu() for k, v in self.state_dict().items()}
+        return {k: v.cpu().numpy() for k, v in self.state_dict().items()}
 
     def set_weights(self, weights):
         device = next(self.parameters()).device
-        if device != torch.device("cpu"):
-            weights = {k: v.to(device) for k, v in weights.items()}
-        self.load_state_dict(weights)       
+        self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
 
 def ModelNet(obs_shape, num_actions, flags, debug):
     return DuelNetBase(obs_shape, num_actions, flags, debug)

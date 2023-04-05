@@ -153,16 +153,27 @@ def from_importance_weights(
                 norm_v = target_values 
             elif flags.return_norm_type == 1:
                 norm_v = clipped_pg_rhos * (target_values - values)
-            new_lq = torch.quantile(norm_v,  0.05).detach()
-            new_uq = torch.quantile(norm_v,  0.95).detach()            
-            if norm_stat is None:
-                norm_stat = (new_lq, new_uq)
+
+            if flags.return_norm_buffer_n <= 0:
+                new_lq = torch.quantile(norm_v, 1 - flags.return_norm_per).detach()
+                new_uq = torch.quantile(norm_v, flags.return_norm_per).detach()            
+                if norm_stat is None:
+                    norm_stat = (new_lq, new_uq)
+                else:
+                    norm_stat = (norm_stat[0]*flags.return_norm_decay + new_lq*(1-flags.return_norm_decay),
+                                    norm_stat[1]*flags.return_norm_decay + new_uq*(1-flags.return_norm_decay),)
             else:
-                norm_stat = (norm_stat[0]*0.99 + new_lq*0.01,
-                                norm_stat[1]*0.99 + new_uq*0.01,)
+                if norm_stat is None:
+                    buffer = FifoBuffer(flags.return_norm_buffer_n, device=target_values.device)
+                else:
+                    buffer = norm_stat[2]
+                buffer.push(norm_v)
+                lq = buffer.get_percentile(1 - flags.return_norm_per)
+                uq = buffer.get_percentile(flags.return_norm_per)
+                norm_stat = (lq, uq, buffer)
+
             norm_factor = torch.max(norm_stat[1] - norm_stat[0], torch.tensor([
-                flags.return_norm_b], device=target_values.device))   
-            
+                flags.return_norm_b], device=target_values.device))               
 
         if reward_tran is None or not flags.return_norm_type == -1:
             pg_advantages = clipped_pg_rhos * (target_values - values)
@@ -174,3 +185,36 @@ def from_importance_weights(
 
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, pg_advantages=pg_advantages, norm_stat=norm_stat)
+
+class FifoBuffer:
+    def __init__(self, size, device):
+        self.size = size
+        self.buffer = torch.empty((self.size,), dtype=torch.float32, device=device).fill_(float('nan'))
+        self.current_index = 0
+        self.num_elements = 0
+    
+    def push(self, data):
+        t, b = data.shape
+        num_entries = t * b
+        assert num_entries <= self.size, "Data too large for buffer"
+        
+        start_index = self.current_index
+        end_index = (self.current_index + num_entries) % self.size
+        
+        if end_index < start_index:
+            # The new data wraps around the buffer
+            remaining_space = self.size - start_index
+            self.buffer[start_index:] = data.flatten()[:remaining_space]
+            self.buffer[:end_index] = data.flatten()[remaining_space:]
+        else:
+            # The new data fits within the remaining space
+            self.buffer[start_index:end_index] = data.flatten()
+        
+        self.current_index = end_index
+        self.num_elements = min(self.num_elements + num_entries, self.size)
+    
+    def get_percentile(self, percentile):
+        num_valid_elements = min(self.num_elements, self.size)
+        if num_valid_elements == 0:
+            return None
+        return torch.quantile(self.buffer[:num_valid_elements], q=percentile)

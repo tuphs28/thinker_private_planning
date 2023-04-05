@@ -37,6 +37,7 @@ def parse(args=None, override=True):
                         help="Whether to allocate resources automatically")    
     parser.add_argument("--self_play_cpu", action="store_true",
                         help="Whether to use cpu for self-play actors.")     
+    
     parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
                         help="Number of gpu per actor learning.") 
     parser.add_argument("--gpu_learn_model", default=0.5, type=float,
@@ -45,11 +46,17 @@ def parse(args=None, override=True):
                         help="Number of gpu per self-play worker.")     
     parser.add_argument("--float16",  action="store_true",
                         help="Whether to use float 16 precision in training.")                                                     
-    parser.add_argument("--num_actors", default=24, type=int, 
-                        help="Number of actors (default: 24).")
-    parser.add_argument("--num_p_actors", default=2, type=int, 
-                        help="Number of parallel env. per actor")                          
-
+    parser.add_argument("--gpu_num_actors", default=1, type=int, 
+                        help="Number of self-play actor (gpu)")
+    parser.add_argument("--gpu_num_p_actors", default=32, type=int, 
+                        help="Number of env per self-play actor (gpu)")                          
+    parser.add_argument("--cpu_num_actors", default=32, type=int, 
+                        help="Number of self-play actor (cpu)")
+    parser.add_argument("--cpu_num_p_actors", default=2, type=int, 
+                        help="Number of env per self-play actor (cpu)")                          
+    parser.add_argument("--profile", action="store_true",
+                        help="Whether to do profiling")   
+    
     # Preload settings.
     parser.add_argument("--load_checkpoint", default="",
                         help="Load checkpoint directory.")    
@@ -74,7 +81,13 @@ def parse(args=None, override=True):
     parser.add_argument("--return_norm_type", default=-1, type=int, 
                         help="Return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization")           
     parser.add_argument("--return_norm_b", default=1, type=float, 
-                        help="Minimum normalization coef")               
+                        help="Minimum normalization coef")  
+    parser.add_argument("--return_norm_decay", default=0.99, type=float, 
+                        help="Return normalization decay rate")     
+    parser.add_argument("--return_norm_per", default=0.95, type=float, 
+                        help="Percentile used in return normalization")                       
+    parser.add_argument("--return_norm_buffer_n", default=-1, type=int, 
+                        help="Normalization buffer; only used when it is larger than 0.")                       
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
@@ -82,9 +95,7 @@ def parse(args=None, override=True):
     parser.add_argument("--disable_train_model", action="store_false", dest="train_model",
                         help="Disable training of model.")
     parser.add_argument("--model_batch_size", default=256, type=int, 
-                        help="Model learner batch size.")   
-    parser.add_argument("--model_batch_mode", action="store_true",
-                        help="Whether to use the full rollout from model buffer in training.")                                            
+                        help="Model learner batch size.")                                             
     parser.add_argument("--model_unroll_length", default=200, type=int, 
                         help="Number of transition per unroll in model buffer.")
     parser.add_argument("--model_k_step_return", default=5, type=int, 
@@ -99,7 +110,7 @@ def parse(args=None, override=True):
                         help="Maximum number of transition in model buffer.") 
     parser.add_argument("--model_warm_up_n", default=200000, type=int, 
                         help="Number of transition accumulated before model start learning.")     
-    parser.add_argument("--test_policy_type", default=1, type=int, 
+    parser.add_argument("--test_policy_type", default=-1, type=int, 
                         help="Policy used for testing model; -1 for no testing, 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
     parser.add_argument("--model_min_step_per_transition", default=5, type=int, 
                         help="Minimum number of model learning step on one transition")                         
