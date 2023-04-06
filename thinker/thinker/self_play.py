@@ -156,8 +156,8 @@ class SelfPlayWorker():
                 start_time = timer()
 
 
-                actor_weights_ptr = self.actor_param_buffer.get_data.remote("actor_net")
-                model_weights_ptr = self.model_param_buffer.get_data.remote("model_net")
+                #actor_weights_ptr = self.actor_param_buffer.get_data.remote("actor_net")
+                #model_weights_ptr = self.model_param_buffer.get_data.remote("model_net")
                 data_full_ptr = self.actor_buffer.get_status.remote()
                 signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")
                 
@@ -249,15 +249,15 @@ class SelfPlayWorker():
                     # update model weight                
                     if n % 1 == 0:
                         if self.flags.train_actor and self.policy == PO_NET :
-                            weights = ray.get(actor_weights_ptr)
                             actor_weights_ptr = self.actor_param_buffer.get_data.remote("actor_net")
+                            weights = ray.get(actor_weights_ptr)                            
                             self.actor_net.set_weights(weights)
                             del weights
                     if self.time: self.timing.time("update actor net weight")                    
                     if n % 1 == 0:
                         if self.flags.train_model: 
-                            weights = ray.get(model_weights_ptr)          
                             model_weights_ptr = self.model_param_buffer.get_data.remote("model_net")
+                            weights = ray.get(model_weights_ptr)                                      
                             self.model_net.set_weights(weights)     
                             del weights
                     if self.time: self.timing.time("update model net weight")                    

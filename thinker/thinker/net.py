@@ -422,13 +422,15 @@ def ActorNet(obs_shape, gym_obs_shape, num_actions, flags):
 
 class FrameEncoder(nn.Module):    
     def __init__(self, num_actions, input_shape, type_nn=0, 
-                 size_nn=1, downscale_c=2, concat_action=True, decoder=False):
+                 size_nn=1, downscale_c=2, concat_action=True, 
+                 decoder=False, frame_copy=False):
         super(FrameEncoder, self).__init__() 
         self.num_actions = num_actions
         self.type_nn = type_nn
         self.size_nn = size_nn
         self.downscale_c = downscale_c
         self.decoder = decoder
+        self.frame_copy = frame_copy
         frame_channels, h, w = input_shape
 
         if type_nn in [0, 1]:
@@ -466,7 +468,8 @@ class FrameEncoder(nn.Module):
             if decoder:
                 d_conv = [ResBlock(inplanes=out_channels*2) for _ in range(n_block)]
                 kernel_sizes = [4, 4, 4, 4]
-                conv_channels = [frame_channels, out_channels, out_channels*2, out_channels*2, out_channels*2]
+                conv_channels = [frame_channels if not self.frame_copy else 3, 
+                                 out_channels, out_channels*2, out_channels*2, out_channels*2]
                 for i in range(4):
                     if i in [1, 3]:
                         d_conv.extend([ResBlock(inplanes=conv_channels[4-i]) for _ in range(n_block)])
@@ -821,12 +824,14 @@ class ModelNetV(nn.Module):
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for the depth of model net (for model_type_nn == 3 only)
         self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
+        self.frame_copy = flags.frame_copy 
         self.encoder = FrameEncoder(num_actions=num_actions, 
                                          input_shape=obs_shape, 
                                          type_nn=self.type_nn, 
                                          size_nn=self.size_nn,
                                          downscale_c=self.downscale_c,
-                                         decoder=True)
+                                         decoder=True,
+                                         frame_copy=self.frame_copy)
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]
         self.RNN = DynamicModel(num_actions=num_actions, 
@@ -871,18 +876,29 @@ class ModelNetV(nn.Module):
             h = self.RNN(h=h, actions=actions[t])  
             hs.append(h.unsqueeze(0))
         hs = torch.concat(hs, dim=0)
+
+        state = {"m_h": h}        
         if len(hs) > 1:
             xs = self.encoder.decode(hs[1:], flatten=True)  
+            if self.frame_copy:
+                stacked_x = x
+                stacked_xs = []
+                for i in range(k):
+                    stacked_x = torch.concat([stacked_x[:,3:], xs[i]], dim=1)
+                    stacked_xs.append(stacked_x)
+                xs = torch.stack(stacked_xs, dim=0)
+                state["last_x"] = stacked_x[:, 3:]
         else:
             xs = None
+            if self.frame_copy:
+                state["last_x"] = x[:, 3:]
+
         outs = []
         r_state = self.out.init_state(bsz=b, device=x.device)    
         for t in range(1, k+1):      
             out = self.out(hs[t], predict_reward=True, state=r_state)
             outs.append(out)
-            r_state = out.state
-
-        state = {"m_h": h}
+            r_state = out.state        
         state.update(r_state)
         return ModelNetOut(
             single_rs=util.safe_concat(outs, "single_rs", 0),
@@ -904,9 +920,13 @@ class ModelNetV(nn.Module):
         if not one_hot: action = F.one_hot(action, self.num_actions) 
         h = self.RNN(h=state["m_h"], actions=action)  
         x = self.encoder.decode(h, flatten=False)  
+        if self.frame_copy:
+            x = torch.concat([state["last_x"], x], dim=1)
+            
         out = self.out(h, predict_reward=True, state=state)        
         state = {"m_h": h}
         state.update(out.state)
+        if self.frame_copy: state["last_x"] = x[:, 3:]
 
         return ModelNetOut(
             single_rs=util.safe_unsqueeze(out.single_rs, 0),

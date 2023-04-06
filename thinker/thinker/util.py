@@ -88,6 +88,8 @@ def parse(args=None, override=True):
                         help="Percentile used in return normalization")                       
     parser.add_argument("--return_norm_buffer_n", default=-1, type=int, 
                         help="Normalization buffer; only used when it is larger than 0.")                       
+    parser.add_argument("--return_norm_use_std", action="store_true",
+                        help="Use std instead of percentile in return norm.")                       
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
@@ -157,6 +159,8 @@ def parse(args=None, override=True):
                         help="Whether to use value prefix in model")         
     parser.add_argument("--duel_net", action="store_true",
                         help="Whether to use duel net as model")            
+    parser.add_argument("--frame_copy", action="store_true",
+                        help="Whether to copy the last three frames in frame prediction") 
                                                            
     
     # Actor loss settings

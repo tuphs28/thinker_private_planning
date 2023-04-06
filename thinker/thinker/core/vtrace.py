@@ -155,8 +155,12 @@ def from_importance_weights(
                 norm_v = clipped_pg_rhos * (target_values - values)
 
             if flags.return_norm_buffer_n <= 0:
-                new_lq = torch.quantile(norm_v, 1 - flags.return_norm_per).detach()
-                new_uq = torch.quantile(norm_v, flags.return_norm_per).detach()            
+                if not flags.return_norm_use_std:
+                    new_lq = torch.quantile(norm_v, 1 - flags.return_norm_per).detach()
+                    new_uq = torch.quantile(norm_v, flags.return_norm_per).detach()            
+                else:
+                    new_lq = 0
+                    new_uq = torch.sqrt(torch.mean(torch.square(norm_v)))
                 if norm_stat is None:
                     norm_stat = (new_lq, new_uq)
                 else:
@@ -168,8 +172,12 @@ def from_importance_weights(
                 else:
                     buffer = norm_stat[2]
                 buffer.push(norm_v)
-                lq = buffer.get_percentile(1 - flags.return_norm_per)
-                uq = buffer.get_percentile(flags.return_norm_per)
+                if not flags.return_norm_use_std:
+                    lq = buffer.get_percentile(1 - flags.return_norm_per)
+                    uq = buffer.get_percentile(flags.return_norm_per)
+                else:
+                    lq = 0.
+                    uq = torch.sqrt(buffer.get_variance())
                 norm_stat = (lq, uq, buffer)
 
             norm_factor = torch.max(norm_stat[1] - norm_stat[0], torch.tensor([
@@ -215,6 +223,10 @@ class FifoBuffer:
     
     def get_percentile(self, percentile):
         num_valid_elements = min(self.num_elements, self.size)
-        if num_valid_elements == 0:
-            return None
+        if num_valid_elements == 0: return None
         return torch.quantile(self.buffer[:num_valid_elements], q=percentile)
+    
+    def get_variance(self):
+        num_valid_elements = min(self.num_elements, self.size)
+        if num_valid_elements == 0: return None
+        return torch.mean(torch.square(self.buffer[:num_valid_elements]))
