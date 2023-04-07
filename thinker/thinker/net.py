@@ -1238,7 +1238,7 @@ class DuelNetBase(nn.Module):
         device = next(self.parameters()).device
         self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
 
-def ModelNet(obs_shape, num_actions, flags, debug):
+def ModelNet(obs_shape, num_actions, flags, debug=False):
     return DuelNetBase(obs_shape, num_actions, flags, debug)
     
 class RewardTran(nn.Module):    
