@@ -93,6 +93,8 @@ class ModelBuffer():
         self.abs_tran_n = 0
         self.preload_n = 0
         self.clean_m = 0
+
+        self.finish = False
     
     def write(self, data, rank):
         # data is a named tuple with elements of size (t+2*k-1, n, ...)        
@@ -126,6 +128,7 @@ class ModelBuffer():
     
     def read(self, beta):
         if self.priorities is None or self.abs_tran_n < self.wram_up_n: return None
+        if self.finish: return "FINISH"
         return self.prepare(beta)
 
     def prepare(self, beta):
@@ -151,8 +154,12 @@ class ModelBuffer():
         base_ind_pri = self.base_ind * self.t 
         abs_flat_inds = flat_inds + base_ind_pri
         return data, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
+    
+    def set_finish(self):
+        self.finish = True        
 
     def get_processed_n(self):
+        if self.finish: return "FINISH"
         return self.abs_tran_n - self.preload_n
 
     def update_priority(self, abs_flat_inds, priorities):

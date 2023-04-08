@@ -36,8 +36,7 @@ def parse(args=None, override=True):
     parser.add_argument("--disable_auto_res", action="store_true",
                         help="Whether to allocate resources automatically")    
     parser.add_argument("--self_play_cpu", action="store_true",
-                        help="Whether to use cpu for self-play actors.")     
-    
+                        help="Whether to use cpu for self-play actors.")   
     parser.add_argument("--gpu_learn_actor", default=0.5, type=float,
                         help="Number of gpu per actor learning.") 
     parser.add_argument("--gpu_learn_model", default=0.5, type=float,
@@ -54,6 +53,8 @@ def parse(args=None, override=True):
                         help="Number of self-play actor (cpu)")
     parser.add_argument("--cpu_num_p_actors", default=2, type=int, 
                         help="Number of env per self-play actor (cpu)")                          
+    parser.add_argument("--self_play_merge", action="store_true",
+                        help="Whether to merge self-play and learn_model processes")      
     parser.add_argument("--profile", action="store_true",
                         help="Whether to do profiling")   
     
@@ -114,9 +115,9 @@ def parse(args=None, override=True):
                         help="Number of transition accumulated before model start learning.")     
     parser.add_argument("--test_policy_type", default=-1, type=int, 
                         help="Policy used for testing model; -1 for no testing, 0 for actor net, 1 for model policy, 2 for 1-step greedy")                         
-    parser.add_argument("--model_min_step_per_transition", default=5, type=int, 
+    parser.add_argument("--model_min_step_per_transition", default=5, type=float, 
                         help="Minimum number of model learning step on one transition")                         
-    parser.add_argument("--model_max_step_per_transition", default=6, type=int, 
+    parser.add_argument("--model_max_step_per_transition", default=6, type=float, 
                         help="Maximum number of model learning step on one transition")                                                 
                             
   
@@ -241,7 +242,15 @@ def parse(args=None, override=True):
     parser.add_argument("--grad_norm_clipping", default=600, type=float,
                         help="Global gradient norm clip for actor learner.")
     parser.add_argument("--model_grad_norm_clipping", default=0, type=float,
-                        help="Global gradient norm clip for model learner.")            
+                        help="Global gradient norm clip for model learner.") 
+
+    # Misc
+    parser.add_argument("--splay_model_update_freq", default=1, type=int,
+                        help="Model update frequency for self-play process.")         
+    parser.add_argument("--splay_actor_update_freq", default=1, type=int,
+                        help="Actor update frequency for self-play process.")             
+    parser.add_argument("--lmodel_model_update_freq", default=1, type=int,
+                        help="Model update frequency for model learner.")         
     
     if args is None:
         flags = parser.parse_args()  
@@ -368,6 +377,7 @@ class Timings:
         self._means = collections.defaultdict(int)
         self._vars = collections.defaultdict(int)
         self._counts = collections.defaultdict(int)
+        self._mean_deques = {}
         self.reset()
 
     def reset(self):
@@ -389,6 +399,10 @@ class Timings:
         self._vars[name] = var
         self._counts[name] += 1
 
+        if name not in self._mean_deques:
+            self._mean_deques[name] = collections.deque(maxlen=5)
+        self._mean_deques[name].append(x)
+
     def means(self):
         return self._means
 
@@ -401,13 +415,15 @@ class Timings:
     def summary(self, prefix=""):
         means = self.means()
         stds = self.stds()
+        mean_deques = self._mean_deques
         total = sum(means.values())
 
         result = prefix
         for k in sorted(means, key=means.get, reverse=True):
-            result += f"\n    %s: %.6fms +- %.6fms (%.2f%%) " % (
+            result += f"\n    %s: %.6fms (last 5: %.6fms) +- %.6fms (%.2f%%) " % (
                 k,
                 1000 * means[k],
+                1000 * np.average(mean_deques[k]),
                 1000 * stds[k],
                 100 * means[k] / total,
             )

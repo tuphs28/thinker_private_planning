@@ -17,3 +17,4 @@ thinker/build
 thinker/thinker/cenv.cpp
 thinker/wandb/
 thinker/thinker/buffer.py
+thinker/tmp*

@@ -55,10 +55,11 @@ def PreWrap(env, name, test=False):
         env = TimeLimit_(env, max_episode_steps=120)
         env = TransposeWrap(env)
     else:        
-        env = StateWrapper(env)
+        env = StateWrapper(env)        
         env = TimeLimit_(env, max_episode_steps=108000)
         env = NoopResetEnv(env, noop_max=30)
-        env = MaxAndSkipEnv(env, skip=4)
+        if "NoFrameskip" in name:
+            env = MaxAndSkipEnv(env, skip=4)
         env = wrap_deepmind(env,
             episode_life=True,
             clip_rewards=False,

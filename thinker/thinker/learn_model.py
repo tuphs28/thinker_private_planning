@@ -8,9 +8,7 @@ import ray
 import torch
 import torch.nn.functional as F
 from thinker.core.file_writer import FileWriter
-from thinker.buffer import GeneralBuffer, ModelBuffer
 from thinker.net import ModelNet
-from thinker.self_play import SelfPlayWorker, TrainModelOut, PO_MODEL
 from thinker.env import Environment
 import thinker.util as util
 
@@ -27,17 +25,19 @@ def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None):
     loss = is_weights * loss
     return torch.sum(loss)
 
-@ray.remote
-class ModelLearner():
+class SModelLearner():
     def __init__(self, 
                  buffers: dict,
                  rank: int, 
-                 flags: argparse.Namespace):        
+                 flags: argparse.Namespace,
+                 model_tester: list = None):        
         self.param_buffer = buffers["model_param"]
         self.model_buffer = buffers["model"]
         self.signal_buffer = buffers["signal"]
         self.rank = rank
         self.flags = flags
+        self.model_tester = model_tester
+
         self._logger = util.logger()
         self.wlogger = util.Wandb(flags, subname='_model') if flags.use_wandb else None
         self.time = flags.profile
@@ -87,154 +87,65 @@ class ModelLearner():
 
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_model.tar")
 
-        # set shared buffer's weights
-        self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
+        if not flags.self_play_merge:
+            # set shared buffer's weights
+            self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
         # move network and optimizer to process device
         self.model_net.to(self.device)
         if self.flags.duel_net: util.optimizer_to(self.optimizer_m, self.device)
         util.optimizer_to(self.optimizer_p, self.device)
-        if self.time: self.timing = util.Timings()  
+        if self.time: self.timing = util.Timings()             
+        
+        if self.flags.float16:
+            self.scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
 
-        # model tester
-        if self.flags.test_policy_type != -1:
-            buffers["test"] = GeneralBuffer.remote()   
-            self.model_tester = [SelfPlayWorker.options(num_cpus=1).remote(
-                buffers=buffers, 
-                policy=self.flags.test_policy_type, 
-                policy_params=None, 
-                rank=n+1, 
-                num_p_actors=1,
-                flags=flags) for n in range(5)]
+        # other init. variables for consume_data
+        self.last_psteps = 0
+        self.numel_per_step = self.flags.model_batch_size * (
+                    self.flags.model_k_step_return)
+        self.timer = timeit.default_timer
+        self.start_step = self.step
+        self.start_time = self.timer()  
+        self.sps_buffer = [(self.step, self.start_time)] * 36
+        self.sps_start_time, self.sps_start_step = self.start_time, self.step
+        self.sps_buffer_n = 0
+        self.ckp_start_time = int(time.strftime("%M")) // 10         
+        self.n = 0   
+        self.data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
 
     def learn_data(self):
         try:
-            timer = timeit.default_timer
-            start_step = self.step
-            start_step_test = self.step
-            start_time = timer()
-            ckp_start_time = int(time.strftime("%M")) // 10
-            last_psteps = 0
-            
+            start_step_test = self.step                      
             r_tester = None
-            all_returns = None
-            data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
-            
-            numel_per_step = self.flags.model_batch_size * (
-                    self.flags.model_k_step_return)
-            max_diff = 200000
-            # stop training the model at the last 200k real steps
+            all_returns = None                      
 
-            n = 0
-            if self.flags.float16:
-                self.scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
-
-            while (self.real_step < self.flags.total_steps - max_diff):      
+            while True:      
                 if self.time: self.timing.reset()     
-
                 c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
                 beta = self.flags.priority_beta * (1 - c) + 1. * c
 
                 # get data remotely    
                 while (True):                    
-                    data = ray.get(data_ptr)
-                    data_ptr = self.model_buffer.read.remote(beta)
-                    if data is not None: break    
+                    data = ray.get(self.data_ptr)
+                    self.data_ptr = self.model_buffer.read.remote(beta)
+                    if data is not None: break  
                     time.sleep(0.01)
-                    if timer() - start_time > 5:
+                    if self.timer() - self.start_time > 5:
                         tran_n = ray.get(self.model_buffer.get_processed_n.remote())
                         self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
-                        start_time = timer()                             
+                        self.start_time = self.timer()                             
                 if self.time: self.timing.time("get_data")           
+                if data == "FINISH": break  
 
                 # start consume data
-                train_model_out, is_weights, inds, new_psteps = data            
-                self.real_step += int(new_psteps) - last_psteps            
-                last_psteps = new_psteps
-
-                # move the data to the process device
-                train_model_out = util.tuple_map(train_model_out, lambda x:torch.tensor(x,device=self.device))
-                is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
-                target = self.prepare_data(train_model_out)
-                del data
-                if self.time: self.timing.time("convert_data")          
-
-                if self.flags.duel_net:                            
-                    # compute losses for model_net
-                    if self.flags.float16:
-                        with torch.cuda.amp.autocast():
-                            losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
-                    else:
-                        losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
-                    if self.time: self.timing.time("compute_losses_m")
-                    total_norm_m = self.gradient_step(losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m)                    
-                    if self.time: self.timing.time("gradient_step_m")
-                else:
-                    losses_m = {}
-                    total_norm_m = torch.zeros(1, device=self.device)
-                    pred_xs = None
-                
-
-                if self.flags.float16:
-                    with torch.cuda.amp.autocast():    
-                        losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
-                else:
-                    losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
-                if self.time: self.timing.time("compute_losses_p")
-                total_norm_p = self.gradient_step(losses_p["total_loss_p"], self.optimizer_p, self.scheduler_p)
-                if self.time: self.timing.time("gradient_step_p")
-                if self.flags.priority_alpha > 0:
-                    self.model_buffer.update_priority.remote(inds, priorities)                
-                self.step += numel_per_step
-                if self.time: self.timing.time("update_priority")
-
-                losses = losses_m
-                losses.update(losses_p)
-                # print statistics
-                if timer() - start_time > 5:
-                    sps = (self.step - start_step) / (timer() - start_time)                
-                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. Model return mean (std) %f (%f) norm_m %.2f norm_p %.2f" % (
-                                    n, 
-                                    self.real_step, 
-                                    self.step, 
-                                    self.step_per_transition(), 
-                                    sps, 
-                                    np.mean(all_returns) if all_returns is not None else 0.,
-                                    np.std(all_returns) if all_returns is not None else 0.,
-                                    total_norm_m.item(),
-                                    total_norm_p.item())
-                    print_stats = ["total_loss_m", "total_loss_p", "vs_loss", "logits_loss", 
-                                   "rs_loss", "sup_loss", "img_loss", "done_loss", "reg_loss"]
-                    for k in print_stats: 
-                        if k in losses and losses[k] is not None:
-                            print_str += " %s %.6f" % (k, losses[k].item() / numel_per_step)
-                    self._logger.info(print_str)
-                    start_step = self.step
-                    start_time = timer()      
-
-                    # write to log file
-                    stats = {"step": self.step,
-                            "real_step": self.real_step,
-                            "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
-                            "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
-                            "model_total_norm_m": total_norm_m.item(),
-                            "model_total_norm_p": total_norm_p.item()}
-                    for k in print_stats: 
-                        stats[k] = losses[k].item() / numel_per_step if k in losses and losses[k] is not None else None
-
-                    self.plogger.log(stats)
-                    if self.flags.use_wandb:
-                        self.wlogger.wandb.log(stats, step=stats['real_step'])
-                    
-                    if self.time: print(self.timing.summary()) 
-                
-                if int(time.strftime("%M")) // 10 != ckp_start_time:
-                    self.save_checkpoint()
-                    ckp_start_time = int(time.strftime("%M")) // 10                
-                if self.time: self.timing.time("misc")
+                self.consume_data(data,                                   
+                                  all_returns=all_returns,
+                                  timing=self.timing if self.time else None, 
+                                  print_timing=True)
                 
                 # update shared buffer's weights
-                if n % 1 == 0:
+                if self.n % self.flags.lmodel_model_update_freq == 0:
                     self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
                 if self.time: self.timing.time("update_weight")
 
@@ -256,8 +167,11 @@ class ModelLearner():
                     time.sleep(0.1)
                     self.signal_buffer.update_dict_item.remote("self_play_signals", "halt", False)
                     new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
-                    self.real_step += new_psteps - last_psteps            
-                    last_psteps = new_psteps         
+                    if new_psteps == "FINISH": break
+                    self.real_step += new_psteps - self.last_psteps            
+                    self.last_psteps = new_psteps   
+
+                if new_psteps == "FINISH": break      
                 if self.time: self.timing.time("sign_control_1")       
                 
                 if self.flags.model_min_step_per_transition > 0:
@@ -265,18 +179,130 @@ class ModelLearner():
                         self.signal_buffer.update_dict_item.remote("self_play_signals", "halt", True)
                     else:
                         self.signal_buffer.update_dict_item.remote("self_play_signals", "halt", False)
-                if self.time: self.timing.time("sign_control_2")       
-
-                n += 1            
-            
-            self.close(0)  
-            return True        
+                if self.time: self.timing.time("sign_control_2")      
         
         except Exception as e:
-            self._logger.error("Exception detected in learn_model")
+            self._logger.error(f"Exception detected in learn_model: {e}")
             self._logger.error(traceback.format_exc())
-            self.close(1)            
-            return False
+        finally:
+            self.close(0)  
+            return True       
+        
+    def s_learn_data(self, timing = None):
+        # variant of learn_data that is called by self_play in self_play_merge mode
+
+        new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
+        if new_psteps == "FINISH": return
+        
+        self.real_step += new_psteps - self.last_psteps            
+        self.last_psteps = new_psteps 
+        if self.step_per_transition() > self.flags.model_max_step_per_transition: return
+        if timing is not None: timing.time("get_processed_n")
+        while(True):            
+            c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
+            beta = self.flags.priority_beta * (1 - c) + 1. * c
+            data = ray.get(self.data_ptr)
+            self.data_ptr = self.model_buffer.read.remote(beta)
+            if data is None: 
+                if self.timer() - self.start_time > 5:
+                    tran_n = ray.get(self.model_buffer.get_processed_n.remote())
+                    self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
+                    self.start_time = self.timer()  
+                return
+            if timing is not None: timing.time("get_data")
+            self.consume_data(data, 
+                              all_returns=None,
+                              timing=timing, 
+                              print_timing=False)
+            if self.step_per_transition() > self.flags.model_max_step_per_transition: return            
+
+    def consume_data(self, data, timing=None, print_timing=False, all_returns=None):
+        self.n += 1   
+        train_model_out, is_weights, inds, new_psteps = data            
+        self.real_step += int(new_psteps) - self.last_psteps            
+        self.last_psteps = new_psteps
+
+        # move the data to the process device
+        train_model_out = util.tuple_map(train_model_out, lambda x:torch.tensor(x,device=self.device))
+        is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
+
+        target = self.prepare_data(train_model_out)                
+        if timing is not None: timing.time("convert_data")          
+
+        if self.flags.duel_net:                            
+            # compute losses for model_net
+            if self.flags.float16:
+                with torch.cuda.amp.autocast():
+                    losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
+            else:
+                losses_m, pred_xs = self.compute_losses_m(train_model_out, target, is_weights)
+            if timing is not None: timing.time("compute_losses_m")
+            total_norm_m = self.gradient_step(losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m)                    
+            if timing is not None: timing.time("gradient_step_m")
+        else:
+            losses_m = {}
+            total_norm_m = torch.zeros(1, device=self.device)
+            pred_xs = None        
+
+        if self.flags.float16:
+            with torch.cuda.amp.autocast():    
+                losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
+        else:
+            losses_p, priorities = self.compute_losses_p(train_model_out, target, is_weights, pred_xs)
+        if timing is not None: timing.time("compute_losses_p")
+        total_norm_p = self.gradient_step(losses_p["total_loss_p"], self.optimizer_p, self.scheduler_p)
+        if timing is not None: timing.time("gradient_step_p")
+        if self.flags.priority_alpha > 0:
+            self.model_buffer.update_priority.remote(inds, priorities)                
+        self.step += self.numel_per_step
+        if timing is not None: timing.time("update_priority")
+        losses = losses_m
+        losses.update(losses_p)
+        # print statistics
+        if self.timer() - self.start_time > 5:
+            self.sps_buffer[self.sps_buffer_n] = (self.step, self.timer())
+            self.sps_buffer_n = (self.sps_buffer_n + 1) % len(self.sps_buffer)
+            sps = ((self.sps_buffer[self.sps_buffer_n-1][0] - self.sps_buffer[self.sps_buffer_n][0]) / 
+                    (self.sps_buffer[self.sps_buffer_n-1][1] - self.sps_buffer[self.sps_buffer_n][1]))   
+            tot_sps = (self.step - self.sps_start_step) / (self.timer() - self.sps_start_time) 
+            print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS (%.1f). Model return mean (std) %f (%f) norm_m %.2f norm_p %.2f" % (
+                            self.n, 
+                            self.real_step, 
+                            self.step, 
+                            self.step_per_transition(), 
+                            sps, 
+                            tot_sps,
+                            np.mean(all_returns) if all_returns is not None else 0.,
+                            np.std(all_returns) if all_returns is not None else 0.,
+                            total_norm_m.item(),
+                            total_norm_p.item())
+            print_stats = ["total_loss_m", "total_loss_p", "vs_loss", "logits_loss", 
+                            "rs_loss", "sup_loss", "img_loss", "done_loss", "reg_loss"]
+            for k in print_stats: 
+                if k in losses and losses[k] is not None:
+                    print_str += " %s %.6f" % (k, losses[k].item() / self.numel_per_step)
+            self._logger.info(print_str)
+            self.start_time = self.timer()      
+
+            # write to log file
+            stats = {"step": self.step,
+                    "real_step": self.real_step,
+                    "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
+                    "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
+                    "model_total_norm_m": total_norm_m.item(),
+                    "model_total_norm_p": total_norm_p.item()}
+            for k in print_stats: 
+                stats[k] = losses[k].item() / self.numel_per_step if k in losses and losses[k] is not None else None
+
+            self.plogger.log(stats)
+            if self.flags.use_wandb:
+                self.wlogger.wandb.log(stats, step=stats['real_step'])            
+            if timing is not None and print_timing: print(self.timing.summary())         
+        if int(time.strftime("%M")) // 10 != self.ckp_start_time:
+            self.save_checkpoint()
+            self.ckp_start_time = int(time.strftime("%M")) // 10                
+        if timing is not None: timing.time("misc")
+
 
     def compute_rs_loss(self, target, rs, r_enc_logits, reward_tran, is_weights):
         k, b = self.flags.model_k_step_return, target["rewards"].shape[1]
@@ -576,3 +602,7 @@ class ModelLearner():
     def close(self, exit_code):
         self.plogger.close()
         if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
+
+@ray.remote
+class ModelLearner(SModelLearner):
+    pass

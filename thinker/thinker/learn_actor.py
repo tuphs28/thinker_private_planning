@@ -174,9 +174,12 @@ class ActorLearner():
 
     def learn_data(self):
         try:
-            timer = timeit.default_timer
-            start_step = self.step
+            timer = timeit.default_timer     
             start_time = timer()
+            sps = 0
+            sps_buffer = [(self.step, start_time)] * 36
+            sps_buffer_n = 0
+            sps_start_time, sps_start_step = start_time, self.step
             ckp_start_time = int(time.strftime("%M")) // 10
             ckp_save_n, queue_n, eval_n = 0, 0, 0
             n = 0
@@ -190,11 +193,11 @@ class ActorLearner():
                 if self.time: self.timing.reset()            
                 # get data remotely    
                 while (True):
-                    data = ray.get(data_ptr)
                     data_ptr = self.actor_buffer.read.remote()
+                    data = ray.get(data_ptr)                    
                     if data is not None: break                
-                    time.sleep(0.01)
-                    queue_n += 0.01
+                    time.sleep(0.001)
+                    queue_n += 0.001
                 if self.time: self.timing.time("get_data")
                 # start consume data
 
@@ -255,7 +258,8 @@ class ActorLearner():
                         self.flags.total_steps  * self.flags.im_cost_len_c), 0)
                 
                 # statistic output
-                stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)       
+                stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id) 
+                stats["sps"] = sps
 
                 # write to log file
                 self.plogger.log(stats)
@@ -269,10 +273,14 @@ class ActorLearner():
                                                 os.path.join(self.flags.savedir,  self.flags.xpid))            
 
                 # print statistics
-                if timer() - start_time > 5:
-                    sps = (self.step - start_step) / (timer() - start_time)                
-                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS. (T_q: %.2f) Eps %i. Return %f (%f). Loss %.2f" % (
-                        n, self.real_step, self.step, float(self.step)/float(self.real_step), sps, queue_n, self.tot_eps, 
+                if timer() - start_time > 5:                    
+                    sps_buffer[sps_buffer_n] = (self.step, timer())
+                    sps_buffer_n = (sps_buffer_n + 1) % len(sps_buffer)
+                    sps = ((sps_buffer[sps_buffer_n-1][0] - sps_buffer[sps_buffer_n][0]) / 
+                           (sps_buffer[sps_buffer_n-1][1] - sps_buffer[sps_buffer_n][1]))                    
+                    tot_sps = (self.step - sps_start_step) / (timer() - sps_start_time) 
+                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Return %f (%f). Loss %.2f" % (
+                        n, self.real_step, self.step, float(self.step)/float(self.real_step), sps, tot_sps, queue_n, self.tot_eps, 
                         stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
                     print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
                                 "baseline_loss", "im_pg_loss", "im_baseline_loss", 
@@ -284,7 +292,6 @@ class ActorLearner():
                             print_str += " im_norm_stat (%.4f:%.4f)" % self.im_norm_stat[:2]
 
                     self._logger.info(print_str)
-                    start_step = self.step
                     start_time = timer()                    
                     queue_n = 0
                     if self.time: print(self.timing.summary()) 
@@ -302,7 +309,7 @@ class ActorLearner():
                     self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
                 n += 1
                 if self.time: self.timing.time("set weight")                  
-        
+            
             self.close(0)  
             return True        
         
