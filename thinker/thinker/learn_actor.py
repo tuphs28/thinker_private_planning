@@ -305,7 +305,7 @@ class ActorLearner():
             return True        
         
         except Exception as e:
-            self._logger.error(f"Exception detected in learn_model: {e}")
+            self._logger.error(f"Exception detected in learn_actor: {e}")
             self._logger.error(traceback.format_exc())
         finally:
             self.close(0)  

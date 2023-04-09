@@ -11,7 +11,8 @@ from thinker.env import Environment
 
 def last_non_empty_line(file_path, delimiter='\n'):
     # A safe version of reading last line
-    if os.path.getsize(file_path) <= 0: return None
+    if os.path.getsize(file_path) <= 0: 
+        return None
     with open(file_path, 'rb') as f:
         f.seek(-1, os.SEEK_END)  # Move to the last character in the file
         last_char = f.read(1)
@@ -30,7 +31,8 @@ def parse_line(header, line):
     if header is None or line is None: return None
     data = re.split(r',(?![^\(]*\))', line.strip())
     data_dict = {}    
-    if len(header) != len(data): return None
+    if len(header) != len(data): 
+        return None
     for key, value in zip(header, data):
         try:
             if not value: 
@@ -88,15 +90,17 @@ class SLogWorker():
         self.model_fields = None
         self.last_actor_tick = -1
         self.last_model_tick = -1
+        self.real_step = -1
         self.last_real_step_v = -1        
         self.last_real_step_c = -1   
         self.vis_policy = self.flags.policy_vis_freq > 0
         self.device = torch.device('cpu')
         self._logger = util.logger()
         self._logger.info("Initalizing log worker")        
-        self.log_freq = 30 # log frequency (in second)        
+        self.log_freq = 10 # log frequency (in second)        
         self.wlogger = util.Wandb(flags)
         self.timer = timeit.default_timer
+        self.video = None
 
         if self.vis_policy:
             self.env = Environment(flags, model_wrap=True, debug=True, device=self.device)
@@ -119,27 +123,27 @@ class SLogWorker():
                 time.sleep(self.log_freq)
 
                 # log stat
-                real_step = self.log_stat()        
+                self.log_stat()        
 
                 # visualize policy
-                if (real_step is not None and real_step - self.last_real_step_v >= self.flags.policy_vis_freq and
+                if (self.real_step - self.last_real_step_v >= self.flags.policy_vis_freq and
                     self.flags.policy_vis_freq > 0):
-                    self._logger.info("Steps %d: Uploading video to wandb..." % real_step)
-                    self.last_real_step_v = real_step
-                    if self.vis_policy: self.visualize_wandb()     
-                    self._logger.info("Steps %d: Finish uploading video to wandb..." % real_step)
+                    self._logger.info("Steps %d: Uploading video to wandb..." % self.real_step)
+                    self.last_real_step_v = self.real_step
+                    self.visualize_wandb()     
+                    self._logger.info("Steps %d: Finish uploading video to wandb..." % self.real_step)
                     
                 # upload files
-                if (real_step is not None and real_step - self.last_real_step_c >= self.flags.wandb_ckp_freq and
+                if (self.real_step - self.last_real_step_c >= self.flags.wandb_ckp_freq and
                     self.flags.wandb_ckp_freq > 0):
-                    self._logger.info("Steps %d: Uploading files to wandb..." % real_step)
-                    self.last_real_step_c = real_step
+                    self._logger.info("Steps %d: Uploading files to wandb..." % self.real_step)
+                    self.last_real_step_c = self.real_step
                     self.wlogger.wandb.save(os.path.join(self.check_point_path, "*"),
                                             self.check_point_path)      
-                    self._logger.info("Steps %d: Finish uploading files to wandb..." % real_step)
+                    self._logger.info("Steps %d: Finish uploading files to wandb..." % self.real_step)
         
         except Exception as e:
-            self._logger.error(f"Exception detected in learn_model: {e}")
+            self._logger.error(f"Exception detected in log_worker: {e}")
             self._logger.error(traceback.format_exc())
         finally:
             self.close(0)  
@@ -155,10 +159,11 @@ class SLogWorker():
                     fields_ = f.readline()
                 if fields_.endswith('\n'):                    
                     fields = fields_.strip().split(',')                    
-                    self._logger.info('Read fields for %s :' % name)
+                    self._logger.info('Read fields for %s:' % name)
                     self._logger.info(fields)
                 else:
-                    self._logger.info("Cannot read fields from %s" % log)
+                    pass
+                    #self._logger.info("Cannot read fields from %s" % log)
             else:
                 self._logger.info("File %s does not exist" % log)
 
@@ -180,17 +185,25 @@ class SLogWorker():
                                                        self.model_log_path, 
                                                        self.model_fields, 
                                                        self.last_model_tick,
-                                                       'model')
-        
+                                                       'model')                
+        stat = {}
+        if model_stat is not None:             
+            stat.update(model_stat)
+
+        if actor_stat is not None:             
+            self.real_step = actor_stat['real_step']    
+            stat.update(actor_stat)
+
+        if self.video is not None:
+            stat.update(self.video)
+            self.video = None
+
         excludes = ['# _tick', '_time']
-        if actor_stat is not None: 
-            for y in excludes: actor_stat.pop(y, None)            
-            real_step = actor_stat['real_step']    
-            self.wlogger.wandb.log(actor_stat, step=real_step)
-        if model_stat is not None: 
-            for y in excludes: model_stat.pop(y, None)
-            self.wlogger.wandb.log(model_stat, step=model_stat['real_step'])
-        return real_step
+        for y in excludes: stat.pop(y, None)         
+        if stat: 
+            stat['real_step'] = self.real_step
+            self.wlogger.wandb.log(stat, step=self.real_step)
+        return 
     
     def visualize_wandb(self):
         if not os.path.exists(self.actor_net_path): 
@@ -251,7 +264,7 @@ class SLogWorker():
                 self.log_stat()
 
         video = gen_video_wandb(video_stats)
-        self.wlogger.wandb.log({f"policy": self.wlogger.wandb.Video(video, fps=5, format="gif")}, step=self.last_real_step_v)    
+        self.video = {f"policy": self.wlogger.wandb.Video(video, fps=5, format="gif")}
 
     def close(self, exit_code):
         self.wlogger.wandb.finish(exit_code=exit_code)
@@ -262,5 +275,5 @@ class LogWorker(SLogWorker):
 
 if __name__ == "__main__":
     flags = util.parse(override=False)
-    log_worker = LogWorker(flags)
+    log_worker = SLogWorker(flags)
     log_worker.start()

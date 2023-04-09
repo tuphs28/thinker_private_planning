@@ -288,7 +288,7 @@ class SelfPlayWorker():
                     start_time = timer()
 
         except Exception as e:
-            self._logger.error(f"Exception detected in learn_model: {e}")
+            self._logger.error(f"Exception detected in self_play: {e}")
             self._logger.error(traceback.format_exc())
         finally:
             return True                         
