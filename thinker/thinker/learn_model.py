@@ -117,7 +117,7 @@ class SModelLearner():
         try:
             start_step_test = self.step                      
             r_tester = None
-            all_returns = None                      
+            all_returns = None                  
 
             while True:      
                 if self.time: self.timing.reset()     
@@ -169,8 +169,7 @@ class SModelLearner():
                     if new_psteps == "FINISH": break
                     self.real_step += new_psteps - self.last_psteps            
                     self.last_psteps = new_psteps   
-
-                if new_psteps == "FINISH": break      
+     
                 if self.time: self.timing.time("sign_control_1")       
                 
                 if self.flags.model_min_step_per_transition > 0:

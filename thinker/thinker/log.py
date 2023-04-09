@@ -253,7 +253,7 @@ class SLogWorker():
                     video_stats["status"].append(2)
                 video_stats["im_imgs"].append(gym_env_out[0, 0, -3:].cpu().numpy())
 
-            if step >= max_steps - record_steps and env_out.cur_t.item() == 0:
+            if step >= max_steps - record_steps and env_out.cur_t.item() == 0 and not start_record:
                 video_stats["real_imgs"].append(env_out.gym_env_out[0, 0, -3:].cpu().numpy())
                 video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
                 video_stats["status"].append(0)  # 0 for real step, 1 for reset, 2 for normal
