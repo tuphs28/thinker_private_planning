@@ -6,6 +6,7 @@ import torch
 from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL
 from thinker.learn_actor import ActorLearner
 from thinker.learn_model import ModelLearner
+from thinker.log import LogWorker
 from thinker.buffer import ActorBuffer, ModelBuffer, GeneralBuffer
 import thinker.util as util
 
@@ -58,7 +59,6 @@ if __name__ == "__main__":
         flags.gpu_learn_model = 0        
         flags.test_policy_type = -1
 
-
     buffers = {
         "actor": ActorBuffer.options(num_cpus=1).remote(batch_size=flags.batch_size),
         "model": ModelBuffer.options(num_cpus=1).remote(flags),
@@ -109,8 +109,8 @@ if __name__ == "__main__":
             policy_params=None, 
             rank=n + flags.gpu_num_actors, 
             num_p_actors=flags.cpu_num_p_actors,
-            flags=flags) for n in range(flags.cpu_num_actors)])
-        
+            flags=flags) for n in range(flags.cpu_num_actors)])        
+
     r_worker = [x.gen_data.remote() for x in self_play_workers]    
     r_learner = []
 
@@ -135,15 +135,22 @@ if __name__ == "__main__":
         model_learner = ModelLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_model).remote(
             buffers, 0, flags, model_tester)
         r_learner.append(model_learner.learn_data.remote())
+    
+    if flags.use_wandb: 
+        log_worker = LogWorker.options(num_cpus=1, num_gpus=0).remote(flags)
+        r_log_worker = log_worker.start.remote()
       
     ray.get(r_learner[0])   
-    print("Finished actor learner...")
+    logger.info("Finished actor learner...")
     buffers["actor"].set_finish.remote()    
-    buffers["model"].set_finish.remote()    
+    buffers["model"].set_finish.remote()  
+    if not flags.self_play_merge: buffers["signal"].update_dict_item.remote("self_play_signals", "term", True)  
     if len(r_learner) > 1: ray.get(r_learner[1])    
-    print("Finished model learner...")
+    logger.info("Finished model learner...")
     ray.get(r_worker)
-    print("Finished self-play worker...")
+    logger.info("Finished self-play worker...")
+    if flags.use_wandb: log_worker.__ray_terminate__.remote()
+    logger.info("Finished log worker...")
 
     logger.info("time required: %fs" % (time.time()-st_time))
 

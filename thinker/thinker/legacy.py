@@ -232,11 +232,15 @@ class LegacyActorNet(nn.Module):
         return actor_out, core_state
 
     def get_weights(self):
-        return {k: v.cpu() for k, v in self.state_dict().items()}
+        return {k: v.cpu().numpy() for k, v in self.state_dict().items()}
 
     def set_weights(self, weights):
-        self.load_state_dict(weights)
-
+        device = next(self.parameters()).device
+        tensor = isinstance(next(iter(weights.values())), torch.Tensor)
+        if not tensor:
+            self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
+        else:
+            self.load_state_dict({k:v.to(device) for k, v in weights.items()})  
 
 class ModelNetRNN(nn.Module):    
     def __init__(self, obs_shape, num_actions, flags):        

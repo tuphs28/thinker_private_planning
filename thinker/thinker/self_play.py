@@ -236,7 +236,7 @@ class SelfPlayWorker():
                                 time.sleep(0.1) 
                             else: 
                                 break
-                        if status == AB_FINISH: break
+                            if status == AB_FINISH: return True     
                         self.actor_buffer.write.remote(ray.put(self.actor_local_buffer), ray.put(initial_actor_state))
                         if self.time: self.timing.time("send actor buffer")
                     # if preload buffer needed, check if preloaded
@@ -267,12 +267,13 @@ class SelfPlayWorker():
                     # note that the signal control is only between learn_model and self_play (not learn_actor)
                     if test_eps_n == 0 and n % 1 == 0 and not self.flags.self_play_merge: 
                         signals = ray.get(signal_ptr)
-                        signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")
+                        signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")                                    
+                        if (signals is not None and "term" in signals and signals["term"]): return True     
                         while (signals is not None and "halt" in signals and signals["halt"]):
                             time.sleep(0.1)
-                            signals = ray.get(self.signal_buffer.get_data.remote("self_play_signals"))
-                            if (signals is not None and "term" in signals and signals["term"]):
-                                return True               
+                            signals = ray.get(signal_ptr)
+                            signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")         
+                            if (signals is not None and "term" in signals and signals["term"]): return True             
                     if self.time: self.timing.time("signal control")                                                
 
                 if self.flags.self_play_merge:
@@ -286,11 +287,11 @@ class SelfPlayWorker():
                     self._logger.info(self.timing.summary())
                     start_time = timer()
 
-        except:
-            # printing stack trace
-            traceback.print_exc()
-            return False
-        return True                          
+        except Exception as e:
+            self._logger.error(f"Exception detected in learn_model: {e}")
+            self._logger.error(traceback.format_exc())
+        finally:
+            return True                         
 
     def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int):
         # write local 

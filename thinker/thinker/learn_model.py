@@ -39,7 +39,6 @@ class SModelLearner():
         self.model_tester = model_tester
 
         self._logger = util.logger()
-        self.wlogger = util.Wandb(flags, subname='_model') if flags.use_wandb else None
         self.time = flags.profile
 
         env = Environment(flags)        
@@ -285,18 +284,16 @@ class SModelLearner():
             self.start_time = self.timer()      
 
             # write to log file
-            stats = {"step": self.step,
+            stats = {"model_step": self.step,
                     "real_step": self.real_step,
                     "model_returns_mean": np.mean(all_returns) if all_returns is not None else None,
                     "model_returns_std": np.std(all_returns)/np.sqrt(len(all_returns)) if all_returns is not None else None,
                     "model_total_norm_m": total_norm_m.item(),
                     "model_total_norm_p": total_norm_p.item()}
             for k in print_stats: 
-                stats[k] = losses[k].item() / self.numel_per_step if k in losses and losses[k] is not None else None
+                stats['model_'+k] = losses[k].item() / self.numel_per_step if k in losses and losses[k] is not None else None
 
-            self.plogger.log(stats)
-            if self.flags.use_wandb:
-                self.wlogger.wandb.log(stats, step=stats['real_step'])            
+            self.plogger.log(stats)          
             if timing is not None and print_timing: print(self.timing.summary())         
         if int(time.strftime("%M")) // 10 != self.ckp_start_time:
             self.save_checkpoint()
@@ -600,8 +597,7 @@ class SModelLearner():
         self._logger.info("Loaded model checkpoint from %s" % check_point_path)  
 
     def close(self, exit_code):
-        self.plogger.close()
-        if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
+        self.plogger.close()        
 
 @ray.remote
 class ModelLearner(SModelLearner):

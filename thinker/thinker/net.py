@@ -409,7 +409,11 @@ class ActorNetBase(nn.Module):
 
     def set_weights(self, weights):
         device = next(self.parameters()).device
-        self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
+        tensor = isinstance(next(iter(weights.values())), torch.Tensor)
+        if not tensor:
+            self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
+        else:
+            self.load_state_dict({k:v.to(device) for k, v in weights.items()})  
 
 def ActorNet(obs_shape, gym_obs_shape, num_actions, flags):
     if flags.actor_net_ver == 1:
@@ -1236,7 +1240,11 @@ class DuelNetBase(nn.Module):
 
     def set_weights(self, weights):
         device = next(self.parameters()).device
-        self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
+        tensor = isinstance(next(iter(weights.values())), torch.Tensor)
+        if not tensor:
+            self.load_state_dict({k:torch.tensor(v, device=device) for k, v in weights.items()}) 
+        else:
+            self.load_state_dict({k:v.to(device) for k, v in weights.items()})  
 
 def ModelNet(obs_shape, num_actions, flags, debug=False):
     return DuelNetBase(obs_shape, num_actions, flags, debug)

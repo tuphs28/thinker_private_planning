@@ -18,11 +18,17 @@ def parse(args=None, override=True):
     parser.add_argument("--savedir", default="~/RS/thinker/logs/thinker",
                         help="Root dir where experiment data will be saved.")
 
-    # Environment settings
+    # Logging settings
     parser.add_argument("--use_wandb", action="store_true",
                         help="Whether to use wandb logging")
     parser.add_argument("--wandb_ckp_freq", type=int, default=500000,
-                        help="Checkpoint frequency of wandb.")    
+                        help="Checkpoint frequency of wandb (in real steps) (-1 for not logging).")  
+    parser.add_argument("--policy_vis_freq", type=int, default=10000,
+                        help="Visualization frequency of wandb (in real steps) (-1 for not logging).")    
+    parser.add_argument("--policy_vis_length", type=int, default=20,
+                        help="Length of visualization (in real steps).")  
+
+    # Environment settings
     parser.add_argument("--env", type=str, default="cSokoban-v0",
                         help="Gym environment.")
     parser.add_argument("--cwrapper", action="store_true",

@@ -12,6 +12,7 @@ class ActorBuffer():
         self.batch_size = batch_size
         self.buffer = []
         self.buffer_state = []
+        self.finish = False
 
     def write(self, data, state):
         # Write data, a named tuple of numpy arrays each with shape (t, b, ...)
@@ -26,6 +27,7 @@ class ActorBuffer():
 
     def get_status(self):
         # Return AB_FULL if the number of data inside the buffer is larger than 3 * self.batch_size
+        if self.finish: return AB_FINISH
         total_size = sum([data[0].shape[1] for data in self.buffer])
         if total_size >= 2 * self.batch_size:
             return AB_FULL

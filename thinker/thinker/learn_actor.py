@@ -110,7 +110,6 @@ class ActorLearner():
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
-        self.wlogger = util.Wandb(flags, subname='') if flags.use_wandb else None
         self.time = flags.profile
 
         env = Environment(flags, model_wrap=True, env_n=1)
@@ -181,7 +180,7 @@ class ActorLearner():
             sps_buffer_n = 0
             sps_start_time, sps_start_step = start_time, self.step
             ckp_start_time = int(time.strftime("%M")) // 10
-            ckp_save_n, queue_n, eval_n = 0, 0, 0
+            queue_n = 0
             n = 0
             if self.flags.float16:
                 scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
@@ -262,15 +261,7 @@ class ActorLearner():
                 stats["sps"] = sps
 
                 # write to log file
-                self.plogger.log(stats)
-                if self.flags.use_wandb:
-                    self.wlogger.wandb.log(stats, step=stats['real_step'])
-                    # upload files
-                    if self.flags.use_wandb and self.flags.wandb_ckp_freq > 0 and self.real_step > ckp_save_n:
-                        self._logger.info("Uploading files to wandb...")
-                        ckp_save_n = self.real_step + self.flags.wandb_ckp_freq
-                        self.wlogger.wandb.save(os.path.join(self.flags.savedir,  self.flags.xpid, "*"),
-                                                os.path.join(self.flags.savedir,  self.flags.xpid))            
+                self.plogger.log(stats)        
 
                 # print statistics
                 if timer() - start_time > 5:                    
@@ -314,14 +305,14 @@ class ActorLearner():
             return True        
         
         except Exception as e:
-            self._logger.error("Exception detected in learn_actor")
+            self._logger.error(f"Exception detected in learn_model: {e}")
             self._logger.error(traceback.format_exc())
-            self.close(1)            
-            return False
+        finally:
+            self.close(0)  
+            return True 
 
     def close(self, exit_code=0):
         self.plogger.close()
-        if self.flags.use_wandb: self.wlogger.wandb.finish(exit_code=exit_code)
 
     def compute_losses(self, train_actor_out: TrainActorOut, initial_actor_state: tuple):
         # compute loss and then discard the first step in train_actor_out
