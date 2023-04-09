@@ -581,7 +581,8 @@ class SModelLearner():
               "model_net_optimizer_m_state_dict": self.optimizer_m.state_dict(),
               "model_net_scheduler_m_state_dict": self.scheduler_m.state_dict(),
               })
-        torch.save(d, self.check_point_path)
+        torch.save(d, self.check_point_path+".tmp")
+        os.replace(self.check_point_path+".tmp", self.check_point_path)
 
     def load_checkpoint(self, check_point_path: str):
         train_checkpoint = torch.load(check_point_path, torch.device("cpu"))

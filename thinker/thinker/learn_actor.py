@@ -500,8 +500,9 @@ class ActorLearner():
               "actor_net_state_dict": self.actor_net.state_dict(),
               "flags":  vars(self.flags)
             },
-            self.check_point_path,
+            self.check_point_path+".tmp",
         )
+        os.replace(self.check_point_path+".tmp", self.check_point_path)
     
     def load_checkpoint(self, check_point_path: str):
         train_checkpoint = torch.load(check_point_path, torch.device("cpu"))

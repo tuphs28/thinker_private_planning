@@ -175,34 +175,37 @@ class SLogWorker():
         return None, fields, tick        
         
     def log_stat(self):        
-        real_step = None
-        actor_stat, self.actor_fields, self.last_actor_tick = self.read_stat(
-                                                       self.actor_log_path, 
-                                                       self.actor_fields, 
-                                                       self.last_actor_tick,
-                                                       'actor')
-        model_stat, self.model_fields, self.last_model_tick = self.read_stat(
-                                                       self.model_log_path, 
-                                                       self.model_fields, 
-                                                       self.last_model_tick,
-                                                       'model')                
-        stat = {}
-        if model_stat is not None:             
-            stat.update(model_stat)
+        try:
+            actor_stat, self.actor_fields, self.last_actor_tick = self.read_stat(
+                                                        self.actor_log_path, 
+                                                        self.actor_fields, 
+                                                        self.last_actor_tick,
+                                                        'actor')
+            model_stat, self.model_fields, self.last_model_tick = self.read_stat(
+                                                        self.model_log_path, 
+                                                        self.model_fields, 
+                                                        self.last_model_tick,
+                                                        'model')                
+            stat = {}
+            if model_stat is not None:             
+                stat.update(model_stat)
 
-        if actor_stat is not None:             
-            self.real_step = actor_stat['real_step']    
-            stat.update(actor_stat)
+            if actor_stat is not None:             
+                self.real_step = actor_stat['real_step']    
+                stat.update(actor_stat)
 
-        if self.video is not None:
-            stat.update(self.video)
-            self.video = None
+            if self.video is not None:
+                stat.update(self.video)
+                self.video = None
 
-        excludes = ['# _tick', '_time']
-        for y in excludes: stat.pop(y, None)         
-        if stat: 
-            stat['real_step'] = self.real_step
-            self.wlogger.wandb.log(stat, step=self.real_step)
+            excludes = ['# _tick', '_time']
+            for y in excludes: stat.pop(y, None)         
+            if stat: 
+                stat['real_step'] = self.real_step
+                self.wlogger.wandb.log(stat, step=self.real_step)
+        except Exception as e:
+            self._logger.info(f"Error loading stat from log: {e}")
+            return None
         return 
     
     def visualize_wandb(self):
@@ -212,10 +215,14 @@ class SLogWorker():
         if not os.path.exists(self.model_net_path): 
             self._logger.info("Model net checkpoint %s does not exist" % self.model_net_path)
             return None
-        checkpoint = torch.load(self.actor_net_path, torch.device("cpu"))
-        self.actor_net.set_weights(checkpoint["actor_net_state_dict"])         
-        checkpoint = torch.load(self.model_net_path, torch.device("cpu"))
-        self.model_net.set_weights(checkpoint["model_net_state_dict"]) 
+        try:
+            checkpoint = torch.load(self.actor_net_path, torch.device("cpu"))
+            self.actor_net.set_weights(checkpoint["actor_net_state_dict"])         
+            checkpoint = torch.load(self.model_net_path, torch.device("cpu"))
+            self.model_net.set_weights(checkpoint["model_net_state_dict"]) 
+        except Exception as e:
+            self._logger.info(f"Error loading checkpoint: {e}")
+            return None
 
         env_out = self.env.initial(self.model_net)
         actor_state = self.actor_net.initial_state(batch_size=1, device=self.device)
