@@ -23,7 +23,7 @@ def parse(args=None, override=True):
                         help="Whether to use wandb logging")
     parser.add_argument("--wandb_ckp_freq", type=int, default=500000,
                         help="Checkpoint frequency of wandb (in real steps) (-1 for not logging).")  
-    parser.add_argument("--policy_vis_freq", type=int, default=10000,
+    parser.add_argument("--policy_vis_freq", type=int, default=100000,
                         help="Visualization frequency of wandb (in real steps) (-1 for not logging).")    
     parser.add_argument("--policy_vis_length", type=int, default=20,
                         help="Length of visualization (in real steps).")  
