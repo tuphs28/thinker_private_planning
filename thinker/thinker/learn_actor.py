@@ -135,9 +135,10 @@ def update_b_norm_stat(b_norm_stat, target_baseline):
 def update_baseline_scale(b_norm_stat, actor_net, n, norm_b):
     old_scale = torch.clone(actor_net.baseline_scale[n])
     new_scale = torch.clamp(b_norm_stat[1] - b_norm_stat[0], min=norm_b, max=None)
+    new_scale = old_scale * torch.clamp(new_scale / old_scale, min=0.9, max=1.1)
     actor_net.baseline_scale[n] = new_scale
-    actor_net.baseline.weight.data[n, :] *= (old_scale/new_scale)
-    actor_net.baseline.bias.data[n] *= (old_scale/new_scale)
+    actor_net.baseline.weight.data[n, :] *= (old_scale / new_scale)
+    actor_net.baseline.bias.data[n] *= (old_scale / new_scale)
 
 @ray.remote
 class ActorLearner():
