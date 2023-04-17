@@ -160,11 +160,11 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector
         node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed, bool reward_transform):
+cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type):
     cdef float[:] result = np.zeros((pnode[0].num_actions*5+5) if detailed else (pnode[0].num_actions*5+2), dtype=np.float32) 
     cdef int i
     result[pnode[0].action] = 1. # action
-    if not reward_transform:
+    if enc_type == 0:
         result[pnode[0].num_actions] = pnode[0].r # reward
         result[pnode[0].num_actions+1] = pnode[0].v # value
         for i in range(int(pnode[0].ppchildren[0].size())):
@@ -240,9 +240,8 @@ cdef class cVecFullModelWrapper():
     cdef float depth_discounting
     cdef int max_allow_depth
     cdef bool perfect_model
-    cdef bool tree_carry
-    cdef int reward_type
-    cdef bool reward_transform
+    cdef bool tree_carry    
+    cdef int enc_type
     cdef bool value_prefix
     cdef int actor_see_type
     cdef bool actor_see_double_encode 
@@ -250,6 +249,12 @@ cdef class cVecFullModelWrapper():
     cdef int num_actions
     cdef int obs_n    
     cdef int env_n
+    cdef bool im_enable
+    cdef bool cur_enable
+    cdef float cur_reward_cost
+    cdef float cur_v_cost
+    cdef float cur_enc_cost
+    cdef bool cur_done_gate
     cdef bool time 
     cdef bool debug
 
@@ -284,7 +289,7 @@ cdef class cVecFullModelWrapper():
     cdef bool[:] full_done
     cdef bool[:] full_real_done
     cdef bool[:] full_truncated_done
-    cdef int[:] total_step
+    cdef int[:] total_step    
 
     def __init__(self, env, env_n, flags, device=None, time=False, debug=False):
         assert not flags.perfect_model, "this class only supports imperfect model"
@@ -297,12 +302,17 @@ cdef class cVecFullModelWrapper():
         self.perfect_model = flags.perfect_model
         self.tree_carry = flags.tree_carry
         self.num_actions = env.action_space[0].n
-        self.reward_type = flags.reward_type
-        self.reward_transform = flags.reward_transform
+        self.im_enable = flags.im_cost > 0.
+        self.enc_type = flags.model_enc_type
         self.value_prefix = flags.value_prefix
         self.actor_see_type = flags.actor_see_type  
         self.actor_see_double_encode = flags.actor_see_double_encode
         self.pred_done = flags.model_done_loss_cost > 0.
+        self.cur_enable = flags.cur_cost > 0.
+        self.cur_reward_cost = flags.cur_reward_cost
+        self.cur_v_cost = flags.cur_v_cost
+        self.cur_enc_cost = flags.cur_enc_cost
+        self.cur_done_gate = flags.cur_done_gate
         self.env_n = env_n
         self.obs_n = 9 + self.num_actions * 10 + self.rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
@@ -321,7 +331,8 @@ cdef class cVecFullModelWrapper():
         self.max_q = np.zeros(self.env_n, dtype=np.float32)
         self.status = np.zeros(self.env_n, dtype=np.intc)
         self.par_logits = np.zeros(self.num_actions, dtype=np.float32)
-        self.full_reward = np.zeros((self.env_n, 2 if self.reward_type == 1 else 1), dtype=np.float32)
+        self.full_reward = np.zeros((self.env_n, 1 + int(self.im_enable) + int(self.cur_enable)), 
+            dtype=np.float32)
         self.full_done = np.zeros(self.env_n, dtype=np.bool)
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool)
         self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool)
@@ -431,7 +442,7 @@ cdef class cVecFullModelWrapper():
         action = action.cpu().int().numpy()
         re_action, im_action, reset = action[:, 0], action[:, 1], action[:, 2]
 
-        pass_model_states = []
+        pass_model_states, pass_re_model_states = [], []
 
         for i in range(self.env_n):            
             # compute the mask of real / imagination step                             
@@ -460,8 +471,9 @@ cdef class cVecFullModelWrapper():
                 self.baseline_mean_q[i] = average(self.root_nodes[i][0].prollout_qs[0]) / self.discounting
                 self.baseline_max_q[i] = maximum(self.root_nodes[i][0].prollout_qs[0]) / self.discounting
                 encoded = <dict> self.root_nodes[i][0].encoded
+                pass_re_model_states.append(encoded["model_states"])
                 pass_inds_restore.push_back(i)
-                pass_action.push_back(re_action[i])
+                pass_action.push_back(re_action[i])                
                 pass_inds_step.push_back(i)
                 self.status[i] = 1                              
         if self.time: self.timings.time("misc_1")
@@ -492,7 +504,37 @@ cdef class cVecFullModelWrapper():
                 obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
                 model_net_out_1 = model_net(obs_py, 
                         torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0), 
-                        one_hot=False)  
+                        one_hot=False,
+                        ret_zs=self.cur_enable)  
+                if self.cur_enable:
+                    pass_re_model_states = dict({msd: torch.concat([ms[msd] for ms in pass_re_model_states], dim=0)
+                        for msd in pass_re_model_states[0].keys()})
+                    pred_model_net_out_1 = model_net.forward_single(
+                        state = pass_re_model_states,
+                        action = torch.tensor(pass_action, dtype=long, device=self.device),  
+                        one_hot = False,  
+                        ret_zs = True,
+                    )                   
+                    
+                    cur_reward = 0.
+                    done_mask = torch.tensor(done, dtype=torch.float, device=self.device)
+                    if self.cur_v_cost > 0.:
+                        pred_model_net_out_1.vs[pred_model_net_out_1.dones] = 0.
+                        cur_reward += self.cur_v_cost * torch.square(model_net_out_1.vs[-1] * (1-done_mask) - pred_model_net_out_1.vs[-1])
+                    if self.cur_reward_cost > 0.:
+                        pred_model_net_out_1.rs[pred_model_net_out_1.dones] = 0.
+                        cur_reward += self.cur_reward_cost * torch.square(torch.tensor(reward, device=self.device) * (1-done_mask) - pred_model_net_out_1.rs[-1])
+                    if self.cur_enc_cost > 0.:
+                        flat_dim = tuple(range(1, len(model_net_out_1.zs[-1].shape)))     
+                        done_mask_ = done_mask
+                        for _ in range(len(model_net_out_1.zs.shape)-2): done_mask_ = done_mask_.unsqueeze(-1)
+                        pred_model_net_out_1.zs[pred_model_net_out_1.dones] = 0.     
+                        cur_reward += self.cur_enc_cost * torch.mean(torch.square(model_net_out_1.zs[-1] * (1-done_mask_) - pred_model_net_out_1.zs[-1]), dim=flat_dim)
+                    if self.cur_done_gate:
+                        done_mask = torch.tensor(done, dtype=torch.bool, device=self.device)
+                        cur_reward[torch.logical_or(done_mask, pred_model_net_out_1.dones[-1])] = 0.
+                    cur_reward = cur_reward.float().cpu().numpy()                    
+                    
             vs_1 = model_net_out_1.vs[-1].float().cpu().numpy()
             logits_1 = model_net_out_1.logits[-1].float().cpu().numpy()
                 
@@ -619,11 +661,13 @@ cdef class cVecFullModelWrapper():
         # compute reward
         j = 0
         for i in range(self.env_n):
+            # real reward
             if self.status[i] == 1:
                 self.full_reward[i][0] = reward[j]
             else:
                 self.full_reward[i][0] = 0.
-            if self.reward_type == 1:                        
+            # planning reward
+            if self.im_enable:                        
                 self.root_nodes_qmax_[i] = self.root_nodes[i][0].max_q
                 if self.status[i] != 1:                
                     self.full_reward[i][1] = (self.root_nodes_qmax_[i] - self.root_nodes_qmax[i])*self.depth_delta[i]
@@ -631,6 +675,12 @@ cdef class cVecFullModelWrapper():
                 else:
                     self.full_reward[i][1] = 0.
                 self.root_nodes_qmax[i] = self.root_nodes_qmax_[i]
+            # curisotiy reward
+            if self.cur_enable:
+                if self.status[i] != 1: 
+                    self.full_reward[i][2] = 0
+                else:
+                    self.full_reward[i][2] = cur_reward[j]
             if self.status[i] == 1:
                 j += 1
         if self.time: self.timings.time("compute_reward")
@@ -674,8 +724,8 @@ cdef class cVecFullModelWrapper():
         result_np = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         cdef float[:, :] result = result_np        
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, reward_transform=self.reward_transform)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, reward_transform=self.reward_transform)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type)    
             # reset
             if action is None or status[i] == 1:
                 result[i, idx2] = 1.
@@ -742,8 +792,8 @@ cdef class cVecModelWrapper():
     cdef int max_allow_depth
     cdef bool perfect_model
     cdef bool tree_carry
-    cdef int reward_type
-    cdef bool reward_transform
+    cdef bool im_enable
+    cdef int enc_type
     cdef int actor_see_type
     cdef bool actor_see_double_encode
     cdef int num_actions
@@ -795,8 +845,8 @@ cdef class cVecModelWrapper():
         self.perfect_model = flags.perfect_model
         self.tree_carry = flags.tree_carry
         self.num_actions = env.action_space[0].n
-        self.reward_type = flags.reward_type
-        self.reward_transform = flags.reward_transform
+        self.im_enable = flags.im_cost > 0.
+        self.enc_type = flags.model_enc_type
         self.actor_see_type = flags.actor_see_type      
         self.actor_see_double_encode = flags.actor_see_double_encode  
         self.env_n = env_n
@@ -817,7 +867,7 @@ cdef class cVecModelWrapper():
         self.max_q = np.zeros(self.env_n, dtype=np.float32)
         self.status = np.zeros(self.env_n, dtype=np.intc)
         self.par_logits = np.zeros(self.num_actions, dtype=np.float32)
-        self.full_reward = np.zeros((self.env_n, 2 if self.reward_type == 1 else 1), dtype=np.float32)
+        self.full_reward = np.zeros((self.env_n, 1 + int(self.im_enable)), dtype=np.float32)
         self.full_done = np.zeros(self.env_n, dtype=np.bool)
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool)
         self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool)
@@ -1097,7 +1147,7 @@ cdef class cVecModelWrapper():
                 self.full_reward[i][0] = reward[j]
             else:
                 self.full_reward[i][0] = 0.
-            if self.reward_type == 1:                        
+            if self.im_enable:                        
                 self.root_nodes_qmax_[i] = self.root_nodes[i][0].max_q
                 if self.status[i] != 1:                
                     self.full_reward[i][1] = (self.root_nodes_qmax_[i] - self.root_nodes_qmax[i])*self.depth_delta[i]
@@ -1151,8 +1201,8 @@ cdef class cVecModelWrapper():
         result_np = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         cdef float[:, :] result = result_np        
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, reward_transform=self.reward_transform)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, reward_transform=self.reward_transform)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type)    
             # reset
             if action is None or status[i] == 1:
                 result[i, idx2] = 1.

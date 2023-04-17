@@ -7,7 +7,7 @@ from thinker.core.rnn import ConvAttnLSTM
 from math import prod
 
 ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_policy_logits', 
-    'action', 'im_action', 'reset_action', 'baseline', 'baseline_enc_s', 'reg_loss'])
+    'action', 'im_action', 'reset_action', 'baseline', 'baseline_enc', 'reg_loss'])
 OutNetOut = namedtuple('OutNetOut', ['single_rs',  'rs', 'r_enc_logits', 'dones',
                                      'done_logits', 'vs', 'v_enc_logits', 'logits', 'state'])
 ModelNetOut = namedtuple('ModelNetOut', ['single_rs', 'rs', 'r_enc_logits',
@@ -15,7 +15,7 @@ ModelNetOut = namedtuple('ModelNetOut', ['single_rs', 'rs', 'r_enc_logits',
 PredNetOut = namedtuple('PredNetOut', ['single_rs', 'rs', 'r_enc_logits', 'dones', 'done_logits',
                                        'vs', 'v_enc_logits', 'logits', 
                                        'hs', 'pred_zs', 'true_zs', 'state'])
-DuelNetOut = namedtuple('DuelNetOut', ['single_rs', 'rs', 'dones', 'vs', 'logits', 'ys', 'state'])
+DuelNetOut = namedtuple('DuelNetOut', ['single_rs', 'rs', 'dones', 'vs', 'logits', 'ys', 'zs', 'state'])
 
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h, w))
@@ -231,13 +231,15 @@ class ActorNetBase(nn.Module):
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
         self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.tran_dim = flags.tran_dim               # size of transformer / LSTM embedding dim        
-        self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 
+        self.num_rewards = 1
+        self.num_rewards += int(flags.im_cost > 0.)
+        self.num_rewards += int(flags.cur_cost > 0.)
         self.actor_see_type = flags.actor_see_type # -1 for nothing, 0. for predicted / true frame, 1. for z, 2. for h.
         self.actor_see_double_encode = flags.actor_see_double_encode # Whether the actor see the model encoded state or the raw env state        
         self.actor_encode_concat_type = flags.actor_encode_concat_type # Type of concating the encoding to model's output
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
-        self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
+        self.enc_type = flags.critic_enc_type 
         self.model_type_nn = flags.model_type_nn
         self.model_size_nn = flags.model_size_nn
         self.model_downscale_c = flags.model_downscale_c
@@ -284,10 +286,26 @@ class ActorNetBase(nn.Module):
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
         self.policy = nn.Linear(last_out_size, self.num_actions)       
         self.reset = nn.Linear(last_out_size, 2)    
-        self.baseline = nn.Linear(last_out_size, self.num_rewards)        
 
-        if self.reward_transform:
-            self.reward_tran = RewardTran(vec=False)
+        if self.enc_type == 0:
+            self.baseline = nn.Linear(last_out_size, self.num_rewards)      
+            self.rv_tran = None
+        elif self.enc_type == 1:
+            self.baseline = nn.Linear(last_out_size, self.num_rewards)      
+            self.rv_tran = RVTran(enc_type = self.enc_type)
+        elif self.enc_type in [2, 3]:
+            self.out_n = self.rv_tran.encoded_n
+            self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)      
+            self.rv_tran = RVTran(enc_type = self.enc_type)
+        elif self.enc_type == 4:
+            self.baseline = nn.Linear(last_out_size, self.num_rewards)  
+            self.register_buffer("baseline_scale", torch.ones(self.num_rewards))
+            self.rv_tran = None
+
+        if flags.critic_zero_init:                
+            nn.init.constant_(self.baseline.weight, 0.)
+            nn.init.constant_(self.baseline.bias, 0.)
+
         self.initial_state(1) # just for setting core_state_sep_ind
 
     def initial_state(self, batch_size, device=None):
@@ -367,11 +385,21 @@ class ActorNetBase(nn.Module):
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
         reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
         
-        if not self.reward_transform:
+        if self.enc_type ==0 :
             baseline = self.baseline(x)
-        else:            
+            baseline_enc = None
+        elif self.enc_type == 1: 
             baseline_enc_s = self.baseline(x)
-            baseline = self.reward_tran.decode(baseline_enc_s)
+            baseline = self.rv_tran.decode(baseline_enc_s)
+            baseline_enc = baseline_enc_s
+        elif self.enc_type in [2,3]: 
+            baseline_enc_logit = self.baseline(x).reshape(T*B, self.num_rewards, self.out_n)
+            baseline_enc_v = F.softmax(baseline_enc_logit, dim=-1)
+            baseline = self.rv_tran.decode(baseline_enc_v)
+            baseline_enc = baseline_enc_logit
+        elif self.enc_type == 4: 
+            baseline_enc = self.baseline(x)
+            baseline = baseline_enc * self.baseline_scale
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
                     1e-3 * torch.sum(im_policy_logits**2, dim=-1) / 2 + 
@@ -387,7 +415,7 @@ class ActorNetBase(nn.Module):
         im_action = im_action.view(T, B)      
         reset_action = reset_action.view(T, B)                 
 
-        baseline_enc_s = baseline_enc_s.view(T, B, self.num_rewards) if self.reward_transform else None
+        baseline_enc = baseline_enc.view((T, B) + baseline_enc.shape[1:]) if baseline_enc is not None else None
         baseline = baseline.view(T, B, self.num_rewards)        
 
         actor_out = ActorOut(policy_logits=policy_logits,                         
@@ -396,7 +424,7 @@ class ActorNetBase(nn.Module):
                              action=action,     
                              im_action=im_action,
                              reset_action=reset_action,
-                             baseline_enc_s=baseline_enc_s,
+                             baseline_enc=baseline_enc,
                              baseline=baseline, 
                              reg_loss=reg_loss,)       
         
@@ -625,7 +653,7 @@ class DynamicModel(nn.Module):
     
 class Output_rvpi(nn.Module):   
     def __init__(self, num_actions, input_shape, value_prefix, max_unroll_length, 
-            reward_transform, stop_vpi_grad, zero_init, type_nn, size_nn,
+            enc_type, stop_vpi_grad, zero_init, type_nn, size_nn,
             predict_v_pi=True, predict_r=True, predict_done=False, disable_bn=False,
             prefix=""):         
         super(Output_rvpi, self).__init__()    
@@ -635,18 +663,21 @@ class Output_rvpi(nn.Module):
         self.size_nn = size_nn
         self.value_prefix = value_prefix
         self.max_unroll_length = max_unroll_length
-        self.reward_transform = reward_transform
+        self.enc_type = enc_type
         self.stop_vpi_grad = stop_vpi_grad
         self.predict_v_pi = predict_v_pi
         self.predict_r = predict_r
         self.predict_done = predict_done
         self.prefix = prefix
 
+        assert self.enc_type in [0, 2, 3], "model encoding type can only be 0, 2, 3"
+
         c, h, w = input_shape
-        if self.reward_transform:
-            self.reward_tran = RewardTran(vec=True)
-            out_n = self.reward_tran.encoded_n
+        if self.enc_type in [2, 3]:
+            self.rv_tran = RVTran(enc_type=enc_type)
+            out_n = self.rv_tran.encoded_n
         else:
+            self.rv_tran = None
             out_n = 1    
 
         layer_norm = nn.BatchNorm2d if not disable_bn else nn.Identity
@@ -710,7 +741,7 @@ class Output_rvpi(nn.Module):
                 self.lstm_input_size = c
             self.lstm = nn.LSTM(input_size=self.lstm_input_size, hidden_size=512)
             self.bn_r_2 = nn.Identity() if disable_bn else nn.BatchNorm1d(512)
-            out_n = self.reward_tran.encoded_n if self.reward_transform else 1
+            out_n = self.rv_tran.encoded_n if self.enc_type in [2, 3] else 1
             self.fc_r = mlp(512, [64], out_n, zero_init=zero_init, norm=not disable_bn)                
         
     def forward(self, h, predict_reward=True, state={}):   
@@ -733,10 +764,10 @@ class Output_rvpi(nn.Module):
 
         if self.predict_v_pi:
             logits = self.fc_logits(x_logits)
-            if self.reward_transform:
+            if self.enc_type in [2, 3]:
                 v_enc_logit = self.fc_v(x_v)
                 v_enc_v = F.softmax(v_enc_logit, dim=-1)
-                _, v = self.reward_tran.decode(v_enc_v)
+                v = self.rv_tran.decode(v_enc_v)
             else:
                 v_enc_logit = None
                 v = self.fc_v(x_v).squeeze(-1)
@@ -781,10 +812,10 @@ class Output_rvpi(nn.Module):
                 elif self.type_nn in [2, 3]:
                     x_r = torch.flatten(nn.functional.relu(self.bn_r(self.conv1x1_r(x))), start_dim=1)
             r_out = self.fc_r(x_r)
-            if self.reward_transform:
+            if self.enc_type in [2, 3]:
                 r_enc_logit = r_out
                 r_enc_v = F.softmax(r_enc_logit, dim=-1)
-                _, r = self.reward_tran.decode(r_enc_v)
+                r = self.rv_tran.decode(r_enc_v)
             else:
                 r_enc_logit = None
                 r = r_out.squeeze(-1)
@@ -824,7 +855,7 @@ class ModelNetV(nn.Module):
         self.flags = flags        
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
-        self.reward_transform = flags.reward_transform
+        self.enc_type = flags.model_enc_type
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for the depth of model net (for model_type_nn == 3 only)
         self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
@@ -848,7 +879,7 @@ class ModelNetV(nn.Module):
                                 input_shape=self.hidden_shape, 
                                 value_prefix=flags.value_prefix,
                                 max_unroll_length=flags.model_k_step_return, 
-                                reward_transform=self.reward_transform,
+                                enc_type=self.enc_type,
                                 stop_vpi_grad=False, 
                                 zero_init=flags.model_zero_init, 
                                 type_nn=self.type_nn, 
@@ -858,7 +889,7 @@ class ModelNetV(nn.Module):
                                 predict_done=self.flags.model_done_loss_cost > 0.,
                                 disable_bn=self.flags.model_disable_bn,
                                 prefix="m_")
-        self.reward_tran = self.out.reward_tran
+        self.rv_tran = self.out.rv_tran
         
     def forward(self, x, actions, one_hot=False):
         """
@@ -948,7 +979,7 @@ class PredNetV(nn.Module):
         self.flags = flags        
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
-        self.reward_transform = flags.reward_transform
+        self.enc_type = flags.model_enc_type
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
         self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
@@ -976,7 +1007,7 @@ class PredNetV(nn.Module):
                                    input_shape=self.hidden_shape, 
                                    value_prefix=flags.value_prefix,
                                    max_unroll_length=flags.model_k_step_return, 
-                                   reward_transform=self.reward_transform,
+                                   enc_type=self.enc_type,
                                    stop_vpi_grad=False, 
                                    zero_init=flags.model_zero_init, 
                                    type_nn=self.type_nn, 
@@ -995,7 +1026,7 @@ class PredNetV(nn.Module):
                 ResBlock(inplanes=inplanes, disable_bn=False), 
                 conv3x3(inplanes, inplanes))
             
-        self.reward_tran = self.out.reward_tran
+        self.rv_tran = self.out.rv_tran
         
     def h_to_z(self, h, flatten=False):        
         if flatten:
@@ -1127,7 +1158,7 @@ class DuelNetBase(nn.Module):
         self.flags = flags        
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
-        self.reward_transform = flags.reward_transform
+        self.enc_type = flags.model_enc_type
         self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
         self.duel_net = flags.duel_net
@@ -1136,7 +1167,7 @@ class DuelNetBase(nn.Module):
         self.pred_net = PredNetV(obs_shape, num_actions, flags)
         self.debug = debug
     
-    def forward(self, x, actions, one_hot=False, rescale=True):
+    def forward(self, x, actions, one_hot=False, rescale=True, ret_zs=False):
         """
         Args:
             x(tensor): starting frame (uint if rescale else float) with shape (B, C, H, W)
@@ -1184,6 +1215,11 @@ class DuelNetBase(nn.Module):
 
         rd_out = model_net_out if self.duel_net else pred_net_out
 
+        if ret_zs:
+            zs = pred_net_out.pred_zs
+        else:
+            zs = None
+
         if self.debug: state["pred_xs"] = xs[-1]
 
         return DuelNetOut(
@@ -1193,10 +1229,11 @@ class DuelNetBase(nn.Module):
             vs=pred_net_out.vs,
             logits=pred_net_out.logits,
             ys=ys,
+            zs=zs,
             state=state            
         )
 
-    def forward_single(self, state, action, one_hot=False):
+    def forward_single(self, state, action, one_hot=False, ret_zs=False):
         """
         One-step transition from z_t, h_t, a_t to predicted z_{t+1}, h_{t+1}, r_{t+1}, v_{t+1}, pi_{t+1}
         Args:
@@ -1223,6 +1260,11 @@ class DuelNetBase(nn.Module):
         else:
             ys = None
 
+        if ret_zs:
+            zs = pred_net_out.pred_zs
+        else:
+            zs = None
+
         rd_out = model_net_out if self.duel_net else pred_net_out
         if self.debug: state_["pred_xs"] = x if x is not None else None
         return DuelNetOut(
@@ -1232,6 +1274,7 @@ class DuelNetBase(nn.Module):
             vs=pred_net_out.vs,
             logits=pred_net_out.logits,
             ys=ys,
+            zs=zs,
             state=state_            
         )
     
@@ -1249,45 +1292,76 @@ class DuelNetBase(nn.Module):
 def ModelNet(obs_shape, num_actions, flags, debug=False):
     return DuelNetBase(obs_shape, num_actions, flags, debug)
     
-class RewardTran(nn.Module):    
-    def __init__(self, vec, support=300, eps=0.001):
-        super(RewardTran, self).__init__()
+  
+class RVTran(nn.Module):    
+    def __init__(self, enc_type, support=300, eps=0.001):
+        super(RVTran, self).__init__()
+        assert enc_type in [1, 2, 3], f"only enc_type [1, 2, 3] is supported, not {enc_type}"
         self.support = support
         self.eps = eps
-        self.vec = vec
-        if self.vec:
-            self.dec = torch.arange(-support, support+1,1)        
+        self.enc_type = enc_type
+        if self.enc_type == 2:
+            atom_vector = self.decode_s(torch.arange(-support, support+1,1).float())            
+            self.register_buffer('atom_vector', atom_vector)
             self.encoded_n = 2 * self.support + 1
-            self.register_buffer('dec_const', self.dec)
+        elif self.enc_type == 3:
+            atom_vector = torch.arange(-support, support+1,1)     
+            self.register_buffer('atom_vector', atom_vector)
+            self.encoded_n = 2 * self.support + 1   
 
     def forward(self, x):
-        """encode the unencoded scalar reward or values to encoded scalar (and encoded vector) according to MuZero"""
+        """encode the unencoded scalar reward or values to encoded scalar / vector according to MuZero"""
         with torch.no_grad():
-            sup, eps = self.support, self.eps
-            enc_s = torch.sign(x)*(torch.sqrt(torch.abs(x)+1)-1)+eps*x
-            if not self.vec: return enc_s
-            enc_s = torch.clamp(enc_s, -sup, +sup)            
-            enc_v = torch.zeros(enc_s.shape+(2*sup+1,), dtype=torch.float32, device=enc_s.device)        
-            enc_s_floor = torch.floor(enc_s)
-            enc_v_reminder = enc_s - enc_s_floor
-            enc_s_floor = enc_s_floor.long().unsqueeze(-1)
-            enc_v.scatter_(-1, torch.clamp_max(sup+enc_s_floor+1, 2*sup) , enc_v_reminder.unsqueeze(-1))
-            enc_v.scatter_(-1, sup+enc_s_floor, 1-enc_v_reminder.unsqueeze(-1))        
-            return enc_s, enc_v
+            if self.enc_type == 1:
+                enc = self.encode_s(x)
+            elif self.enc_type == 2:
+                x = torch.clamp(x, self.atom_vector[0], self.atom_vector[-1])
+                # Find the indices of the atoms that are greater than or equal to the elements in x
+                gt_indices = (self.atom_vector.unsqueeze(0) < x.unsqueeze(-1)).sum(dim=-1) - 1
+                gt_indices = torch.clamp(gt_indices, 0, len(self.atom_vector) - 2)
+
+                # Calculate the lower and upper atom bounds for each element in x
+                lower_bounds = self.atom_vector[gt_indices]
+                upper_bounds = self.atom_vector[gt_indices + 1]
+
+                # Calculate the density between the lower and upper atom bounds
+                lower_density = (upper_bounds - x) / (upper_bounds - lower_bounds)
+                upper_density = 1 - lower_density
+
+                # Create a zero tensor of shape (3, 4)
+                enc = torch.zeros(x.shape+(len(self.atom_vector),), dtype=torch.float32, device=x.device) 
+
+                # Use scatter to add the densities to the proper columns
+                enc.scatter_(-1, gt_indices.unsqueeze(-1), lower_density.unsqueeze(-1))
+                enc.scatter_(-1, (gt_indices + 1).unsqueeze(-1), upper_density.unsqueeze(-1))
+            elif self.enc_type == 3:
+                enc_s = self.encode_s(x)
+                enc_s = torch.clamp(enc_s, -self.support , + self.support)  
+                enc = torch.zeros(x.shape+(len(self.atom_vector),), dtype=torch.float32, device=x.device) 
+                enc_floor = torch.floor(enc_s)
+                enc_reminder = enc_s - enc_floor
+                enc_floor = enc_floor.long().unsqueeze(-1)
+                enc.scatter_(-1, torch.clamp_max(self.support+enc_floor+1, 2*self.support), enc_reminder.unsqueeze(-1))
+                enc.scatter_(-1, self.support+enc_floor, 1-enc_reminder.unsqueeze(-1))          
+            return enc
 
     def encode(self, x):
         return self.forward(x)
 
     def decode(self, x):
-        """dncode the encoded vector (or encoded scalar) to unencoded scalar (and encoded scalar) according to MuZero"""    
+        """decode the encoded vector (or encoded scalar) to unencoded scalar according to MuZero"""    
         with torch.no_grad():  
-            eps = self.eps     
-            if self.vec:            
-                enc_s = torch.sum(self.dec_const*x, dim=-1)   
-            else:
-                enc_s = x
-            dec_s = torch.sign(enc_s)*(torch.square((torch.sqrt(1+4*eps*(torch.abs(enc_s)+1+eps))-1)/(2*eps)) - 1) 
-            if self.vec:
-                return enc_s, dec_s    
-            else:
-                return dec_s
+            if self.enc_type == 1:
+                dec = self.decode_s(x)
+            elif self.enc_type == 2:
+                dec = torch.sum(self.atom_vector*x, dim=-1)   
+            elif self.enc_type == 3:
+                dec = self.decode_s(torch.sum(self.atom_vector*x, dim=-1))
+            return dec
+        
+    def encode_s(self, x):
+        return torch.sign(x)*(torch.sqrt(torch.abs(x)+1)-1)+self.eps*x
+        
+    def decode_s(self, x):
+        return torch.sign(x)*(torch.square((torch.sqrt(1+4*self.eps*(torch.abs(x)+1+self.eps))-1)/(2*self.eps)) - 1)
+    

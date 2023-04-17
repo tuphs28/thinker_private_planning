@@ -19,3 +19,6 @@ thinker/wandb/
 thinker/thinker/buffer.py
 thinker/tmp*
 hpc/
+csokoban/gym_csokoban/envs/csokoban.cpp
+thinker/thinker/cenv.cp39-win_amd64.pyd
+wandb

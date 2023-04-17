@@ -14,7 +14,7 @@ from thinker.env import Environment, EnvOut
 from thinker.learn_model import SModelLearner
 import thinker.util as util
 
-_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc_s"])
+_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc"])
 TrainActorOut = namedtuple('TrainActorOut', _fields + ('id',))
 TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 
     'action', 'reward', 'done', 'truncated_done', 'baseline'])
@@ -65,6 +65,7 @@ class SelfPlayWorker():
                                       num_actions=self.env.num_actions, 
                                       flags=flags)
             self.actor_net.to(self.device)
+            self.actor_net.train(False)
 
         if not self.flags.self_play_merge:
             self.model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, num_actions=self.env.num_actions, flags=flags)
@@ -229,9 +230,9 @@ class SelfPlayWorker():
                         initial_actor_state = util.tuple_map(initial_actor_state, lambda x: x.cpu().numpy())
                         status = 0
                         if self.time: self.timing.time("mics2")
-                        while (True):                            
-                            status = ray.get(data_full_ptr)
-                            data_full_ptr = self.actor_buffer.get_status.remote()
+                        while (True):                      
+                            data_full_ptr = self.actor_buffer.get_status.remote()      
+                            status = ray.get(data_full_ptr)                            
                             if status == AB_FULL: 
                                 time.sleep(0.1) 
                             else: 

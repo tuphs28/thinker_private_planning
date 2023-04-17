@@ -9,42 +9,6 @@ import thinker.util as util
 from thinker.net import ActorNet, ModelNet
 from thinker.env import Environment
 
-def last_non_empty_line(file_path, delimiter='\n'):
-    # A safe version of reading last line
-    if os.path.getsize(file_path) <= 0: 
-        return None
-    with open(file_path, 'rb') as f:
-        f.seek(-1, os.SEEK_END)  # Move to the last character in the file
-        last_char = f.read(1)
-        # If the line does not end with '\n', it is incomplete
-        if last_char != delimiter.encode(): 
-            return None
-        while f.tell() > 0:
-            char = f.read(1)
-            if char == delimiter.encode():
-                line = f.readline().decode().strip()
-                if line: return line
-            f.seek(-2, os.SEEK_CUR)
-    return None
-
-def parse_line(header, line):
-    if header is None or line is None: return None
-    data = re.split(r',(?![^\(]*\))', line.strip())
-    data_dict = {}    
-    if len(header) != len(data): 
-        return None
-    for key, value in zip(header, data):
-        try:
-            if not value: 
-                value = None
-            else:
-                value = eval(value)
-            if type(value) == str: value = eval(value)
-        except (SyntaxError, NameError, TypeError):
-            return None
-        data_dict[key] = value
-    return data_dict
-
 def gen_video_wandb(video_stats):
     import cv2
     # Generate video
@@ -128,22 +92,22 @@ class SLogWorker():
                 # visualize policy
                 if (self.real_step - self.last_real_step_v >= self.flags.policy_vis_freq and
                     self.flags.policy_vis_freq > 0):
-                    self._logger.info("Steps %d: Uploading video to wandb..." % self.real_step)
+                    self._logger.info(f"Steps {self.real_step}: Uploading video to wandb...")
                     self.last_real_step_v = self.real_step
                     self.visualize_wandb()     
-                    self._logger.info("Steps %d: Finish uploading video to wandb..." % self.real_step)
+                    self._logger.info(f"Steps {self.real_step}: Finish uploading video to wandb...")
                     
                 # upload files
                 if (self.real_step - self.last_real_step_c >= self.flags.wandb_ckp_freq and
                     self.flags.wandb_ckp_freq > 0):
-                    self._logger.info("Steps %d: Uploading files to wandb..." % self.real_step)
+                    self._logger.info(f"Steps {self.real_step}: Uploading files to wandb...")
                     self.last_real_step_c = self.real_step
                     self.wlogger.wandb.save(os.path.join(self.check_point_path, "*"),
                                             self.check_point_path)      
-                    self._logger.info("Steps %d: Finish uploading files to wandb..." % self.real_step)
+                    self._logger.info(f"Steps {self.real_step}: Finish uploading files to wandb...")
         
         except Exception as e:
-            self._logger.error(f"Exception detected in log_worker: {e}")
+            self._logger.error(f"Steps {self.real_step}: Exception detected in log_worker: {e}")
             self._logger.error(traceback.format_exc())
         finally:
             self.close(0)  
@@ -158,19 +122,19 @@ class SLogWorker():
                 with open(log, 'r') as f:
                     fields_ = f.readline()
                 if fields_.endswith('\n'):                    
-                    fields = fields_.strip().split(',')                    
-                    self._logger.info('Read fields for %s:' % name)
+                    fields = fields_.strip().split(',')    
+                    self._logger.info(f"Steps {self.real_step}: Read fields for {name}")                
                     self._logger.info(fields)
                 else:
                     pass
                     #self._logger.info("Cannot read fields from %s" % log)
             else:
-                self._logger.info("File %s does not exist" % log)
+                self._logger.error(f"Steps {self.real_step}: File {log} does not exist")
 
         if fields is not None:
-            stat = parse_line(fields, last_non_empty_line(log))
-            if stat is not None and tick != stat['# _tick']: 
-                tick = stat['# _tick']
+            stat = self.parse_line(fields, self.last_non_empty_line(log))
+            if stat is not None and tick != stat['_tick']: 
+                tick = stat['_tick']
                 return stat, fields, tick
         return None, fields, tick        
         
@@ -198,22 +162,23 @@ class SLogWorker():
                 stat.update(self.video)
                 self.video = None
 
-            excludes = ['# _tick', '_time']
+            excludes = ['_tick', '# _tick', '_time']
             for y in excludes: stat.pop(y, None)         
             if stat: 
                 stat['real_step'] = self.real_step
                 self.wlogger.wandb.log(stat, step=self.real_step)
         except Exception as e:
-            self._logger.info(f"Error loading stat from log: {e}")
+            self._logger.error(f"Steps {self.real_step}: Error loading stat from log: {e}")
+            self._logger.error(traceback.format_exc())
             return None
         return 
     
     def visualize_wandb(self):
         if not os.path.exists(self.actor_net_path): 
-            self._logger.info("Actor net checkpoint %s does not exist" % self.actor_net_path)
+            self._logger.info(f"Steps {self.real_step}: Actor net checkpoint {self.actor_net_path} does not exist")
             return None
         if not os.path.exists(self.model_net_path): 
-            self._logger.info("Model net checkpoint %s does not exist" % self.model_net_path)
+            self._logger.info(f"Steps {self.real_step}: Model net checkpoint {self.model_net_path} does not exist")
             return None
         try:
             checkpoint = torch.load(self.actor_net_path, torch.device("cpu"))
@@ -221,7 +186,7 @@ class SLogWorker():
             checkpoint = torch.load(self.model_net_path, torch.device("cpu"))
             self.model_net.set_weights(checkpoint["model_net_state_dict"]) 
         except Exception as e:
-            self._logger.info(f"Error loading checkpoint: {e}")
+            self._logger.error(f"Steps {self.real_step}: Error loading checkpoint: {e}")
             return None
 
         env_out = self.env.initial(self.model_net)
@@ -273,6 +238,48 @@ class SLogWorker():
         video = gen_video_wandb(video_stats)
         self.video = {f"policy": self.wlogger.wandb.Video(video, fps=5, format="gif")}
 
+
+    def last_non_empty_line(self, file_path, delimiter='\n'):
+        # A safe version of reading last line
+        if os.path.getsize(file_path) <= 0: 
+            self._logger.error(f"Steps {self.real_step}: {file_path} is empty")
+            return None
+        with open(file_path, 'rb') as f:
+            f.seek(-1, os.SEEK_END)  # Move to the last character in the file
+            last_char = f.read(1)
+            # If the line does not end with '\n', it is incomplete
+            if last_char != delimiter.encode(): 
+                self._logger.error(f"Steps {self.real_step}: Last line does not end with delimiter")
+                return None
+            while f.tell() > 0:
+                char = f.read(1)
+                if char == delimiter.encode():
+                    line = f.readline().decode().strip()
+                    if line: return line
+                f.seek(-2, os.SEEK_CUR)
+        return None
+
+    def parse_line(self, header, line):
+        if header is None or line is None: return None
+        data = re.split(r',(?![^\(]*\))', line.strip())
+        data_dict = {}    
+        if len(header) != len(data): 
+            self._logger.error(f"Steps {self.real_step}: Header size and data size mismatch")
+            return None
+        for n, (key, value) in enumerate(zip(header, data)):
+            try:
+                if not value:                     
+                    value = None
+                else:
+                    value = eval(value)
+                if type(value) == str: value = eval(value)
+            except (SyntaxError, NameError, TypeError) as e:
+                self._logger.error(f"Steps {self.real_step}: Cannot read value {value} for key {key}: {e}")
+                return None
+            data_dict[key] = value
+            if n == 0: data_dict['_tick'] = value # assume first column is the tick
+        return data_dict
+
     def close(self, exit_code):
         self.wlogger.wandb.finish(exit_code=exit_code)
 
@@ -281,6 +288,6 @@ class LogWorker(SLogWorker):
     pass
 
 if __name__ == "__main__":
-    flags = util.parse(override=False)
+    flags = util.parse(override=True)
     log_worker = SLogWorker(flags)
     log_worker.start()

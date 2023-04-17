@@ -81,10 +81,11 @@ class PostVecModelWrapper(gym.Wrapper):
         self.model_wrap = model_wrap        
         self.model_out_shape = env.model_out_shape if self.model_wrap else None
         self.gym_env_out_shape = env.gym_env_out_shape if self.model_wrap else env.observation_space.shape[1:]
-        self.reward_type = flags.reward_type if model_wrap else 0
 
     def initial(self, model_net=None):
-        reward_shape = 2 if self.flags.reward_type == 1 else 1
+        reward_shape = 1 
+        if self.model_wrap:
+            reward_shape += int(self.flags.im_cost > 0.) + int(self.flags.cur_cost > 0.)
         action_shape = 3
         self.last_action = torch.zeros(self.env_n, action_shape, dtype=torch.long, device=self.device)
         self.episode_return = torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device)
@@ -162,7 +163,7 @@ class PostVecModelWrapper(gym.Wrapper):
 
         self.episode_step[:, real_done] = 0.
         self.episode_return[:, real_done] = 0.
-        if self.reward_type == 1:
+        if self.flags.im_cost > 0.:
             self.episode_return[:, info["cur_t"]==0, 1] = 0.
         
         if self.model_wrap:

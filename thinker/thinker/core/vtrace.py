@@ -55,54 +55,15 @@ def action_log_probs(policy_logits, actions):
         reduction="none",
     ).view_as(actions)
 
-
-def from_logits(
-    behavior_policy_logits,
-    target_policy_logits,
-    actions,
-    discounts,
-    rewards,
-    values,
-    bootstrap_value,
-    flags,
-    clip_rho_threshold=1.0,
-    clip_pg_rho_threshold=1.0,
-    lamb=1.0,
-    norm_stat=None,    
-):
-    """V-trace for softmax policies."""
-
-    target_action_log_probs = action_log_probs(target_policy_logits, actions)
-    behavior_action_log_probs = action_log_probs(behavior_policy_logits, actions)
-    log_rhos = target_action_log_probs - behavior_action_log_probs
-    vtrace_returns = from_importance_weights(
-        log_rhos=log_rhos,
-        discounts=discounts,
-        rewards=rewards,
-        values=values,
-        bootstrap_value=bootstrap_value,
-        flags=flags,
-        clip_rho_threshold=clip_rho_threshold,
-        clip_pg_rho_threshold=clip_pg_rho_threshold,
-        lamb=lamb,
-        norm_stat=norm_stat
-    )
-    return VTraceFromLogitsReturns(
-        log_rhos=log_rhos,
-        behavior_action_log_probs=behavior_action_log_probs,
-        target_action_log_probs=target_action_log_probs,
-        **vtrace_returns._asdict(),
-    )
-
-
 @torch.no_grad()
 def from_importance_weights(
     log_rhos,
     discounts,    
     rewards,
     values,
-    values_enc_s,
-    reward_tran,
+    values_enc,
+    rv_tran,
+    enc_type,
     bootstrap_value,
     flags,
     clip_rho_threshold=1.0,
@@ -183,12 +144,18 @@ def from_importance_weights(
             norm_factor = torch.max(norm_stat[1] - norm_stat[0], torch.tensor([
                 flags.return_norm_b], device=target_values.device))               
 
-        if reward_tran is None or not flags.return_norm_type == -1:
+        if enc_type in [0, 4] or not flags.return_norm_type == -1:
             pg_advantages = clipped_pg_rhos * (target_values - values)
             if not flags.return_norm_type == -1:
-                pg_advantages = pg_advantages / norm_factor
+                #pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
+                pg_advantages = pg_advantages / norm_factor                
+        elif enc_type == 1:
+            pg_advantages = clipped_pg_rhos * (rv_tran.encode(target_values) - values_enc)
+        elif enc_type in [2, 3]:
+            pg_advantages = clipped_pg_rhos * (rv_tran.encode(target_values) - 
+                                               rv_tran.encode_s(rv_tran.decode(values_enc)))
         else:
-            pg_advantages = clipped_pg_rhos * (reward_tran.encode(target_values) - values_enc_s)
+            raise Exception("Unknown reward type: ", rv_tran)
         
 
         # Make sure no gradients backpropagated through the returned values.

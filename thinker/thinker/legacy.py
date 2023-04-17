@@ -19,7 +19,7 @@ class LegacyActorNet(nn.Module):
         self.tran_lstm_no_attn = flags.tran_lstm_no_attn  # to use attention in lstm or not
         self.attn_mask_b = flags.tran_attn_b         # atention bias for current position
         self.conv_out = flags.tran_dim               # size of transformer / LSTM embedding dim        
-        self.num_rewards = 2 if (flags.reward_type == 1) else 1 # dim of rewards (1 for vanilla; 2 for planning rewards)
+        self.num_rewards = 1 + int(flags.im_cost > 0.) + int(flags.cur_cost > 0.)
         #self.actor_see_p = flags.actor_see_p         # probability of allowing actor to see state
         self.actor_see_p = 1 if flags.actor_see_type >=0 else 0
         #self.actor_see_encode = flags.actor_see_encode # Whether the actor see the model encoded state or the raw env state
@@ -27,7 +27,7 @@ class LegacyActorNet(nn.Module):
         self.actor_see_double_encode = flags.actor_see_double_encode # Whether the actor see the model encoded state or the raw env state
         self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
         self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
-        self.reward_transform = flags.reward_transform # Whether to use reward transform as in MuZero
+        self.enc_type = flags.actor_enc_type
         self.model_type_nn = flags.model_type_nn
         self.model_size_nn = flags.model_size_nn
         
@@ -56,10 +56,16 @@ class LegacyActorNet(nn.Module):
                 256//down_scale_c//4)*(gym_obs_shape[1]//16)*(gym_obs_shape[2]//16)))
         self.im_policy = nn.Linear(last_out_size, self.num_actions)        
         self.policy = nn.Linear(last_out_size, self.num_actions)       
-        self.baseline = nn.Linear(last_out_size, self.num_rewards)        
 
-        if self.reward_transform:
-            self.reward_tran = RewardTran(vec=False)
+        if self.enc_type in [1, 2]:
+            self.rv_tran = RVTran(vec=self.enc_type==2)
+        else:
+            self.rv_tran = None
+        if self.enc_type in [0, 1]:
+            self.baseline = nn.Linear(last_out_size, self.num_rewards)        
+        else:
+            self.out_n = self.rv_tran.encoded_n
+            self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)    
 
         self.reset = nn.Linear(last_out_size, 2)        
         
@@ -194,11 +200,18 @@ class LegacyActorNet(nn.Module):
         im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
         reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
         
-        if not self.reward_transform:
+        if self.enc_type == 0:
             baseline = self.baseline(core_output)
-        else:            
+            baseline_enc = None
+        elif self.enc_type == 1: 
             baseline_enc_s = self.baseline(core_output)
-            baseline = self.reward_tran.decode(baseline_enc_s)
+            baseline = self.rv_tran.decode(baseline_enc_s)
+            baseline_enc = baseline_enc_s
+        else:
+            baseline_enc_logit = self.baseline(core_output).reshape(T*B, self.num_rewards, self.out_n)
+            baseline_enc_v = F.softmax(baseline_enc_logit, dim=-1)
+            baseline = self.rv_tran.decode(baseline_enc_v)
+            baseline_enc = baseline_enc_logit
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
                     1e-5 * torch.sum(core_output**2, dim=-1) / 2)
@@ -212,8 +225,8 @@ class LegacyActorNet(nn.Module):
         im_action = im_action.view(T, B)      
         reset_action = reset_action.view(T, B)                 
 
-        baseline_enc_s = baseline_enc_s.view(T, B, self.num_rewards) if self.reward_transform else None
-        baseline = baseline.view(T, B, self.num_rewards)        
+        baseline_enc = baseline_enc.view((T, B) + baseline_enc.shape[1:]) if baseline_enc is not None else None
+        baseline = baseline.view(T, B, self.num_rewards)         
 
         actor_out = ActorOut(policy_logits=policy_logits,                         
                              im_policy_logits=im_policy_logits,                         
@@ -221,7 +234,7 @@ class LegacyActorNet(nn.Module):
                              action=action,     
                              im_action=im_action,
                              reset_action=reset_action,
-                             baseline_enc_s=baseline_enc_s,
+                             baseline_enc=baseline_enc,
                              baseline=baseline, 
                              reg_loss=reg_loss,)       
         

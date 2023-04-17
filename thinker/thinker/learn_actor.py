@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns
+from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns, FifoBuffer
 from thinker.core.file_writer import FileWriter
 from thinker.buffer import ActorBuffer, GeneralBuffer
 from thinker.buffer import AB_CAN_WRITE, AB_FULL, AB_FINISH
@@ -19,20 +19,37 @@ from thinker.self_play import TrainActorOut
 from thinker.env import Environment
 import thinker.util as util
 
-def compute_baseline_loss(advantages, masks_ls, c_ls):
-    assert len(masks_ls) == len(c_ls)
-    loss = 0.  
-    for mask, c in zip(masks_ls, c_ls):
-        loss = loss + 0.5 * torch.sum((advantages * (1 - mask)) ** 2) * c        
-    return loss
-    
-def compute_baseline_loss_tran(baseline_enc_s, target_baseline, reward_tran, masks_ls, c_ls):
-    assert len(masks_ls) == len(c_ls)
-    target_baseline_enc_s = reward_tran.encode(target_baseline)
-    loss = 0.
-    for mask, c in zip(masks_ls, c_ls):
-        ce_loss = ((baseline_enc_s - target_baseline_enc_s) * (1 - mask))**2
-        loss = loss + torch.sum(ce_loss) * c
+
+def compute_baseline_loss(new_actor_out, 
+                          ind, 
+                          target_baseline, 
+                          actor_net,                           
+                          c, 
+                          enc_type):    
+    target_baseline = target_baseline.detach()
+    if enc_type == 0:
+        baseline = new_actor_out.baseline[:, :, ind]
+        advantages = baseline - target_baseline
+        loss = torch.sum(advantages ** 2) * c    
+    elif enc_type == 1:
+        rv_tran = actor_net.rv_tran
+        baseline_enc = new_actor_out.baseline_enc[:, :, ind]
+        target_baseline_enc = rv_tran.encode(target_baseline)
+        advantages = baseline_enc - target_baseline_enc
+        loss = torch.sum(advantages ** 2) * c
+    elif enc_type in [2, 3]:
+        rv_tran = actor_net.rv_tran
+        baseline_enc = new_actor_out.baseline_enc[:, :, ind]
+        target_baseline_enc = rv_tran.encode(target_baseline)
+        loss = torch.nn.CrossEntropyLoss(reduction="sum")(
+            input = torch.flatten(baseline_enc, 0, 1),
+            target = torch.flatten(target_baseline_enc, 0, 1)
+        ) * c
+    elif enc_type == 4:     
+        baseline_enc = new_actor_out.baseline_enc[:, :, ind]
+        baseline_scale = actor_net.baseline_scale[ind]
+        advantages = baseline_enc - target_baseline / baseline_scale
+        loss = torch.sum(advantages ** 2) * c  
     return loss
 
 def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
@@ -69,7 +86,7 @@ def action_log_probs(policy_logits, actions):
             
 def from_logits(
     behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
-    discounts, rewards, values, values_enc_s, reward_tran, bootstrap_value, flags,
+    discounts, rewards, values, values_enc, rv_tran, enc_type, bootstrap_value, flags,
     clip_rho_threshold=1.0, clip_pg_rho_threshold=1.0, lamb=1.0, norm_stat=None):
     """V-trace for softmax policies."""
     assert(len(behavior_logits_ls) == len(target_logits_ls) == len(actions_ls) == len(masks_ls))
@@ -86,8 +103,9 @@ def from_logits(
         discounts=discounts,
         rewards=rewards,
         values=values,
-        values_enc_s=values_enc_s, 
-        reward_tran=reward_tran,
+        values_enc=values_enc, 
+        rv_tran=rv_tran,
+        enc_type=enc_type,
         bootstrap_value=bootstrap_value,
         flags=flags,
         clip_rho_threshold=clip_rho_threshold,
@@ -101,6 +119,25 @@ def from_logits(
         target_action_log_probs=None,
         **vtrace_returns._asdict(),
     )
+
+@torch.no_grad()
+def update_b_norm_stat(b_norm_stat, target_baseline):
+    if b_norm_stat is None:
+        buffer = FifoBuffer(100000, device=target_baseline.device)
+    else:
+        buffer = b_norm_stat[2]
+    buffer.push(target_baseline)
+    lq = buffer.get_percentile(0.05)
+    uq = buffer.get_percentile(0.95)
+    return (lq, uq, buffer)
+
+@torch.no_grad()
+def update_baseline_scale(b_norm_stat, actor_net, n, norm_b):
+    old_scale = torch.clone(actor_net.baseline_scale[n])
+    new_scale = torch.clamp(b_norm_stat[1] - b_norm_stat[0], min=norm_b, max=None)
+    actor_net.baseline_scale[n] = new_scale
+    actor_net.baseline.weight.data[n, :] *= (old_scale/new_scale)
+    actor_net.baseline.bias.data[n] *= (old_scale/new_scale)
 
 @ray.remote
 class ActorLearner():
@@ -132,6 +169,7 @@ class ActorLearner():
         self.tot_eps = 0
         self.last_returns = deque(maxlen=400)
         self.last_im_returns = deque(maxlen=40000)
+        self.last_cur_returns = deque(maxlen=400)
         
         self.optimizer = torch.optim.Adam(self.actor_net.parameters(),lr=flags.learning_rate)
         lr_lambda = lambda epoch: 1 - min(epoch * self.flags.unroll_length * self.flags.batch_size, 
@@ -170,6 +208,11 @@ class ActorLearner():
 
         self.norm_stat = None
         self.im_norm_stat = None
+        self.cur_norm_stat = None
+
+        self.b_norm_stat = None
+        self.b_im_norm_stat = None
+        self.b_cur_norm_stat = None
 
     def learn_data(self):
         try:
@@ -185,7 +228,7 @@ class ActorLearner():
             if self.flags.float16:
                 scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
             
-            if self.flags.im_cost_anneal: self.anneal_c = 1
+            self.anneal_c = 1
 
             data_ptr = self.actor_buffer.read.remote()
             while (self.real_step < self.flags.total_steps):   
@@ -251,14 +294,22 @@ class ActorLearner():
                     self.optimizer.step()            
                 if self.time: self.timing.time("grad descent")
 
-                self.scheduler.step()          
+                self.scheduler.step()         
 
-                if self.flags.im_cost_anneal: self.anneal_c = max(1 - self.real_step / (
-                        self.flags.total_steps  * self.flags.im_cost_len_c), 0)
+                if self.flags.critic_enc_type == 4:
+                    # update baseline_scale
+                    update_baseline_scale(self.b_norm_stat, self.actor_net, 0, self.flags.critic_norm_b)
+                    if self.flags.im_cost > 0.:
+                        update_baseline_scale(self.b_im_norm_stat, self.actor_net, 1, self.flags.critic_norm_b)
+                    if self.flags.cur_cost > 0. and self.real_step > self.flags.cur_warm_up_n:
+                        update_baseline_scale(self.b_cur_norm_stat, self.actor_net, 2, self.flags.critic_norm_b)
+
+                self.anneal_c = max(1 - self.real_step / (
+                        self.flags.total_steps), 0)
                 
                 # statistic output
                 stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id) 
-                stats["sps"] = sps
+                stats["sps"] = sps                  
 
                 # write to log file
                 self.plogger.log(stats)        
@@ -270,17 +321,18 @@ class ActorLearner():
                     sps = ((sps_buffer[sps_buffer_n-1][0] - sps_buffer[sps_buffer_n][0]) / 
                            (sps_buffer[sps_buffer_n-1][1] - sps_buffer[sps_buffer_n][1]))                    
                     tot_sps = (self.step - sps_start_step) / (timer() - sps_start_time) 
-                    print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Return %f (%f). Loss %.2f" % (
-                        n, self.real_step, self.step, float(self.step)/float(self.real_step), sps, tot_sps, queue_n, self.tot_eps, 
-                        stats["rmean_episode_return"], stats["rmean_im_episode_return"], total_loss)
-                    print_stats = ["mean_plan_step", "max_rollout_depth", "pg_loss", 
-                                "baseline_loss", "im_pg_loss", "im_baseline_loss", 
-                                "entropy_loss", "reg_loss", "total_norm"]                    
+                    print_str =  "[%s] Steps %i @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Ret %f (%f/%f). Loss %.2f" % (
+                        self.flags.xpid, self.real_step, sps, tot_sps, 
+                        queue_n, self.tot_eps, stats["rmean_episode_return"], 
+                        stats["rmean_im_episode_return"],  stats["rmean_cur_episode_return"], total_loss)
+                    print_stats = ["max_rollout_depth", "entropy_loss", "reg_loss", "total_norm"]                    
                     for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
                     if self.flags.return_norm_type != -1:
-                        print_str += " norm_stat (%.4f:%.4f)" % self.norm_stat[:2]
-                        if self.im_norm_stat is not None:
-                            print_str += " im_norm_stat (%.4f:%.4f)" % self.im_norm_stat[:2]
+                        print_str += " norm_diff (%.4f/%.4f/%.4f)" % (
+                            stats["norm_diff"], stats["im_norm_diff"], stats["cur_norm_diff"])
+                    if self.flags.critic_enc_type == 4:
+                        print_str += " b_norm_diff (%.4f/%.4f/%.4f)" % (
+                            stats["b_norm_diff"], stats["b_im_norm_diff"], stats["b_cur_norm_diff"])
 
                     self._logger.info(print_str)
                     start_time = timer()                    
@@ -328,6 +380,10 @@ class ActorLearner():
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
 
         rewards = train_actor_out.reward
+
+        if self.flags.only_cur and self.flags.cur_cost > 0.:
+            rewards[:, :, 0] = rewards[:, :, 2]
+
         # compute advantage w.r.t real rewards     
         discounts = (~train_actor_out.done).float() * self.im_discounting     
 
@@ -345,35 +401,79 @@ class ActorLearner():
             discounts=discounts,
             rewards=rewards[:, :, 0],
             values=new_actor_out.baseline[:, :, 0],
-            values_enc_s=new_actor_out.baseline_enc_s[:, :, 0] if self.flags.reward_transform else None,
-            reward_tran=self.actor_net.reward_tran if self.flags.reward_transform else None,
+            values_enc=new_actor_out.baseline_enc[:, :, 0] if new_actor_out.baseline_enc is not None else None,
+            rv_tran=self.actor_net.rv_tran,
+            enc_type=self.flags.critic_enc_type,                
             bootstrap_value=bootstrap_value[:, 0],
             flags=self.flags,
             lamb=self.flags.lamb,
             norm_stat=self.norm_stat
         )    
+        if self.flags.critic_enc_type == 4: 
+            self.b_norm_stat = update_b_norm_stat(
+                b_norm_stat=self.b_norm_stat,
+                target_baseline=vtrace_returns.vs,      
+            )
         self.norm_stat = vtrace_returns.norm_stat
-
-        advs = vtrace_returns.pg_advantages
+        advs = vtrace_returns.pg_advantages        
         pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)          
+        baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
+            new_actor_out=new_actor_out,
+            ind=0,            
+            target_baseline=vtrace_returns.vs,
+            actor_net=self.actor_net,
+            c=self.flags.real_cost,
+            enc_type=self.flags.critic_enc_type,
+        )
+            
+        # compute advantage w.r.t curiosity rewards
+        if self.flags.cur_cost > 0. and self.real_step > self.flags.cur_warm_up_n:
+            discounts = (~train_actor_out.done).float() * self.im_discounting   
+            behavior_logits_ls = [train_actor_out.policy_logits, train_actor_out.im_policy_logits, train_actor_out.reset_policy_logits]
+            target_logits_ls = [new_actor_out.policy_logits, new_actor_out.im_policy_logits, new_actor_out.reset_policy_logits]
+            actions_ls = [train_actor_out.action, train_actor_out.im_action, train_actor_out.reset_action] 
+            masks_ls = [real_mask, im_mask, im_mask]    
+            c_ls = [self.flags.cur_cost * self.anneal_c if self.flags.cur_cost_anneal else self.flags.cur_cost,
+                    self.flags.cur_im_cost * self.anneal_c if self.flags.cur_cost_anneal else self.flags.cur_im_cost,
+                    self.flags.cur_im_cost * self.anneal_c if self.flags.cur_cost_anneal else self.flags.cur_im_cost]
 
-        if not self.flags.reward_transform:
-            baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
-                vtrace_returns.vs - new_actor_out.baseline[:, :, 0], 
-                masks_ls = [real_mask, im_mask], c_ls = [self.flags.real_cost, self.flags.real_im_cost])
+            vtrace_returns = from_logits(
+                behavior_logits_ls, target_logits_ls, actions_ls, masks_ls,
+                discounts=discounts,
+                rewards=rewards[:, :, 2],
+                values=new_actor_out.baseline[:, :, 2],
+                values_enc=new_actor_out.baseline_enc[:, :, 2] if new_actor_out.baseline_enc is not None else None,
+                rv_tran=self.actor_net.rv_tran,
+                enc_type=self.flags.critic_enc_type,                
+                bootstrap_value=bootstrap_value[:, 2],
+                flags=self.flags,
+                lamb=self.flags.lamb,
+                norm_stat=self.cur_norm_stat
+            )    
+            if self.flags.critic_enc_type == 4: 
+                self.b_cur_norm_stat = update_b_norm_stat(
+                    b_norm_stat=self.b_cur_norm_stat,
+                    target_baseline=vtrace_returns.vs,      
+                )
+            self.cur_norm_stat = vtrace_returns.norm_stat
+            advs = vtrace_returns.pg_advantages            
+            
+            cur_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)            
+            cur_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
+                new_actor_out=new_actor_out,
+                ind=2,            
+                target_baseline=vtrace_returns.vs,
+                actor_net=self.actor_net,
+                c=self.flags.cur_cost if not self.flags.cur_cost_anneal else self.flags.cur_cost * self.anneal_c,
+                enc_type=self.flags.critic_enc_type,
+            )            
         else:
-            baseline_loss = self.flags.baseline_cost * compute_baseline_loss_tran(
-                baseline_enc_s = new_actor_out.baseline_enc_s[:, :, 0], 
-                target_baseline = vtrace_returns.vs, 
-                reward_tran = self.actor_net.reward_tran, 
-                masks_ls = [real_mask, im_mask], 
-                c_ls = [self.flags.real_cost, self.flags.real_im_cost])
+            cur_pg_loss = torch.zeros(1, device=self.device)
+            cur_baseline_loss = torch.zeros(1, device=self.device)
 
         # compute advantage w.r.t imagainary rewards
 
-        if self.flags.reward_type == 1:
-            if self.flags.im_gate:
-                 rewards[:, :, 1] = torch.maximum(rewards[:, :, 1], vtrace_returns.pg_advantages)
+        if self.flags.im_cost > 0.:
 
             discounts = (~(train_actor_out.cur_t == 0)).float() * self.im_discounting        
             behavior_logits_ls = [train_actor_out.im_policy_logits, train_actor_out.reset_policy_logits]
@@ -390,29 +490,31 @@ class ActorLearner():
                 discounts=discounts,
                 rewards=rewards[:, :, 1],
                 values=new_actor_out.baseline[:, :, 1],
-                values_enc_s=new_actor_out.baseline_enc_s[:, :, 1] if self.flags.reward_transform else None,
-                reward_tran=self.actor_net.reward_tran if self.flags.reward_transform else None,
+                values_enc=new_actor_out.baseline_enc[:, :, 1] if new_actor_out.baseline_enc is not None else None,
+                rv_tran=self.actor_net.rv_tran,
+                enc_type=self.flags.critic_enc_type,                
                 bootstrap_value=bootstrap_value[:, 1],
                 flags=self.flags,
                 lamb=self.flags.lamb,
                 norm_stat=self.im_norm_stat
             )    
+            if self.flags.critic_enc_type == 4: 
+                self.b_im_norm_stat = update_b_norm_stat(
+                    b_norm_stat=self.b_im_norm_stat,
+                    target_baseline=vtrace_returns.vs,      
+                )
             self.im_norm_stat = vtrace_returns.norm_stat
 
             advs = vtrace_returns.pg_advantages
             im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)   
-
-            if not self.flags.reward_transform:
-                im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
-                    vtrace_returns.vs - new_actor_out.baseline[:, :, 1], masks_ls = [zero_mask], c_ls = [
-                    self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c])     
-            else:
-                im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss_tran(
-                    baseline_enc_s = new_actor_out.baseline_enc_s[:, :, 1], 
-                    target_baseline = vtrace_returns.vs, 
-                    reward_tran = self.actor_net.reward_tran, 
-                    masks_ls = [zero_mask], 
-                    c_ls = [self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c])
+            im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
+                new_actor_out=new_actor_out,
+                ind=1,            
+                target_baseline=vtrace_returns.vs,
+                actor_net=self.actor_net,
+                c=self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c,
+                enc_type=self.flags.critic_enc_type,
+            )       
         else:
             im_pg_loss = torch.zeros(1, device=self.device)
             im_baseline_loss = torch.zeros(1, device=self.device)
@@ -420,20 +522,25 @@ class ActorLearner():
         target_logits_ls = [new_actor_out.policy_logits, new_actor_out.im_policy_logits, new_actor_out.reset_policy_logits]
         masks_ls = [real_mask, im_mask, im_mask]    
         im_ent_c = self.flags.im_entropy_cost * (self.flags.real_im_cost + ((
-            self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c) if self.flags.reward_type == 1 else 0))
+            self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c) if self.flags.im_cost > 0. else 0))
         c_ls = [self.flags.entropy_cost * self.flags.real_cost, im_ent_c, im_ent_c]
         entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls, self.flags.entropy_type==1)    
 
         reg_loss = self.flags.reg_cost * torch.sum(new_actor_out.reg_loss)
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss         
             
-        if self.flags.reward_type == 1:
-            total_loss = total_loss + im_pg_loss + im_baseline_loss      
+        if self.flags.im_cost > 0.:
+            total_loss = total_loss + im_pg_loss + im_baseline_loss   
+
+        if self.flags.cur_cost > 0.:
+            total_loss = total_loss + cur_pg_loss + cur_baseline_loss   
 
         losses = {"pg_loss": pg_loss,
                   "im_pg_loss": im_pg_loss,
+                  "cur_pg_loss": cur_pg_loss,
                   "baseline_loss": baseline_loss,
-                  "im_baseline_loss": im_baseline_loss,
+                  "im_baseline_loss": im_baseline_loss,                  
+                  "cur_baseline_loss": cur_baseline_loss,
                   "entropy_loss": entropy_loss,
                   "reg_loss": reg_loss,
                   "total_loss": total_loss
@@ -454,11 +561,17 @@ class ActorLearner():
         self.last_returns.extend(episode_returns)
         rmean_episode_return = np.average(self.last_returns) if len(self.last_returns) > 0 else 0.
 
-        if self.flags.reward_type == 1:
+        if self.flags.im_cost > 0.:
             im_episode_returns = train_actor_out.episode_return[train_actor_out.cur_t==0][:, 1]  
             im_episode_returns = tuple(im_episode_returns.detach().cpu().numpy())
             self.last_im_returns.extend(im_episode_returns)
         rmean_im_episode_return = np.average(self.last_im_returns) if len(self.last_im_returns) > 0 else 0.
+
+        if self.flags.cur_cost > 0.:
+            cur_episode_returns = train_actor_out.episode_return[train_actor_out.real_done][:, 2]  
+            cur_episode_returns = tuple(cur_episode_returns.detach().cpu().numpy())
+            self.last_cur_returns.extend(cur_episode_returns)
+        rmean_cur_episode_return = np.average(self.last_cur_returns) if len(self.last_cur_returns) > 0 else 0.
 
         max_rollout_depth = (train_actor_out.max_rollout_depth[train_actor_out.cur_t == 0]).detach().cpu().numpy()
         max_rollout_depth = np.average(max_rollout_depth) if len (max_rollout_depth) > 0 else 0.     
@@ -474,6 +587,7 @@ class ActorLearner():
                     "tot_eps": self.tot_eps,
                     "rmean_episode_return": rmean_episode_return,
                     "rmean_im_episode_return": rmean_im_episode_return, 
+                    "rmean_cur_episode_return": rmean_cur_episode_return,
                     "episode_returns": episode_returns,  
                     "episode_lens": episode_lens,
                     "done_ids": done_ids,
@@ -485,6 +599,25 @@ class ActorLearner():
 
         if losses is not None: 
             for k, v in losses.items(): stats[k] = v.item()  
+
+        if self.flags.return_norm_type != -1:
+            stats["norm_diff"] = (self.norm_stat[1] - self.norm_stat[0]).item()
+            stats["im_norm_diff"] = 0.
+            stats["cur_norm_diff"] = 0.
+            if self.im_norm_stat is not None:
+                stats["im_norm_diff"] = (self.im_norm_stat[1] - self.im_norm_stat[0]).item()
+            if self.cur_norm_stat is not None:
+                stats["cur_norm_diff"] = (self.cur_norm_stat[1] - self.cur_norm_stat[0]).item()
+
+        if self.flags.critic_enc_type == 4:
+            stats["b_norm_diff"] = (self.b_norm_stat[1] - self.b_norm_stat[0]).item()
+            stats["b_im_norm_diff"] = 0.
+            stats["b_cur_norm_diff"] = 0.
+            if self.b_im_norm_stat is not None:
+                stats["b_im_norm_diff"] = (self.b_im_norm_stat[1] - self.b_im_norm_stat[0]).item()
+            if self.b_cur_norm_stat is not None:
+                stats["b_cur_norm_diff"] = (self.b_cur_norm_stat[1] - self.b_cur_norm_stat[0]).item()  
+
         return stats
 
     def save_checkpoint(self):

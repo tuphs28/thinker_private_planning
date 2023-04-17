@@ -1,13 +1,14 @@
 import os
-import sys
-from collections import deque
-import time
+import argparse
 import numpy as np
 import copy
+from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 from matplotlib import pyplot as plt
 import matplotlib.ticker as mticker
 import torch
 import torch.nn.functional as F
+import textwrap
 from thinker.env import Environment
 from thinker.net import ActorNet, ModelNet
 import thinker.util as util
@@ -172,27 +173,70 @@ def print_im_actions(im_dict, action_meanings, print_stat=False):
         for s in print_strs: print(s) 
     return print_strs    
 
-def visualize(check_point_path, model_path="", visualize=False, saveimg=True, savevideo=True):
+
+def save_concatenated_image(buf1, buf2, strs, output_path, height=2500, width=3000):
+    # Render the first figure onto a PIL image
+    buf1.seek(0)
+    img1 = Image.open(buf1)
+    margin1 = 0
+
+    # Render the second figure onto a PIL image
+    buf2.seek(0)
+    img2 = Image.open(buf2)
+    margin2 = 0.1  
+
+    # Resize the images to have the desired width
+    w1, h1 = img1.size
+    new_width = int(width*(1-2*margin1))
+    new_height = int((new_width / w1) * h1)
+    img1 = img1.resize((new_width, new_height))
+
+    w2, h2 = img2.size
+    new_width = int(width*(1-2*margin2))
+    new_height = int((new_width / w2) * h2)
+    img2 = img2.resize((new_width, new_height))
+
+    # Create a new image with the desired size
+    result = Image.new('RGB', (width, height), color='white')
+
+    # Paste the first image on the top
+    result.paste(im=img1, box=(int(width*margin1), 0))
+
+    # Paste the second image below the first one
+    result.paste(im=img2, box=(int(width*margin2), img1.height))
+
+    # Add the long string below the second image
+    draw = ImageDraw.Draw(result)
+    font = ImageFont.truetype("arial.ttf", 34)
+
+    y = img1.height + img2.height + 10  # Leave some space between the second image and the text
+    font_box = font.getbbox("A")  # Get the height of a typical line of text
+    line_height = font_box[3] - font_box[1]
+
+    margint = 0.1  
+    for line in strs:
+        # Wrap the line to fit the width of the image
+        wrapper = textwrap.TextWrapper(width=int(width*(1-2*margint)))
+        lines = wrapper.wrap(line)
+
+        for wrapped_line in lines:
+            draw.text((width*margint, y), wrapped_line, font=font, fill='black')
+            y += line_height
+
+        # Add extra line spacing between paragraphs
+        y += line_height
+    # Save the concatenated image
+    result.save(output_path)
+
+def visualize(check_point_path, output_path, model_path="", plot=False, saveimg=True, savevideo=True):
     max_eps_n = 1
-    saveimg_dir = "/home/sc/RS/thinker/test/data/"
-
     flags = util.parse(['--load_checkpoint', check_point_path])
-    #flags.actor_net_ver = 0
-    name = "%s-%s"%(flags.xpid, time.strftime("%Y%m%d-%H%M%S"))
     seed = np.random.randint(10000)
-
-    if saveimg:
-        saveimg_a = os.path.join(saveimg_dir, name, "a")
-        saveimg_b = os.path.join(saveimg_dir, name, "b")
-        if not (os.path.exists(saveimg_a)): os.makedirs(saveimg_a)
-        if not (os.path.exists(saveimg_b)): os.makedirs(saveimg_b)
-        print("saving images to %s" % (os.path.join(saveimg_dir, name)))
-        savef = open(os.path.join(saveimg_dir, name, "logs.txt"), 'a')
     env = Environment(flags, model_wrap=True, debug=True)
     if not flags.perfect_model: 
         flags_ = copy.deepcopy(flags)
         flags_.perfect_model = True
-        flags_.actor_see_p = 1
+        flags_.cur_cost = 0.
         perfect_env = Environment(flags_, model_wrap=True)
 
     if flags.env == "cSokoban-v0" or flags.env == "Sokoban-v0":
@@ -203,7 +247,8 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
 
     env.seed([seed])
     if not flags.perfect_model: perfect_env.seed([seed])
-
+    
+    # load the networks
     model_net = ModelNet(obs_shape=env.gym_env_out_shape, num_actions=env.num_actions, flags=flags, debug=True)
     model_net.train(False)
     if not model_path: model_path = os.path.join(check_point_path,'ckp_model.tar')
@@ -216,18 +261,35 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
     actor_net.set_weights(checkpoint["actor_net_state_dict"])
     actor_state = actor_net.initial_state(batch_size=1) 
 
+    # create output folder
+    n = 0
+    while(True):        
+        name = "%s-%d-%d"%(flags.xpid, checkpoint["real_step"], n)
+        output_path_ = os.path.join(output_path, name)
+        if not os.path.exists(output_path_):
+            os.makedirs(output_path_)
+            print(f"Outputting to {output_path_}")
+            break
+        n += 1
+    output_path = output_path_
+
+    # initalize env
     env_out = env.initial(model_net)
     if not flags.perfect_model: 
         perfect_env_out = perfect_env.initial(model_net)
         assert torch.all(env_out.gym_env_out == perfect_env_out.gym_env_out)
 
+    # some initial setting
+    plt.rcParams.update({'font.size': 15})
+
     gym_env_out_ = env_out.gym_env_out
-    model_out = util.decode_model_out(env_out.model_out, num_actions, flags.reward_transform)
+    model_out = util.decode_model_out(env_out.model_out, num_actions, flags.model_enc_type)
     end_gym_env_outs, end_titles = [], []
     ini_max_q = model_out["root_max_v"][0].item()
 
     step = 0
-    returns, model_logits, attn_output = [], [], [], 
+    real_step = 0
+    returns, model_logits = [], [], 
     im_list = ["im_policy_logits", "reset_policy_logits", "im_action", "reset_action"]
     im_dict = {k: [] for k in im_list}
 
@@ -250,18 +312,20 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
                 getattr(actor_out, k) is not None else None)        
         #attn_output.append(torch.cat([x.attn_output_weights.unsqueeze(0).unsqueeze(-2) for x in actor_net.core.layers])[:, :, 0, :])        
 
-        model_out_ = util.decode_model_out(env_out.model_out, num_actions, flags.reward_transform)
+        model_out_ = util.decode_model_out(env_out.model_out, num_actions, flags.model_enc_type)
         model_logits.append(model_out_["cur_logits"])
         env_out  = env.step(action, model_net)
-        model_out = util.decode_model_out(env_out.model_out, num_actions, flags.reward_transform)
+        model_out = util.decode_model_out(env_out.model_out, num_actions, flags.model_enc_type)
         if len(im_dict['reset_action']) > 0: im_dict['reset_action'][-1] = model_out["reset"]
-        if not flags.perfect_model: perfect_env_out  = perfect_env.step(action, model_net)    
-        #gym_env_out = env_out.gym_env_out if flags.perfect_model else perfect_env_out.gym_env_out
-        gym_env_out = (torch.clamp(env.env.xs, 0, 1) * 255).to(torch.uint8)
+        if not flags.perfect_model: perfect_env_out = perfect_env.step(action, model_net)    
+        if not flags.duel_net:
+            gym_env_out = env_out.gym_env_out if flags.perfect_model else perfect_env_out.gym_env_out
+        else:
+            gym_env_out = (torch.clamp(env.env.xs, 0, 1) * 255).to(torch.uint8)
         if not flags.perfect_model:
-            perfect_model_out = util.decode_model_out(perfect_env_out.model_out, num_actions, flags.reward_transform)
+            perfect_model_out = util.decode_model_out(perfect_env_out.model_out, num_actions, flags.model_enc_type)
 
-        if model_out["reset"] == 1 or env_out.cur_t[0,0] == flags.rec_t-1:   
+        if env_out.cur_t[0,0] != 0 and (model_out["reset"] == 1 or env_out.cur_t[0,0] == flags.rec_t-1):   
             title = "pred v: %.2f" % (model_out["cur_v"].item())
             if not flags.perfect_model:
                 title += " v: %.2f" % (perfect_model_out["cur_v"].item())
@@ -269,14 +333,13 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
             end_titles.append(title)
 
         if not flags.perfect_model and env_out.cur_t[0,0] == 0:
-            assert torch.all(env_out.gym_env_out == perfect_env_out.gym_env_out)    
+            assert torch.all(env_out.gym_env_out == perfect_env_out.gym_env_out), "perfect env and modelled env mismatch in real step"
 
         # record data for generating video
         if action[0,0,2] == 1:
             video_stats["real_imgs"].append(video_stats["real_imgs"][-1])
             video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
             video_stats["status"].append(1)
-
         if env_out.cur_t[0,0] == 0:
             video_stats["real_imgs"].append(gym_env_out[0,0,-3:].numpy())
             video_stats["status"].append(0)
@@ -286,56 +349,71 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
         video_stats["im_imgs"].append(gym_env_out[0,0,-3:].numpy())    
 
         # visualize when a real step is made
-        if (saveimg or visualize) and env_out.cur_t[0,0] == 0:
-            fig, axs = plt.subplots(1, 5, figsize=(30,6))      
-            title = "%d; v: %.2f (%.2f)" % (step, model_out_["root_v"][0], agent_v)
-            title += " max_q: %.2f ini_max_q: %.2f mean_q_0: %.2f" % (
-                model_out_["root_max_v"][0].item(), ini_max_q, env.env.baseline_mean_q[0])
+        if (saveimg or plot) and env_out.cur_t[0,0] == 0:
+            fig, axs = plt.subplots(1, 5, figsize=(40,8))  
+
             for k in im_list: 
                 if im_dict[k][0] is not None:
                     im_dict[k] = torch.concat(im_dict[k], dim=0)            
                 else:
                     im_dict[k] = None        
-            
-            if flags.reward_type == 1: title += " im_return: %.4f" % env_out.episode_return[..., 1]                        
-            plot_gym_env_out(gym_env_out_[0], axs[0], title=title)  
+            plot_gym_env_out(gym_env_out_[0], axs[0], title="Real State")  
             plot_base_policies(torch.concat(model_logits), action_meanings=action_meanings, ax=axs[1])  
-            plot_im_policies(**im_dict, action_meanings=action_meanings, one_hot=False, reset_ind=1, ax=axs[2])   
-
-            mean_q_s_a = model_out_["root_qs_mean"][0]
-            max_q_s_a = model_out_["root_qs_max"][0]
-            n_s_a = model_out_["root_ns"][0]
-            plot_qn_sa(mean_q_s_a, n_s_a, action_meanings=action_meanings, max_q_s_a=max_q_s_a, ax=axs[3]) 
-
+            plot_im_policies(**im_dict, action_meanings=action_meanings, one_hot=False, reset_ind=1, ax=axs[2])  
+            plot_qn_sa(q_s_a=model_out_["root_qs_mean"][0], 
+                       n_s_a=model_out_["root_ns"][0], 
+                       action_meanings=action_meanings, 
+                       max_q_s_a=model_out_["root_qs_max"][0], 
+                       ax=axs[3]) 
             model_policy_logits = model_out_["root_logits"][0]
             agent_policy_logits = actor_out.policy_logits[0,0]
             action = torch.nn.functional.one_hot(actor_out.action[0,0], env.num_actions)
             plot_policies([model_policy_logits, agent_policy_logits, action], 
-                ["model policy", "agent policy", "action"], action_meanings=action_meanings, ax=axs[4])  
-            
-            if saveimg: plt.savefig(os.path.join(saveimg_a,"%d.png" %step))
-            if visualize: plt.show()        
-            plt.close()
-
-            fig = plot_multi_gym_env_out(end_gym_env_outs, end_titles)        
-            if saveimg: plt.savefig(os.path.join(saveimg_b,"%d.png" %step))
-            if visualize: plt.show()
-            plt.close()
-
-            log_str = "step:%d; return %.4f(%.4f) done %s real_done %s" % (
-                step, env_out.episode_return[0,0,0], env_out.episode_return[0,0,1] if flags.reward_type == 1 else 0,
-                "True" if env_out.done[0,0] else "False", 
-                "True" if env_out.real_done[0,0] else "False",)
-            print(log_str)
-            im_action_strs = print_im_actions(im_dict, action_meanings, print_stat=visualize)           
+                          ["model policy", "agent policy", "action"], 
+                          action_meanings=action_meanings, ax=axs[4])              
+            #plt.tight_layout()
             if saveimg:
-                for s in im_action_strs: savef.write(s+"\n")            
-                savef.write(log_str+"\n") 
+                buf1 = BytesIO()                
+                plt.savefig(buf1, format='png')
+            if plot: plt.show()        
+            plt.close()
+
+            plot_multi_gym_env_out(end_gym_env_outs[:10], end_titles)        
+            if saveimg: 
+                buf2 = BytesIO()
+                plt.savefig(buf2, format='png')
+            if plot: plt.show()
+            plt.close()            
+
+            log_str = "Step:%d (%d); return %.4f(%.4f) done %s real_done %s" % (
+                real_step, 
+                step, 
+                env_out.episode_return[0,0,0], 
+                env_out.episode_return[0,0,1] if flags.im_cost > 0. else 0,
+                "True" if env_out.done[0,0] else "False", 
+                "True" if env_out.real_done[0,0] else "False",
+                )
+            print(log_str)
+
+            stat = f"Real Step: {real_step} Root v: {model_out_['root_v'][0].item():.2f} Actor v: {agent_v:.2f}"
+            stat += f" Root Max Q: {model_out_['root_max_v'][0].item():.2f} Init. Root Max Q: {ini_max_q:.2f}"
+            stat += f" Root Mean Q: {env.env.baseline_mean_q[0].item():.2f}"            
+            
+            if flags.im_cost > 0.: title += " im_return: %.4f" % env_out.episode_return[..., 1]                        
+            
+            if saveimg:
+                im_action_strs = print_im_actions(im_dict, action_meanings, print_stat=plot)   
+                save_concatenated_image(buf1, buf2, [stat] + im_action_strs, 
+                                        os.path.join(output_path, f"{real_step}.png"))                
+                buf1.close()
+                buf2.close()
 
             gym_env_out_ = gym_env_out
             im_dict = {k: [] for k in im_list}
-            model_logits, attn_output, end_gym_env_outs, end_titles = [], [], [], []
+            model_logits, end_gym_env_outs, end_titles = [], [], []
             ini_max_q = model_out["root_max_v"][0].item()
+
+            real_step += 1
 
         if torch.any(env_out.real_done):
             step = 0
@@ -343,16 +421,22 @@ def visualize(check_point_path, model_path="", visualize=False, saveimg=True, sa
             returns.extend(new_rets)
             print("Finish %d episode: avg. return: %.2f (+-%.2f) " % (len(returns),
                 np.average(returns), np.std(returns) / np.sqrt(len(returns))))     
-            
-    savef.close()            
+                      
 
     if savevideo:
-        gen_video(video_stats, os.path.join(saveimg_dir, name))    
+        gen_video(video_stats, output_path)    
 
 if __name__ == "__main__":
-    flags = util.parse(override=False)
+    parser = argparse.ArgumentParser(description=f"Thinker visualization")
+    parser.add_argument("--output_path", default="../test",
+                        help="Output directory.")
+    parser.add_argument("--load_checkpoint", default="../logs/thinker/latest",
+                        help="Load checkpoint directory.")
+    flags = parser.parse_args()  
+    output_path = os.path.abspath(os.path.expanduser(flags.output_path))
+
     visualize(check_point_path=flags.load_checkpoint, 
-              model_path=flags.preload_model, 
-              visualize=False, 
+              output_path=output_path,
+              plot=False, 
               saveimg=True,
               savevideo=True)

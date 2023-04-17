@@ -132,7 +132,7 @@ class SModelLearner():
                     time.sleep(0.01)
                     if self.timer() - self.start_time > 5:
                         tran_n = ray.get(self.model_buffer.get_processed_n.remote())
-                        self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_warm_up_n))
+                        self._logger.info("[%s] Preloading: %d/%d" % (self.flags.xpid, tran_n, self.flags.model_warm_up_n))
                         self.start_time = self.timer()                             
                 if self.time: self.timing.time("get_data")           
                 if data == "FINISH": break  
@@ -263,8 +263,8 @@ class SModelLearner():
             sps = ((self.sps_buffer[self.sps_buffer_n-1][0] - self.sps_buffer[self.sps_buffer_n][0]) / 
                     (self.sps_buffer[self.sps_buffer_n-1][1] - self.sps_buffer[self.sps_buffer_n][1]))   
             tot_sps = (self.step - self.sps_start_step) / (self.timer() - self.sps_start_time) 
-            print_str =  "Steps %i (%i:%i[%.1f]) @ %.1f SPS (%.1f). Model return mean (std) %f (%f) norm_m %.2f norm_p %.2f" % (
-                            self.n, 
+            print_str =  "[%s] Steps %i (%i[%.1f]) @ %.1f SPS (%.1f). Model return mean (std) %f (%f) norm_m %.2f norm_p %.2f" % (
+                            self.flags.xpid,
                             self.real_step, 
                             self.step, 
                             self.step_per_transition(), 
@@ -300,13 +300,13 @@ class SModelLearner():
         if timing is not None: timing.time("misc")
 
 
-    def compute_rs_loss(self, target, rs, r_enc_logits, reward_tran, is_weights):
+    def compute_rs_loss(self, target, rs, r_enc_logits, rv_tran, is_weights):
         k, b = self.flags.model_k_step_return, target["rewards"].shape[1]
         done_mask = target["done_mask"]
-        if not self.flags.reward_transform:
+        if self.flags.model_enc_type == 0:
                 rs_loss = (rs - target["rewards"]) ** 2
         else:
-            _, target_rs_enc_v = reward_tran.encode(target["rewards"])
+            target_rs_enc_v = rv_tran.encode(target["rewards"])
             rs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
                     input = torch.flatten(r_enc_logits, 0, 1),
                     target = torch.flatten(target_rs_enc_v, 0, 1),
@@ -338,7 +338,7 @@ class SModelLearner():
             one_hot=False
         )
         rs_loss = self.compute_rs_loss(target, out.rs, out.r_enc_logits, 
-                                       self.model_net.model_net.reward_tran,
+                                       self.model_net.model_net.rv_tran,
                                        is_weights)        
         done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
         if self.flags.model_img_type == 0:
@@ -400,15 +400,15 @@ class SModelLearner():
         done_mask = target["done_mask"]
         if self.model_net.pred_net.predict_rd:
             rs_loss = self.compute_rs_loss(target, out.rs, out.r_enc_logits, 
-                                           self.model_net.pred_net.reward_tran, 
+                                           self.model_net.pred_net.rv_tran, 
                                            is_weights)        
             done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
 
         # compute vs loss
-        if not self.flags.reward_transform:
+        if self.flags.model_enc_type == 0:
             vs_loss = (vs[:k] - target["vs"].detach()) ** 2
         else:
-            _, target_vs_enc_v = self.model_net.pred_net.reward_tran.encode(target["vs"])
+            target_vs_enc_v = self.model_net.pred_net.rv_tran.encode(target["vs"])
             vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
                         input = torch.flatten(v_enc_logits[:k], 0, 1),
                         target = torch.flatten(target_vs_enc_v.detach(), 0, 1)

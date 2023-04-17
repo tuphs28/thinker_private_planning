@@ -1,3 +1,5 @@
+__version__ = '0.62'
+
 import collections
 import time
 import timeit
@@ -10,8 +12,8 @@ import numpy as np
 import torch
 import re
 
-def parse(args=None, override=True):
-    parser = argparse.ArgumentParser(description="Thinker v1")
+def get_parser():
+    parser = argparse.ArgumentParser(description=f"Thinker v{__version__}")
     
     parser.add_argument("--xpid", default=None,
                         help="Experiment id (default: None).")
@@ -23,7 +25,7 @@ def parse(args=None, override=True):
                         help="Whether to use wandb logging")
     parser.add_argument("--wandb_ckp_freq", type=int, default=500000,
                         help="Checkpoint frequency of wandb (in real steps) (-1 for not logging).")  
-    parser.add_argument("--policy_vis_freq", type=int, default=100000,
+    parser.add_argument("--policy_vis_freq", type=int, default=500000,
                         help="Visualization frequency of wandb (in real steps) (-1 for not logging).")    
     parser.add_argument("--policy_vis_length", type=int, default=20,
                         help="Length of visualization (in real steps).")  
@@ -34,9 +36,7 @@ def parse(args=None, override=True):
     parser.add_argument("--cwrapper", action="store_true",
                         help="Whether to use C++ version of model wrapper")                                                
     parser.add_argument("--reward_clipping", default=-1, type=float, 
-                       help="Reward clipping.")
-    parser.add_argument("--reward_transform", action="store_true",
-                        help="Whether to transform the reward as MuZero.")                       
+                       help="Reward clipping.")                      
 
     # Resources settings.
     parser.add_argument("--disable_auto_res", action="store_true",
@@ -81,11 +81,11 @@ def parse(args=None, override=True):
                         help="Total environment steps to train for.")
     parser.add_argument("--batch_size", default=32, type=int, 
                         help="Actor learner batch size.")
-    parser.add_argument("--unroll_length", default=200, type=int, 
+    parser.add_argument("--unroll_length", default=99, type=int, 
                         help="The unroll length (time dimension).")
     parser.add_argument("--actor_warm_up_n", default=0, type=int, 
                         help="Number of transition accumulated before actor start learning.")      
-    parser.add_argument("--return_norm_type", default=-1, type=int, 
+    parser.add_argument("--return_norm_type", default=1, type=int, 
                         help="Return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization")           
     parser.add_argument("--return_norm_b", default=1, type=float, 
                         help="Minimum normalization coef")  
@@ -93,8 +93,8 @@ def parse(args=None, override=True):
                         help="Return normalization decay rate")     
     parser.add_argument("--return_norm_per", default=0.95, type=float, 
                         help="Percentile used in return normalization")                       
-    parser.add_argument("--return_norm_buffer_n", default=-1, type=int, 
-                        help="Normalization buffer; only used when it is larger than 0.")                       
+    parser.add_argument("--return_norm_buffer_n", default=100000, type=int, 
+                        help="Normalization buffer; only used when it is larger than 0.") 
     parser.add_argument("--return_norm_use_std", action="store_true",
                         help="Use std instead of percentile in return norm.")                       
     parser.add_argument("--disable_cuda", action="store_true",
@@ -103,9 +103,9 @@ def parse(args=None, override=True):
     # Model Training settings. 
     parser.add_argument("--disable_train_model", action="store_false", dest="train_model",
                         help="Disable training of model.")
-    parser.add_argument("--model_batch_size", default=256, type=int, 
+    parser.add_argument("--model_batch_size", default=128, type=int, 
                         help="Model learner batch size.")                                             
-    parser.add_argument("--model_unroll_length", default=200, type=int, 
+    parser.add_argument("--model_unroll_length", default=50, type=int, 
                         help="Number of transition per unroll in model buffer.")
     parser.add_argument("--model_k_step_return", default=5, type=int, 
                         help="Number of recurrent step when training the model.")    
@@ -150,49 +150,89 @@ def parse(args=None, override=True):
                         help="Whether to use drc in encoding state")    
     parser.add_argument("--actor_encode_concat_type",  default=0,
                         type=int, help="Type of concating the encoding to model's output.")          
+    
+    # Critic architecture settings
+    parser.add_argument("--critic_zero_init", action="store_true", dest="critic_zero_init",
+                        help="Zero initialisation for the critic's output")      
+    parser.add_argument("--critic_enc_type",  default=4,
+                        type=int, help="Reward / value encoding type for the critic; \
+                            0 for no encoding, \
+                            1 for scalar encoding, \
+                            2 for unbiased vector encoding, \
+                            3 for biased vector encoding \
+                            4 for moving scalar multiplication")      
+    parser.add_argument("--critic_norm_b", default=1, type=float, 
+                        help="Minimum normalization coef for critic; only used when critic_enc_type in [4, 5]") 
+    
 
     # Model architecure settings
     parser.add_argument("--model_type_nn", default=0,
-                        type=float, help="Model type.")          
+                        type=int, help="Model type.")          
     parser.add_argument("--model_size_nn", default=1,
                         type=int, help="Model size multipler.")      
     parser.add_argument("--model_downscale_c", default=2.,
                         type=float, help="Coefficient for downscaling number of channels")      
-    parser.add_argument("--model_zero_init", action="store_true",
+    parser.add_argument("--disable_model_zero_init", action="store_false", dest="model_zero_init",
                         help="Zero initialisation for the model output")  
-    parser.add_argument("--model_disable_bn", action="store_true",
+    parser.add_argument("--model_enable_bn", action="store_false", dest="model_disable_bn",
                         help="Whether to disable batch norm in dynamic and output network")     
     parser.add_argument("--value_prefix", action="store_true",
                         help="Whether to use value prefix in model")         
-    parser.add_argument("--duel_net", action="store_true",
+    parser.add_argument("--disable_duel_net", action="store_false", dest="duel_net",
                         help="Whether to use duel net as model")            
     parser.add_argument("--frame_copy", action="store_true",
                         help="Whether to copy the last three frames in frame prediction") 
-                                                           
+    parser.add_argument("--model_enc_type",  default=2, type=int, 
+                        type=int, help="Reward / value encoding type for the model; \
+                            0 for no encoding, \
+                            2 for unbiased vector encoding, \
+                            3 for biased vector encoding")       
+                                                          
     
     # Actor loss settings
-    parser.add_argument("--entropy_cost", default=0.00001,
+    # Real reward setting
+    parser.add_argument("--entropy_cost", default=0.0003,
                         type=float, help="Entropy cost/multiplier.")
-    parser.add_argument("--im_entropy_cost", default=0.000005,
-                        type=float, help="Imagainary Entropy cost/multiplier.")         
-    parser.add_argument("--entropy_type", default=0,
+    parser.add_argument("--entropy_type", default=1,
                         type=int, help="Entropy mask type; 0 for no masking; 1 for masking.")      
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
-    parser.add_argument("--reg_cost", default=0.01,
+    parser.add_argument("--reg_cost", default=0.001,
                         type=float, help="Reg cost/multiplier.")
     parser.add_argument("--real_cost", default=1,
-                        type=float, help="Real reward - real action cost/multiplier.")      
+                        type=float, help="Real reward - real action cost/multiplier.")          
     parser.add_argument("--real_im_cost", default=1,
                         type=float, help="Real reward - imagainary action cost/multiplier.")          
+    # Planning reward setting
+    parser.add_argument("--im_entropy_cost", default=0.0003,
+                        type=float, help="Imagainary Entropy cost/multiplier.")         
     parser.add_argument("--im_cost", default=1,
-                        type=float, help="Imaginary reward cost/multiplier.")   
-    parser.add_argument("--im_cost_anneal", action="store_true", 
+                        type=float, help="Imaginary reward cost/multiplier. 0 for no imaginary reward.")   
+    parser.add_argument("--disable_im_anneal", action="store_false", dest="im_cost_anneal",
                         help="Whether to anneal im_cost to zero.")       
-    parser.add_argument("--im_cost_len_c", default=1,
-                        type=float, help="When im_cost is annealed to zero; 1. for the end of training.")                 
     parser.add_argument("--reset_no_im_cost", action="store_true",
-                        help="Whether to disable training reset action by planning reward")                            
+                        help="Whether to disable training reset action by planning reward")     
+    # Curiosity reward settings             
+    parser.add_argument("--cur_cost", default=0,
+                        type=float, help="Curiosity reward cost/multiplier. 0 for no curiosity.")   
+    parser.add_argument("--cur_im_cost", default=0,
+                        type=float, help="Curiosity reward - imagainary action cost/multiplier.")      
+    parser.add_argument("--cur_reward_cost", default=0,
+                        type=float, help="Coefficient of reward loss for computing curiosity reward.")   
+    parser.add_argument("--cur_v_cost", default=0,
+                        type=float, help="Coefficient of value loss for computing curiosity reward.")   
+    parser.add_argument("--cur_enc_cost", default=0,
+                        type=float, help="Coefficient of encoding loss for computing curiosity reward.")       
+    parser.add_argument("--disable_cur_anneal", action="store_false", dest="cur_cost_anneal",
+                        help="Whether to anneal cur_cost to zero.")
+    parser.add_argument("--cur_done_gate", action="store_true", 
+                        help="Whether to give no curisotiy reward when done.")
+    parser.add_argument("--only_cur", action="store_true", 
+                        help="Let's replace agents' real reward with curiosity reward.")
+    parser.add_argument("--cur_warm_up_n",  default=1000000,
+                        type=int, help="The real step that begins giving curiosity reward.")
+         
+    # Other reward-related settings        
     parser.add_argument("--discounting", default=0.97,
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=1,
@@ -204,15 +244,15 @@ def parse(args=None, override=True):
     # Model loss settings
     parser.add_argument("--model_logits_loss_cost", default=0.5, type=float,
                        help="Multipler to policy logit loss when training the model.")                            
-    parser.add_argument("--model_vs_loss_cost", default=1, type=float,
+    parser.add_argument("--model_vs_loss_cost", default=0.25, type=float,
                        help="Multipler to vs loss when training the model.")                           
-    parser.add_argument("--model_rs_loss_cost", default=1, type=float,
+    parser.add_argument("--model_rs_loss_cost", default=1., type=float,
                        help="Multipler to rs loss when training the model.")                                                  
-    parser.add_argument("--model_done_loss_cost", default=0, type=float,
+    parser.add_argument("--model_done_loss_cost", default=1., type=float,
                        help="Multipler to done loss when training the model.")                                                      
     parser.add_argument("--model_sup_loss_cost", default=0, type=float,
                        help="Multipler to self-supervise loss when training the model.")                                                                         
-    parser.add_argument("--model_img_loss_cost", default=0,  type=float,
+    parser.add_argument("--model_img_loss_cost", default=10.,  type=float,
                        help="Multipler to image reconstruction loss when training the model.")     
     parser.add_argument("--model_reg_loss_cost", default=0, type=float,
                        help="Multipler to L2 reg loss for predictor encoding when training the model.")                                                                             
@@ -220,16 +260,12 @@ def parse(args=None, override=True):
                        help="0 for mean root value, 1 for max root value, 2 for actor's value.")    
     parser.add_argument("--model_supervise_type", default=1, type=int,
                        help="0 for efficientZero, 1 for direct cosine similarity, 2 for direct L2 loss, 3 for KL div.")                                                          
-    parser.add_argument("--model_img_type", default=0, type=int,
-                       help="0 for L2 loss on frame; 1 for encoding-loss on frame; 2 for predicting encoding directly.")                                                          
+    parser.add_argument("--model_img_type", default=1, type=int,
+                       help="0 for L2 loss on frame; 1 for mapped L2 loss on frame.")                                                          
     
 
-    # Model wrapper settings
-    parser.add_argument("--reward_type", default=1, type=int, 
-                        help="Reward type; 0 for no planning reward; 1 for planning reward.")     
-    parser.add_argument("--im_gate", action="store_true", 
-                        help="Whether to gate im reward by real advantage.")            
-    parser.add_argument("--disable_perfect_model", action="store_false", dest="perfect_model",
+    # Model wrapper settings            
+    parser.add_argument("--perfect_model", action="store_true",
                         help="Whether to use perfect model.")          
     parser.add_argument("--rec_t", default=20, type=int, 
                         help="Number of planning steps.")
@@ -237,13 +273,13 @@ def parse(args=None, override=True):
                         help="Whether to carry over the tree.")   
     parser.add_argument("--depth_discounting", default=1.,
                         type=float, help="Discounting factor for planning reward based on search depth.")                           
-    parser.add_argument("--max_depth", default=-1,
+    parser.add_argument("--max_depth", default=5,
                         type=int, help="Maximal search death.")                                                   
 
     # Optimizer settings.
     parser.add_argument("--learning_rate", default=0.0002,
                         type=float, help="Learning rate for actor learne.")
-    parser.add_argument("--model_learning_rate", default=0.0002,
+    parser.add_argument("--model_learning_rate", default=0.0001,
                         type=float, help="Learning rate for model learner.")                        
     parser.add_argument("--grad_norm_clipping", default=600, type=float,
                         help="Global gradient norm clip for actor learner.")
@@ -256,21 +292,47 @@ def parse(args=None, override=True):
     parser.add_argument("--splay_actor_update_freq", default=1, type=int,
                         help="Actor update frequency for self-play process.")             
     parser.add_argument("--lmodel_model_update_freq", default=1, type=int,
-                        help="Model update frequency for model learner.")         
-    
+                        help="Model update frequency for model learner.")   
+    return parser      
+
+def parse(args=None, override=True):
+    parser = get_parser()    
     if args is None:
         flags = parser.parse_args()  
     else:
         flags = parser.parse_args(args)  
+    return process_flags(flags, override)
 
-    assert not (flags.duel_net and flags.perfect_model), "no need duel net if using perfect model"
+def process_flags(flags, override=True):
+    if flags.perfect_model:
+        if flags.duel_net:
+            print("Automatically disable duel net (perfect model).")
+            flags.duel_net = False
+        if flags.cur_cost > 0.:
+            print("Automatically disable curiosity (perfect model).")
+            flags.cur_cost = 0
+        if flags.model_img_loss_cost > 0:
+            print("Automatically setting  model_img_loss_cost = 0 (perfect model).")
+            flags.model_img_loss_cost = 0
+        if flags.model_sup_loss_cost > 0:
+            print("Automatically setting  model_sup_loss_cost = 0 (perfect model).")
+            flags.model_sup_loss_cost = 0
+        if flags.model_done_loss_cost > 0:
+            print("Automatically setting  model_done_loss_cost = 0 (perfect model).")
+            flags.model_done_loss_cost = 0
+    
     assert not (not flags.perfect_model and not flags.duel_net and flags.actor_see_type == 0), (
         "to see the frame, either use perfect model or duel net")
+    assert flags.actor_net_ver == 1, "only actor_net_ver 1 is supported"
 
     fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor"]    
     for f in fs:
         path = getattr(flags, f)
-        if path: setattr(flags, f, os.path.expanduser(path))
+        if path: 
+            path = os.path.abspath(os.path.expanduser(path))
+            if os.path.islink(path):
+                path = os.readlink(path)
+            setattr(flags, f, path)
             
     if flags.load_checkpoint and override:
         check_point_path = os.path.join(flags.load_checkpoint, "ckp_actor.tar")
@@ -282,6 +344,7 @@ def parse(args=None, override=True):
     if flags.xpid is None:
         flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
 
+    flags.__version__ = __version__ 
     return flags
 
 def tuple_map(x, f):
@@ -319,10 +382,10 @@ def construct_tuple(x, **kwargs):
 def get_git_revision_hash():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
 
-def decode_model_out(model_out, num_actions, reward_tran):
+def decode_model_out(model_out, num_actions, enc_type):
     idx1 = num_actions*5+5
     idx2 = num_actions*10+7
-    d = dec if reward_tran else lambda x: x
+    d = dec if enc_type != 0 else lambda x: x
     return {
         "root_action": model_out[0,:,:num_actions],
         "root_r": d(model_out[0,:,[num_actions]]),
