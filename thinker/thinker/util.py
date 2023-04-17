@@ -183,7 +183,7 @@ def get_parser():
     parser.add_argument("--frame_copy", action="store_true",
                         help="Whether to copy the last three frames in frame prediction") 
     parser.add_argument("--model_enc_type",  default=2, type=int, 
-                        type=int, help="Reward / value encoding type for the model; \
+                            help="Reward / value encoding type for the model; \
                             0 for no encoding, \
                             2 for unbiased vector encoding, \
                             3 for biased vector encoding")       
