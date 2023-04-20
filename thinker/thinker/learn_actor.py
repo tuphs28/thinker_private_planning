@@ -343,7 +343,7 @@ class ActorLearner():
                         self.flags.xpid, self.real_step, sps, tot_sps, 
                         queue_n, self.tot_eps, stats["rmean_episode_return"], 
                         stats["rmean_im_episode_return"],  stats["rmean_cur_episode_return"], total_loss)
-                    print_stats = ["max_rollout_depth", "entropy_loss", "reg_loss", "total_norm"]                    
+                    print_stats = ["max_rollout_depth", "entropy_loss", "reg_loss", "total_norm", "sat"]                    
                     for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
                     if self.flags.return_norm_type != -1:
                         print_str += " norm_diff (%.4f/%.4f/%.4f)" % (
@@ -610,20 +610,23 @@ class ActorLearner():
         self.real_step += cur_real_step
         self.tot_eps += torch.sum(train_actor_out.real_done).item()
 
+        sat = torch.mean(torch.max(torch.softmax(train_actor_out.policy_logits, dim=-1), dim=-1)[0]).item()
+
         stats = {"step": self.step,
-                    "real_step": self.real_step,
-                    "tot_eps": self.tot_eps,
-                    "rmean_episode_return": rmean_episode_return,
-                    "rmean_im_episode_return": rmean_im_episode_return, 
-                    "rmean_cur_episode_return": rmean_cur_episode_return,
-                    "episode_returns": episode_returns,  
-                    "episode_lens": episode_lens,
-                    "done_ids": done_ids,
-                    "cur_real_step": cur_real_step,
-                    "mean_plan_step": mean_plan_step,
-                    "max_rollout_depth": max_rollout_depth,
-                    "total_norm": total_norm
-                    }
+                "real_step": self.real_step,
+                "tot_eps": self.tot_eps,
+                "rmean_episode_return": rmean_episode_return,
+                "rmean_im_episode_return": rmean_im_episode_return, 
+                "rmean_cur_episode_return": rmean_cur_episode_return,
+                "episode_returns": episode_returns,  
+                "episode_lens": episode_lens,
+                "done_ids": done_ids,
+                "cur_real_step": cur_real_step,
+                "mean_plan_step": mean_plan_step,
+                "max_rollout_depth": max_rollout_depth,
+                "total_norm": total_norm,
+                "sat": sat,
+                }
 
         if losses is not None: 
             for k, v in losses.items(): stats[k] = v.item()  
