@@ -208,6 +208,8 @@ def get_parser():
                         type=float, help="Imagainary Entropy cost/multiplier.")         
     parser.add_argument("--im_cost", default=1,
                         type=float, help="Imaginary reward cost/multiplier. 0 for no imaginary reward.")   
+    parser.add_argument("--im_baseline_cost", default=0.5,
+                        type=float, help="Baseline cost/multiplier for imaginary reward.")   
     parser.add_argument("--disable_im_anneal", action="store_false", dest="im_cost_anneal",
                         help="Whether to anneal im_cost to zero.")       
     parser.add_argument("--reset_no_im_cost", action="store_true",

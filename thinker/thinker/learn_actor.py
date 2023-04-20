@@ -47,9 +47,9 @@ def compute_baseline_loss(new_actor_out,
         ) * c
     elif enc_type == 4:     
         baseline_enc = new_actor_out.baseline_enc[:, :, ind]
-        baseline_scale = actor_net.baseline_scale[ind]
-        advantages = baseline_enc - target_baseline / baseline_scale
-        loss = torch.sum(advantages ** 2) * c  
+        target_baseline_enc = (target_baseline - actor_net.baseline_beta[ind]) / actor_net.baseline_alpha[ind]
+        advantages = baseline_enc - target_baseline_enc
+        loss = torch.sum(advantages ** 2) * c
     return loss
 
 def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
@@ -125,20 +125,34 @@ def update_b_norm_stat(b_norm_stat, target_baseline):
     if b_norm_stat is None:
         buffer = FifoBuffer(100000, device=target_baseline.device)
     else:
-        buffer = b_norm_stat[2]
+        buffer = b_norm_stat[-1]
     buffer.push(target_baseline)
     lq = buffer.get_percentile(0.05)
     uq = buffer.get_percentile(0.95)
-    return (lq, uq, buffer)
+    mean = buffer.get_mean()
+    return (lq, uq, mean, buffer)
 
 @torch.no_grad()
-def update_baseline_scale(b_norm_stat, actor_net, n, norm_b):
-    old_scale = torch.clone(actor_net.baseline_scale[n])
-    new_scale = torch.clamp(b_norm_stat[1] - b_norm_stat[0], min=norm_b, max=None)
-    new_scale = old_scale * torch.clamp(new_scale / old_scale, min=0.9, max=1.1)
-    actor_net.baseline_scale[n] = new_scale
-    actor_net.baseline.weight.data[n, :] *= (old_scale / new_scale)
-    actor_net.baseline.bias.data[n] *= (old_scale / new_scale)
+def update_baseline_scale(b_norm_stat, actor_net, n, norm_b, adj, optimizer):
+    old_alpha = torch.clone(actor_net.baseline_alpha[n])
+    old_beta = torch.clone(actor_net.baseline_beta[n])
+    new_alpha = torch.clamp(b_norm_stat[1] - b_norm_stat[0], min=norm_b, max=None)
+    if adj:
+        new_alpha = old_alpha * torch.clamp(new_alpha / old_alpha, min=0.997, max=1.003)
+    new_beta = b_norm_stat[2]
+    actor_net.baseline_alpha[n] = new_alpha
+    actor_net.baseline_beta[n] = new_beta 
+    ratio = old_alpha / new_alpha
+    if adj or ratio < 1:
+        actor_net.baseline.weight.data[n, :] *= ratio
+        actor_net.baseline.bias.data[n] = (
+            ratio * actor_net.baseline.bias.data[n] +
+            (old_beta - new_beta) / new_alpha
+            )
+        optimizer.state[actor_net.baseline.weight]['exp_avg'][n, :] *= ratio
+        optimizer.state[actor_net.baseline.bias]['exp_avg'][n] *= ratio
+        optimizer.state[actor_net.baseline.weight]['exp_avg_sq'][n, :] *= (ratio**2)
+        optimizer.state[actor_net.baseline.bias]['exp_avg_sq'][n] *= (ratio**2)
 
 @ray.remote
 class ActorLearner():
@@ -299,11 +313,14 @@ class ActorLearner():
 
                 if self.flags.critic_enc_type == 4:
                     # update baseline_scale
-                    update_baseline_scale(self.b_norm_stat, self.actor_net, 0, self.flags.critic_norm_b)
+                    adj = self.real_step > 100000
+                    update_baseline_scale(self.b_norm_stat, self.actor_net, 0, self.flags.critic_norm_b, adj, self.optimizer)
                     if self.flags.im_cost > 0.:
-                        update_baseline_scale(self.b_im_norm_stat, self.actor_net, 1, self.flags.critic_norm_b)
+                        adj = self.real_step > self.flags.model_warm_up_n + 100000
+                        update_baseline_scale(self.b_im_norm_stat, self.actor_net, 1, self.flags.critic_norm_b, adj, self.optimizer)
                     if self.flags.cur_cost > 0. and self.real_step > self.flags.cur_warm_up_n:
-                        update_baseline_scale(self.b_cur_norm_stat, self.actor_net, 2, self.flags.critic_norm_b)
+                        adj = self.real_step > self.flags.cur_warm_up_n + 100000
+                        update_baseline_scale(self.b_cur_norm_stat, self.actor_net, 2, self.flags.critic_norm_b, adj, self.optimizer)
 
                 self.anneal_c = max(1 - self.real_step / (
                         self.flags.total_steps), 0)
@@ -334,6 +351,10 @@ class ActorLearner():
                     if self.flags.critic_enc_type == 4:
                         print_str += " b_norm_diff (%.4f/%.4f/%.4f)" % (
                             stats["b_norm_diff"], stats["b_im_norm_diff"], stats["b_cur_norm_diff"])
+                        print_str += " b_alpha (%.4f/%.4f/%.4f) b_beta (%.4f/%.4f/%.4f)" %(
+                            stats["b_alpha"], stats["b_im_alpha"], stats["b_cur_alpha"],
+                            stats["b_beta"], stats["b_im_beta"], stats["b_cur_beta"],
+                        )
 
                     self._logger.info(print_str)
                     start_time = timer()                    
@@ -426,6 +447,8 @@ class ActorLearner():
             c=self.flags.real_cost,
             enc_type=self.flags.critic_enc_type,
         )
+        if self.flags.critic_enc_type == 4:
+            baseline_loss = baseline_loss * self.actor_net.baseline_alpha[0] / self.norm_stat[2]
             
         # compute advantage w.r.t curiosity rewards
         if self.flags.cur_cost > 0. and self.real_step > self.flags.cur_warm_up_n:
@@ -467,7 +490,9 @@ class ActorLearner():
                 actor_net=self.actor_net,
                 c=self.flags.cur_cost if not self.flags.cur_cost_anneal else self.flags.cur_cost * self.anneal_c,
                 enc_type=self.flags.critic_enc_type,
-            )            
+            )       
+            if self.flags.critic_enc_type == 4:
+                cur_baseline_loss = cur_baseline_loss * self.actor_net.baseline_alpha[2] / self.cur_norm_stat[2]     
         else:
             cur_pg_loss = torch.zeros(1, device=self.device)
             cur_baseline_loss = torch.zeros(1, device=self.device)
@@ -508,7 +533,7 @@ class ActorLearner():
 
             advs = vtrace_returns.pg_advantages
             im_pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)   
-            im_baseline_loss = self.flags.baseline_cost * compute_baseline_loss(
+            im_baseline_loss = self.flags.im_baseline_cost * compute_baseline_loss(
                 new_actor_out=new_actor_out,
                 ind=1,            
                 target_baseline=vtrace_returns.vs,
@@ -516,6 +541,8 @@ class ActorLearner():
                 c=self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c,
                 enc_type=self.flags.critic_enc_type,
             )       
+            if self.flags.critic_enc_type == 4:
+                im_baseline_loss = im_baseline_loss * self.actor_net.baseline_alpha[1] / self.im_norm_stat[2]     
         else:
             im_pg_loss = torch.zeros(1, device=self.device)
             im_baseline_loss = torch.zeros(1, device=self.device)
@@ -618,7 +645,20 @@ class ActorLearner():
                 stats["b_im_norm_diff"] = (self.b_im_norm_stat[1] - self.b_im_norm_stat[0]).item()
             if self.b_cur_norm_stat is not None:
                 stats["b_cur_norm_diff"] = (self.b_cur_norm_stat[1] - self.b_cur_norm_stat[0]).item()  
-
+            stats["b_alpha"] = self.actor_net.baseline_alpha[0].item()
+            stats["b_beta"] = self.actor_net.baseline_beta[0].item()
+            if self.flags.im_cost > 0:
+                stats["b_im_alpha"] = self.actor_net.baseline_alpha[1].item()
+                stats["b_im_beta"] = self.actor_net.baseline_beta[1].item()
+            else:
+                stats["b_im_alpha"] = 0.
+                stats["b_im_beta"] = 0.
+            if self.flags.cur_cost > 0:
+                stats["b_cur_alpha"] = self.actor_net.baseline_alpha[2].item()
+                stats["b_cur_beta"] = self.actor_net.baseline_beta[2].item()
+            else:
+                stats["b_cur_alpha"] = 0.
+                stats["b_cur_beta"] = 0.
         return stats
 
     def save_checkpoint(self):

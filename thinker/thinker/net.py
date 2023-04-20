@@ -299,7 +299,8 @@ class ActorNetBase(nn.Module):
             self.rv_tran = RVTran(enc_type = self.enc_type)
         elif self.enc_type == 4:
             self.baseline = nn.Linear(last_out_size, self.num_rewards)  
-            self.register_buffer("baseline_scale", torch.ones(self.num_rewards))
+            self.register_buffer("baseline_alpha", torch.ones(self.num_rewards))
+            self.register_buffer("baseline_beta", torch.zeros(self.num_rewards))
             self.rv_tran = None
 
         if flags.critic_zero_init:                
@@ -399,7 +400,7 @@ class ActorNetBase(nn.Module):
             baseline_enc = baseline_enc_logit
         elif self.enc_type == 4: 
             baseline_enc = self.baseline(x)
-            baseline = baseline_enc * self.baseline_scale
+            baseline = baseline_enc * self.baseline_alpha + self.baseline_beta
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
                     1e-3 * torch.sum(im_policy_logits**2, dim=-1) / 2 + 

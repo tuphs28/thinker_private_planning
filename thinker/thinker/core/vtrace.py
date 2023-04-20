@@ -127,23 +127,24 @@ def from_importance_weights(
                 else:
                     norm_stat = (norm_stat[0]*flags.return_norm_decay + new_lq*(1-flags.return_norm_decay),
                                     norm_stat[1]*flags.return_norm_decay + new_uq*(1-flags.return_norm_decay),)
+                norm_factor = torch.clamp(norm_stat[1] - norm_stat[0], min=flags.return_norm_b)               
+                norm_stat = norm_stat + (norm_factor,)
             else:
                 if norm_stat is None:
                     buffer = FifoBuffer(flags.return_norm_buffer_n, device=target_values.device)
                 else:
-                    buffer = norm_stat[2]
+                    buffer = norm_stat[-1]
                 buffer.push(norm_v)
                 if not flags.return_norm_use_std:
                     lq = buffer.get_percentile(1 - flags.return_norm_per)
                     uq = buffer.get_percentile(flags.return_norm_per)
                 else:
                     lq = 0.
-                    uq = torch.sqrt(buffer.get_variance())
-                norm_stat = (lq, uq, buffer)
-
-            norm_factor = torch.max(norm_stat[1] - norm_stat[0], torch.tensor([
-                flags.return_norm_b], device=target_values.device))               
-
+                    uq = torch.sqrt(buffer.get_variance())                
+                norm_stat = (lq, uq,)          
+                norm_factor = torch.clamp(norm_stat[1] - norm_stat[0], min=flags.return_norm_b)               
+                norm_stat = norm_stat + (norm_factor, buffer)
+        
         if enc_type in [0, 4] or not flags.return_norm_type == -1:
             pg_advantages = clipped_pg_rhos * (target_values - values)
             if not flags.return_norm_type == -1:
@@ -197,3 +198,12 @@ class FifoBuffer:
         num_valid_elements = min(self.num_elements, self.size)
         if num_valid_elements == 0: return None
         return torch.mean(torch.square(self.buffer[:num_valid_elements]))
+    
+    def get_mean(self):
+        num_valid_elements = min(self.num_elements, self.size)
+        if num_valid_elements == 0: return None
+        return torch.mean(self.buffer[:num_valid_elements])
+    
+    def full(self):
+        return self.num_elements >= self.size
+

@@ -1,4 +1,5 @@
 import os
+import cv2
 import argparse
 import numpy as np
 import copy
@@ -51,7 +52,8 @@ def plot_policies(logits, labels, action_meanings, ax=None, title="Real policy p
     for n, (prob, label) in enumerate(zip(probs, labels)):
         ax.bar(xs + 0.1 * (n-len(logits) // 2), prob, width = 0.1, label=label)
     ax.xaxis.set_major_locator(mticker.FixedLocator(np.arange(len(probs[0]))))
-    ax.set_xticklabels(action_meanings)
+    ax.set_xticklabels(action_meanings, rotation=90)
+    plt.subplots_adjust(bottom=0.2)    
     ax.set_ylim(0, 1)        
     ax.legend()        
 
@@ -96,11 +98,11 @@ def plot_im_policies(im_policy_logits, reset_policy_logits,
         c = ax.bar(xs + 0.8 * (i / num_actions), full_prob[:,i], width = 0.8 / (num_actions), label=labels[i])  
         color = c.patches[0].get_facecolor()
         color = color[:3] + (color[3] * 0.5,)
-        ax.bar(xs + 0.8 * (i / num_actions), full_action[:,i], width = 0.8 / (num_actions), color=color)
-        
+        ax.bar(xs + 0.8 * (i / num_actions), full_action[:,i], width = 0.8 / (num_actions), color=color)   
     ax.legend()
     ax.set_ylim(0, 1)   
     ax.set_title("Imagainary policy prob")    
+
 
 def plot_qn_sa(q_s_a, n_s_a, action_meanings, max_q_s_a=None, ax=None):
     if ax is None: fig, ax = plt.subplots()
@@ -113,7 +115,8 @@ def plot_qn_sa(q_s_a, n_s_a, action_meanings, max_q_s_a=None, ax=None):
     ax_n.bar(xs + (0.3 if max_q_s_a is not None else 0.), 
              n_s_a.cpu(), bottom=0, color = 'b', width = 0.3, label="n_s_a")
     ax.xaxis.set_major_locator(mticker.FixedLocator(np.arange(len(q_s_a))))
-    ax.set_xticklabels(action_meanings)    
+    ax.set_xticklabels(action_meanings, rotation=90)   
+    plt.subplots_adjust(bottom=0.2) 
     ax.legend(loc="lower left")   
     ax_n.legend(loc="lower right") 
     ax.set_title("q_s_a and n_s_a")    
@@ -207,7 +210,8 @@ def save_concatenated_image(buf1, buf2, strs, output_path, height=2500, width=30
 
     # Add the long string below the second image
     draw = ImageDraw.Draw(result)
-    font = ImageFont.truetype("arial.ttf", 34)
+    font_path = os.path.join(cv2.__path__[0],'qt','fonts','DejaVuSans.ttf')
+    font = ImageFont.truetype(font_path, 34)
 
     y = img1.height + img2.height + 10  # Leave some space between the second image and the text
     font_box = font.getbbox("A")  # Get the height of a typical line of text
@@ -350,7 +354,7 @@ def visualize(check_point_path, output_path, model_path="", plot=False, saveimg=
 
         # visualize when a real step is made
         if (saveimg or plot) and env_out.cur_t[0,0] == 0:
-            fig, axs = plt.subplots(1, 5, figsize=(40,8))  
+            fig, axs = plt.subplots(1, 5, figsize=(50,10))  
 
             for k in im_list: 
                 if im_dict[k][0] is not None:

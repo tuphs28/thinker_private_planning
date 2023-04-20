@@ -16,9 +16,6 @@ if m: output_path = os.path.join(output_path, m[0])
 output_path = os.path.join(output_path, args.run)
 
 if not args.skip_download:
-    # Initialize W&B run and project
-    wandb.init(project=args.project, id=args.run)
-
     # Download all files from the run
     run = wandb.Api().run(f"{args.project}/{args.run}")
     for file in run.files():
