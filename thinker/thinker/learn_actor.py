@@ -610,7 +610,8 @@ class ActorLearner():
         self.real_step += cur_real_step
         self.tot_eps += torch.sum(train_actor_out.real_done).item()
 
-        sat = torch.mean(torch.max(torch.softmax(train_actor_out.policy_logits, dim=-1), dim=-1)[0]).item()
+        sat = torch.mean(torch.max(torch.softmax(train_actor_out.policy_logits[train_actor_out.cur_t == 0], 
+                                                 dim=-1), dim=-1)[0]).item()
 
         stats = {"step": self.step,
                 "real_step": self.real_step,
