@@ -45,7 +45,10 @@ def gen_video_wandb(video_stats):
 class SLogWorker():
     def __init__(self, flags):
         self.flags = flags
-        self.check_point_path = "%s/%s" % (flags.savedir, flags.xpid)
+        if flags.load_checkpoint:
+            self.check_point_path = flags.load_checkpoint
+        else:
+            self.check_point_path = "%s/%s" % (flags.savedir, flags.xpid)
         self.actor_log_path = os.path.join(self.check_point_path, 'logs.csv')
         self.model_log_path = os.path.join(self.check_point_path, 'logs_model.csv')
         self.actor_net_path = os.path.join(self.check_point_path, 'ckp_actor.tar')
