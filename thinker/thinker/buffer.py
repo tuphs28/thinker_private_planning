@@ -6,6 +6,22 @@ import thinker.util as util
 
 AB_CAN_WRITE, AB_FULL, AB_FINISH = 0, 1, 2
 
+def custom_choice(tran_n, batch_size, p, replace=False):
+    
+    if np.any(np.isnan(p)):
+        p[np.isnan(p)] = 0.01
+        p /= p.sum()
+
+    non_zero_count = np.count_nonzero(p)
+    if non_zero_count < batch_size and not replace:
+        # Set zero probabilities to 0.01
+        zero_indices = np.where(p == 0)[0]
+        p[zero_indices] = 0.01
+        # Scale the remaining probabilities
+        p /= p.sum()
+    
+    return np.random.choice(tran_n, batch_size, p=p, replace=replace)
+
 @ray.remote
 class ActorBuffer():
     def __init__(self, batch_size=32):
@@ -138,7 +154,7 @@ class ModelBuffer():
         tran_n = len(self.priorities)
         probs = self.priorities ** self.alpha
         probs /= probs.sum()
-        flat_inds = np.random.choice(tran_n, self.batch_size, p=probs, replace=False)
+        flat_inds = custom_choice(tran_n, self.batch_size, p=probs, replace=False)
 
         inds = np.unravel_index(flat_inds, (buffer_n, self.t))
 

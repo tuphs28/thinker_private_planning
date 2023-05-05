@@ -306,7 +306,7 @@ cdef class cVecFullModelWrapper():
         self.enc_type = flags.model_enc_type
         self.value_prefix = flags.value_prefix
         self.actor_see_type = flags.actor_see_type  
-        self.actor_see_double_encode = flags.actor_see_double_encode
+        self.actor_see_double_encode = False
         self.pred_done = flags.model_done_loss_cost > 0.
         self.cur_enable = flags.cur_cost > 0.
         self.cur_reward_cost = flags.cur_reward_cost
@@ -848,7 +848,7 @@ cdef class cVecModelWrapper():
         self.im_enable = flags.im_cost > 0.
         self.enc_type = flags.model_enc_type
         self.actor_see_type = flags.actor_see_type      
-        self.actor_see_double_encode = flags.actor_see_double_encode  
+        self.actor_see_double_encode = False
         self.env_n = env_n
         self.obs_n = 9 + self.num_actions * 10 + self.rec_t
         self.model_out_shape = (self.obs_n, 1, 1)

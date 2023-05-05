@@ -9,22 +9,29 @@ import thinker.util as util
 from thinker.net import ActorNet, ModelNet
 from thinker.env import Environment
 
-def gen_video_wandb(video_stats):
+def gen_video_wandb(video_stats, grayscale):
     import cv2
     # Generate video
     imgs = []
     hw = video_stats["real_imgs"][0].shape[1]
+    copy_n = 1 if grayscale else 3
 
     for i in range(len(video_stats["real_imgs"])):
-        img = np.zeros(shape=(3, hw, hw*2),dtype=np.uint8)
+        img = np.zeros(shape=(copy_n, hw, hw*2),dtype=np.uint8)
         real_img = np.copy(video_stats["real_imgs"][i])
         im_img = np.copy(video_stats["im_imgs"][i])
-
+        
         if video_stats["status"][i] == 1: 
-            im_img[0, :, :] = 255 * 0.3 + im_img[0, :, :] * 0.7
-            im_img[1, :, :] = 255 * 0.3 + im_img[1, :, :] * 0.7
+            if grayscale:
+                im_img[0, :, :] = im_img[0, :, :] * 0.7
+            else:
+                im_img[0, :, :] = 255 * 0.3 + im_img[0, :, :] * 0.7
+                im_img[1, :, :] = 255 * 0.3 + im_img[1, :, :] * 0.7
         elif video_stats["status"][i] == 0: 
-            im_img[2, :, :] = 255 * 0.3 + im_img[2, :, :] * 0.7
+            if grayscale:
+                im_img[0, :, :] = 255 * 0.7 + im_img[0, :, :] * 0.3
+            else:
+                im_img[2, :, :] = 255 * 0.3 + im_img[2, :, :] * 0.7
 
         img[:, :, :hw] = real_img
         img[:, :, hw:] = im_img
@@ -37,7 +44,8 @@ def gen_video_wandb(video_stats):
         new_height, new_width = height * enlarge_fcator, width * enlarge_fcator
         img = np.transpose(img, (1, 2, 0))
         resized_img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-        resized_img = np.transpose(resized_img, (2, 0, 1))
+        if not grayscale:
+            resized_img = np.transpose(resized_img, (2, 0, 1))
         new_imgs.append(resized_img)
 
     return np.array(new_imgs)
@@ -64,10 +72,13 @@ class SLogWorker():
         self.device = torch.device('cpu')
         self._logger = util.logger()
         self._logger.info("Initalizing log worker")        
+        self.log_model = flags.train_model and not self.flags.disable_model 
         self.log_freq = 10 # log frequency (in second)        
         self.wlogger = util.Wandb(flags)
         self.timer = timeit.default_timer
         self.video = None
+        self.grayscale = flags.grayscale
+        self.env_init = False
 
         if self.vis_policy:
             self.env = Environment(flags, model_wrap=True, debug=True, device=self.device)
@@ -148,13 +159,14 @@ class SLogWorker():
                                                         self.actor_fields, 
                                                         self.last_actor_tick,
                                                         'actor')
-            model_stat, self.model_fields, self.last_model_tick = self.read_stat(
+            if self.log_model:
+                model_stat, self.model_fields, self.last_model_tick = self.read_stat(
                                                         self.model_log_path, 
                                                         self.model_fields, 
                                                         self.last_model_tick,
                                                         'model')                
             stat = {}
-            if model_stat is not None:             
+            if self.log_model and model_stat is not None:             
                 stat.update(model_stat)
 
             if actor_stat is not None:             
@@ -192,20 +204,26 @@ class SLogWorker():
             self._logger.error(f"Steps {self.real_step}: Error loading checkpoint: {e}")
             return None
 
-        env_out = self.env.initial(self.model_net)
-        actor_state = self.actor_net.initial_state(batch_size=1, device=self.device)
+        if not self.env_init:
+            env_out = self.env.initial(self.model_net)
+            self.actor_state = self.actor_net.initial_state(batch_size=1, device=self.device)
+        else:
+            env_out = self.last_env_out
         
         step = 0
         record_steps = self.flags.policy_vis_length * self.flags.rec_t
-        max_steps = record_steps + np.random.randint(100) * self.flags.rec_t # randomly skip the first 100 real steps
+        #max_steps = record_step0s + np.random.randint(100) * self.flags.rec_t # randomly skip the first 100 real steps
+        max_steps = record_steps
         start_time = self.timer()        
 
         video_stats = {"real_imgs": [], "im_imgs": [], "status": []}
         start_record = False
 
+        copy_n = 1 if self.grayscale else 3
+
         while step < max_steps:
             step += 1
-            actor_out, actor_state = self.actor_net(env_out, actor_state)
+            actor_out, self.actor_state = self.actor_net(env_out, self.actor_state)
             action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
             action = torch.cat(action, dim=-1).unsqueeze(0)
             env_out = self.env.step(action, self.model_net)
@@ -221,15 +239,15 @@ class SLogWorker():
                     video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
                     video_stats["status"].append(1)
                 if env_out.cur_t[0, 0] == 0:
-                    video_stats["real_imgs"].append(gym_env_out[0, 0, -3:].cpu().numpy())
+                    video_stats["real_imgs"].append(gym_env_out[0, 0, -copy_n:].cpu().numpy())
                     video_stats["status"].append(0)
                 else:
                     video_stats["real_imgs"].append(video_stats["real_imgs"][-1])
                     video_stats["status"].append(2)
-                video_stats["im_imgs"].append(gym_env_out[0, 0, -3:].cpu().numpy())
+                video_stats["im_imgs"].append(gym_env_out[0, 0, -copy_n:].cpu().numpy())
 
             if step >= max_steps - record_steps and env_out.cur_t.item() == 0 and not start_record:
-                video_stats["real_imgs"].append(env_out.gym_env_out[0, 0, -3:].cpu().numpy())
+                video_stats["real_imgs"].append(env_out.gym_env_out[0, 0, -copy_n:].cpu().numpy())
                 video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
                 video_stats["status"].append(0)  # 0 for real step, 1 for reset, 2 for normal
                 start_record = True
@@ -238,9 +256,10 @@ class SLogWorker():
                 start_time = self.timer()
                 self.log_stat()
 
-        video = gen_video_wandb(video_stats)
-        self.video = {f"policy": self.wlogger.wandb.Video(video, fps=5, format="gif")}
-
+        self.last_env_out = env_out
+        video = gen_video_wandb(video_stats, self.grayscale)
+        self.video = {f"policy": self.wlogger.wandb.Video(video, fps=5, format="gif")}        
+        self.env_init = True
 
     def last_non_empty_line(self, file_path, delimiter='\n'):
         # A safe version of reading last line

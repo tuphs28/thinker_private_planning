@@ -8,6 +8,7 @@ past/
 tmp/
 test/
 *.pyc
+*.pyd
 *.so
 csokoban/build
 csokoban/gym_csokoban.egg-info

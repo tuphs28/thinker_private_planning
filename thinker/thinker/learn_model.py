@@ -11,6 +11,7 @@ from thinker.core.file_writer import FileWriter
 from thinker.net import ModelNet
 from thinker.env import Environment
 import thinker.util as util
+import gc
 
 def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None):
     k, b, *_ = logits.shape
@@ -86,7 +87,7 @@ class SModelLearner():
 
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_model.tar")
 
-        if not flags.self_play_merge:
+        if not flags.merge_play_model:
             # set shared buffer's weights
             self.param_buffer.set_data.remote("model_net", self.model_net.get_weights())
 
@@ -111,7 +112,7 @@ class SModelLearner():
         self.sps_buffer_n = 0
         self.ckp_start_time = int(time.strftime("%M")) // 10         
         self.n = 0   
-        self.data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
+        #self.data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
 
     def learn_data(self):
         try:
@@ -125,9 +126,9 @@ class SModelLearner():
                 beta = self.flags.priority_beta * (1 - c) + 1. * c
 
                 # get data remotely    
-                while (True):                    
-                    data = ray.get(self.data_ptr)
-                    self.data_ptr = self.model_buffer.read.remote(beta)
+                while (True):                                        
+                    data_ptr = self.model_buffer.read.remote(beta)                                  
+                    data = ray.get(data_ptr)      
                     if data is not None: break  
                     time.sleep(0.01)
                     if self.timer() - self.start_time > 5:
@@ -142,6 +143,9 @@ class SModelLearner():
                                   all_returns=all_returns,
                                   timing=self.timing if self.time else None, 
                                   print_timing=True)
+                del data
+                ray.internal.free(data_ptr)   
+                gc.collect()
                 
                 # update shared buffer's weights
                 if self.n % self.flags.lmodel_model_update_freq == 0:
@@ -187,7 +191,7 @@ class SModelLearner():
             return True       
         
     def s_learn_data(self, timing = None):
-        # variant of learn_data that is called by self_play in self_play_merge mode
+        # variant of learn_data that is called by self_play in merge_play_model mode
 
         new_psteps = ray.get(self.model_buffer.get_processed_n.remote())
         if new_psteps == "FINISH": return
@@ -211,19 +215,23 @@ class SModelLearner():
             self.consume_data(data, 
                               all_returns=None,
                               timing=timing, 
-                              print_timing=False)
+                              print_timing=False)            
             if self.step_per_transition() > self.flags.model_max_step_per_transition: return            
 
     def consume_data(self, data, timing=None, print_timing=False, all_returns=None):
         self.n += 1   
         train_model_out, is_weights, inds, new_psteps = data            
-        self.real_step += int(new_psteps) - self.last_psteps            
-        self.last_psteps = new_psteps
-
-        # move the data to the process device
+        
+        # move the data to the process device to free memory
         train_model_out = util.tuple_map(train_model_out, lambda x:torch.tensor(x,device=self.device))
         is_weights = torch.tensor(is_weights, dtype=torch.float32, device=self.device)
+        inds = np.copy(inds)
+        new_psteps = int(new_psteps)         
+        del data
 
+        self.real_step += new_psteps - self.last_psteps            
+        self.last_psteps = new_psteps
+        
         target = self.prepare_data(train_model_out)                
         if timing is not None: timing.time("convert_data")          
 
@@ -352,7 +360,6 @@ class SModelLearner():
             pred_enc = self.model_net.pred_net.encoder(out.xs, 
                     action, flatten=True)
             diff = target_enc - pred_enc
-
         img_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
         img_loss = img_loss * target["done_mask"][1:]
         img_loss = torch.sum(img_loss, dim=0)

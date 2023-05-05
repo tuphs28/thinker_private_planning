@@ -12,25 +12,26 @@ enum class action : unsigned char { noop, up, down, left, right };
 void read_bmp(const string &img_dir, const string &img_name, vector<unsigned char> &data);
 char roomStatus_to_char(const roomStatus r);
 
-class Sokoban {
+class Sokoban {	
 public:
 	Sokoban() = default;
-	Sokoban(bool s, string l, string i, unsigned int seed = 0) :
+	Sokoban(bool small, string level_dir, string img_dir, int level_num, unsigned int seed = 0) :
 		player_pos_x(0),
 		player_pos_y(0),
 		box_left(0),
 		step_n(0),		
-		img_x(s ? small_img_x : large_img_x),
-		img_y(s ? small_img_x : large_img_x),
-		obs_x((s ? small_img_x : large_img_x)* room_x),
-		obs_y((s ? small_img_x : large_img_x)* room_y),
-		obs_n((s ? small_img_x * small_img_x : large_img_x * large_img_x)* room_x* room_y * 3),
-		level_dir(l),
-		img_dir(i),
+		img_x(small ? small_img_x : large_img_x),
+		img_y(small ? small_img_x : large_img_x),
+		obs_x((small ? small_img_x : large_img_x)* room_x),
+		obs_y((small ? small_img_x : large_img_x)* room_y),
+		obs_n((small ? small_img_x * small_img_x : large_img_x * large_img_x)* room_x* room_y * 3),
+		level_dir(level_dir),
+		img_dir(img_dir),
 		done(false),
-		small(s),
+		small(small),
 		room_status(),
 		spirites(),
+		level_num(level_num),
 		seed(seed){
 		read_spirits();
 	};
@@ -55,8 +56,10 @@ private:
 	void render(unsigned char* obs);
 	int player_pos_x, player_pos_y, box_left;
 	bool done, small;
+	int level_num;
 	string level_dir, img_dir;
-	default_random_engine defEngine;
+	//default_random_engine defEngine;
+	std::mt19937 defEngine;
 	roomStatus room_status[room_y][room_x];
 	vector<unsigned char> spirites[7];
 };

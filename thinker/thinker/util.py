@@ -1,4 +1,4 @@
-__version__ = '0.63'
+__version__ = '0.7'
 
 import collections
 import time
@@ -25,18 +25,24 @@ def get_parser():
                         help="Whether to use wandb logging")
     parser.add_argument("--wandb_ckp_freq", type=int, default=500000,
                         help="Checkpoint frequency of wandb (in real steps) (-1 for not logging).")  
-    parser.add_argument("--policy_vis_freq", type=int, default=500000,
+    parser.add_argument("--policy_vis_freq", type=int, default=2500000,
                         help="Visualization frequency of wandb (in real steps) (-1 for not logging).")    
     parser.add_argument("--policy_vis_length", type=int, default=20,
                         help="Length of visualization (in real steps).")  
 
     # Environment settings
-    parser.add_argument("--env", type=str, default="cSokoban-v0",
+    parser.add_argument("--env", type=str, default="QbertNoFrameskip-v4",
                         help="Gym environment.")
     parser.add_argument("--cwrapper", action="store_true",
                         help="Whether to use C++ version of model wrapper")                                                
-    parser.add_argument("--reward_clipping", default=-1, type=float, 
-                       help="Reward clipping.")                      
+    parser.add_argument("--reward_clipping", default=1, type=float, 
+                       help="Reward clipping.")             
+    parser.add_argument("--grayscale", action="store_true",
+                       help="Grayscale or not.")             
+    parser.add_argument("--frame_wh", default=96, type=int, 
+                       help="Default wrapping size.")    
+    parser.add_argument("--base_seed", default=1, type=int, 
+                        help="Base seed of environment.")     
 
     # Resources settings.
     parser.add_argument("--disable_auto_res", action="store_true",
@@ -59,10 +65,18 @@ def get_parser():
                         help="Number of self-play actor (cpu)")
     parser.add_argument("--cpu_num_p_actors", default=2, type=int, 
                         help="Number of env per self-play actor (cpu)")                          
-    parser.add_argument("--self_play_merge", action="store_true",
+    parser.add_argument("--merge_play_model", action="store_true",
                         help="Whether to merge self-play and learn_model processes")      
+    parser.add_argument("--merge_play_actor", action="store_true",
+                        help="Whether to merge self-play and learn_actor processes")    
     parser.add_argument("--profile", action="store_true",
                         help="Whether to do profiling")   
+    parser.add_argument("--ray_mem", default=32, type=float, 
+                        help="Memory allocated to ray object store in GB.")           
+    parser.add_argument("--ray_cpu", default=-1, type=int, 
+                        help="Manually allocate number of cpu for ray.")  
+    parser.add_argument("--ray_gpu", default=-1, type=int, 
+                        help="Manually allocate number of gpu for ray.")      
     
     # Preload settings.
     parser.add_argument("--load_checkpoint", default="",
@@ -79,30 +93,22 @@ def get_parser():
                         help="Disable training of actor.")   
     parser.add_argument("--total_steps", default=50000000, type=int, 
                         help="Total environment steps to train for.")
-    parser.add_argument("--batch_size", default=32, type=int, 
+    parser.add_argument("--batch_size", default=16, type=int, 
                         help="Actor learner batch size.")
-    parser.add_argument("--unroll_length", default=99, type=int, 
-                        help="The unroll length (time dimension).")
-    parser.add_argument("--actor_warm_up_n", default=0, type=int, 
-                        help="Number of transition accumulated before actor start learning.")      
-    parser.add_argument("--return_norm_type", default=1, type=int, 
+    parser.add_argument("--unroll_length", default=401, type=int, 
+                        help="The unroll length (time dimension).")     
+    parser.add_argument("--return_norm_type", default=-1, type=int, 
                         help="Return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization")           
     parser.add_argument("--return_norm_b", default=1, type=float, 
-                        help="Minimum normalization coef")  
-    parser.add_argument("--return_norm_decay", default=0.99, type=float, 
-                        help="Return normalization decay rate")     
-    parser.add_argument("--return_norm_per", default=0.95, type=float, 
-                        help="Percentile used in return normalization")                       
-    parser.add_argument("--return_norm_buffer_n", default=100000, type=int, 
-                        help="Normalization buffer; only used when it is larger than 0.") 
-    parser.add_argument("--return_norm_use_std", action="store_true",
-                        help="Use std instead of percentile in return norm.")                       
+                        help="Minimum normalization coef")                                      
     parser.add_argument("--disable_cuda", action="store_true",
                         help="Disable CUDA.")
 
     # Model Training settings. 
     parser.add_argument("--disable_train_model", action="store_false", dest="train_model",
                         help="Disable training of model.")
+    parser.add_argument("--disable_model", action="store_true", 
+                        help="Disable model.")
     parser.add_argument("--model_batch_size", default=128, type=int, 
                         help="Model learner batch size.")                                             
     parser.add_argument("--model_unroll_length", default=50, type=int, 
@@ -127,48 +133,42 @@ def get_parser():
                         help="Maximum number of model learning step on one transition")                                                 
                             
   
-    # Actor architecture settings
-    parser.add_argument("--actor_net_ver", default=1, type=int, 
-                        help="Version of actor net.")    
+    # Actor architecture settings       
     parser.add_argument("--tran_dim", default=128, type=int, 
                         help="Size of transformer hidden dim.")
     parser.add_argument("--tran_mem_n", default=40, type=int, 
                         help="Size of transformer memory.")
-    parser.add_argument("--tran_layer_n", default=4, type=int,
+    parser.add_argument("--tran_layer_n", default=3, type=int,
                         help="Number of transformer layer.")
     parser.add_argument("--tran_t", default=1, type=int, 
                         help="Number of recurrent step for transformer.")   
     parser.add_argument("--tran_lstm_no_attn", action="store_true",
                         help="Whether to disable attention in LSTM-transformer.")
+    parser.add_argument("--disable_mem", action="store_true",
+                        help="Whether to disable memory for the actor.")    
     parser.add_argument("--tran_attn_b", default=5,
                         type=float, help="Bias attention for current position.")        
-    parser.add_argument("--actor_see_type", default=2, type=int,
-                        help="What actor sees from model: -1 for nothing, 0. for predicted / true frame, 1. for z, 2. for h.")      
-    parser.add_argument("--actor_see_double_encode",  action="store_true",
-                        help="Whether to see double encoded state (need to be eanabled with actor_see_encode)")        
-    parser.add_argument("--actor_drc", action="store_true",
-                        help="Whether to use drc in encoding state")    
-    parser.add_argument("--actor_encode_concat_type",  default=0,
-                        type=int, help="Type of concating the encoding to model's output.")          
+    parser.add_argument("--actor_see_type", default=3, type=int,
+                        help="What actor sees from model: \
+                            -1 for nothing, \
+                            0 for predicted / true frame, \
+                            1 for predictor's z, \
+                            2 for predictor's h, \
+                            3 for model's h + predictor's h")             
     
     # Critic architecture settings
     parser.add_argument("--critic_zero_init", action="store_true", dest="critic_zero_init",
                         help="Zero initialisation for the critic's output")      
-    parser.add_argument("--critic_enc_type",  default=4,
+    parser.add_argument("--critic_enc_type",  default=0,
                         type=int, help="Reward / value encoding type for the critic; \
                             0 for no encoding, \
                             1 for scalar encoding, \
                             2 for unbiased vector encoding, \
-                            3 for biased vector encoding \
-                            4 for moving scalar multiplication")      
-    parser.add_argument("--critic_norm_b", default=1, type=float, 
-                        help="Minimum normalization coef for critic; only used when critic_enc_type in [4, 5]") 
+                            3 for biased vector encoding")      
     
 
-    # Model architecure settings
-    parser.add_argument("--model_type_nn", default=0,
-                        type=int, help="Model type.")          
-    parser.add_argument("--model_size_nn", default=1,
+    # Model architecure settings    
+    parser.add_argument("--model_size_nn", default=2,
                         type=int, help="Model size multipler.")      
     parser.add_argument("--model_downscale_c", default=2.,
                         type=float, help="Coefficient for downscaling number of channels")      
@@ -180,9 +180,9 @@ def get_parser():
                         help="Whether to use value prefix in model")         
     parser.add_argument("--disable_duel_net", action="store_false", dest="duel_net",
                         help="Whether to use duel net as model")            
-    parser.add_argument("--frame_copy", action="store_true",
+    parser.add_argument("--disable_frame_copy", action="store_false", dest="frame_copy",
                         help="Whether to copy the last three frames in frame prediction") 
-    parser.add_argument("--model_enc_type",  default=2, type=int, 
+    parser.add_argument("--model_enc_type",  default=0, type=int, 
                             help="Reward / value encoding type for the model; \
                             0 for no encoding, \
                             2 for unbiased vector encoding, \
@@ -191,10 +191,8 @@ def get_parser():
     
     # Actor loss settings
     # Real reward setting
-    parser.add_argument("--entropy_cost", default=0.0003,
-                        type=float, help="Entropy cost/multiplier.")
-    parser.add_argument("--entropy_type", default=1,
-                        type=int, help="Entropy mask type; 0 for no masking; 1 for masking.")      
+    parser.add_argument("--entropy_cost", default=0.001,
+                        type=float, help="Entropy cost/multiplier.")     
     parser.add_argument("--baseline_cost", default=0.5,
                         type=float, help="Baseline cost/multiplier.")
     parser.add_argument("--reg_cost", default=0.001,
@@ -204,7 +202,7 @@ def get_parser():
     parser.add_argument("--real_im_cost", default=1,
                         type=float, help="Real reward - imagainary action cost/multiplier.")          
     # Planning reward setting
-    parser.add_argument("--im_entropy_cost", default=0.0003,
+    parser.add_argument("--im_entropy_cost", default=0.00005,
                         type=float, help="Imagainary Entropy cost/multiplier.")         
     parser.add_argument("--im_cost", default=1,
                         type=float, help="Imaginary reward cost/multiplier. 0 for no imaginary reward.")   
@@ -229,13 +227,11 @@ def get_parser():
                         help="Whether to anneal cur_cost to zero.")
     parser.add_argument("--cur_done_gate", action="store_true", 
                         help="Whether to give no curisotiy reward when done.")
-    parser.add_argument("--only_cur", action="store_true", 
-                        help="Let's replace agents' real reward with curiosity reward.")
     parser.add_argument("--cur_warm_up_n",  default=1000000,
                         type=int, help="The real step that begins giving curiosity reward.")
          
     # Other reward-related settings        
-    parser.add_argument("--discounting", default=0.97,
+    parser.add_argument("--discounting", default=0.99,
                         type=float, help="Discounting factor.")
     parser.add_argument("--lamb", default=1,
                         type=float, help="Lambda when computing trace.")
@@ -279,11 +275,13 @@ def get_parser():
                         type=int, help="Maximal search death.")                                                   
 
     # Optimizer settings.
-    parser.add_argument("--learning_rate", default=0.0002,
+    parser.add_argument("--learning_rate", default=0.0006,
                         type=float, help="Learning rate for actor learne.")
     parser.add_argument("--model_learning_rate", default=0.0001,
-                        type=float, help="Learning rate for model learner.")                        
-    parser.add_argument("--grad_norm_clipping", default=600, type=float,
+                        type=float, help="Learning rate for model learner.")    
+    parser.add_argument("--use_rms", action="store_true",
+                        help="Whether to use rms prop instead.")                      
+    parser.add_argument("--grad_norm_clipping", default=1200, type=float,
                         help="Global gradient norm clip for actor learner.")
     parser.add_argument("--model_grad_norm_clipping", default=0, type=float,
                         help="Global gradient norm clip for model learner.") 
@@ -322,10 +320,42 @@ def process_flags(flags, override=True):
         if flags.model_done_loss_cost > 0:
             print("Automatically setting  model_done_loss_cost = 0 (perfect model).")
             flags.model_done_loss_cost = 0
+
+    if flags.disable_model:
+        if flags.rec_t > 1:
+            print("Automatically setting rec_t = 1 (disable model).")
+            flags.rec_t = 1
+        if flags.train_model:
+            print("Automatically disable training model (disable model).")
+            flags.train_model = False
+        if flags.im_cost > 0:
+            print("Automatically setting im_cost = 0 (disable model).")
+            flags.im_cost = 0
+        if flags.cur_cost > 0:
+            print("Automatically setting cur_cost = 0 (disable model).")
+            flags.cur_cost = 0
+        if flags.actor_see_type != 0:
+            print("Automatically setting actor_see_type = 0 (disable model).")
+            flags.actor_see_type = 0
+
+    if flags.rec_t <= 1:
+        if flags.im_cost > 0:
+            print("Automatically setting im_cost = 0 (no planning steps).")
+            flags.im_cost = 0.
+        if flags.cur_cost > 0:
+            print("Automatically setting cur_cost = 0 (no planning steps).")
+            flags.cur_cost = 0.
+
+    if flags.disable_mem:
+        if not flags.tran_lstm_no_attn:
+            print("Automatically disabling attention module (no memory).")
+
+    if "Sokoban" in flags.env and flags.frame_copy:
+        print("Disabling frame copy for non-atari games")
+        flags.frame_copy = False
     
     assert not (not flags.perfect_model and not flags.duel_net and flags.actor_see_type == 0), (
         "to see the frame, either use perfect model or duel net")
-    assert flags.actor_net_ver == 1, "only actor_net_ver 1 is supported"
 
     fs = ["load_checkpoint", "savedir", "preload_model", "preload_actor"]    
     for f in fs:
@@ -542,3 +572,7 @@ def plot_gym_env_out(x, ax=None, title=None, savepath=None):
     if savepath is not None: 
         plt.savefig(os.path.join(savepath, title+".png"))
         plt.close()
+
+def print_mem(prefix):
+    pass
+    #print(f"{prefix} Allocated: {torch.cuda.memory_allocated(torch.device('cuda')) / (1024**3):.2f} GB, Reserved: {torch.cuda.memory_reserved(torch.device('cuda')) / (1024**3):.2f} GB, Max Allocated: {torch.cuda.max_memory_allocated(torch.device('cuda')) / (1024**3):.2f} GB, Max Reserved: {torch.cuda.max_memory_reserved(torch.device('cuda')) / (1024**3):.2f} GB")

@@ -1,4 +1,3 @@
-from collections import deque
 import time
 import timeit
 import os
@@ -8,35 +7,34 @@ import traceback
 import ray
 import torch
 import torch.nn.functional as F
-from torch.profiler import profile, record_function, ProfilerActivity
 
-from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns, FifoBuffer
+from thinker.core.vtrace import from_importance_weights, VTraceFromLogitsReturns
 from thinker.core.file_writer import FileWriter
-from thinker.buffer import ActorBuffer, GeneralBuffer
-from thinker.buffer import AB_CAN_WRITE, AB_FULL, AB_FINISH
-from thinker.net import ActorNet, ModelNet, ActorOut
-from thinker.self_play import TrainActorOut
+from thinker.net import ActorNet
 from thinker.env import Environment
 import thinker.util as util
 
+def L2_loss(target_x, x):
+    return (target_x - x)**2
 
 def compute_baseline_loss(new_actor_out, 
                           ind, 
                           target_baseline, 
                           actor_net,                           
                           c, 
-                          enc_type):    
+                          flags,
+                          ):    
+    enc_type = flags.critic_enc_type
+
     target_baseline = target_baseline.detach()
     if enc_type == 0:
         baseline = new_actor_out.baseline[:, :, ind]
-        advantages = baseline - target_baseline
-        loss = torch.sum(advantages ** 2) * c    
+        loss = torch.sum(L2_loss(target_baseline, baseline)) * c    
     elif enc_type == 1:
         rv_tran = actor_net.rv_tran
         baseline_enc = new_actor_out.baseline_enc[:, :, ind]
         target_baseline_enc = rv_tran.encode(target_baseline)
-        advantages = baseline_enc - target_baseline_enc
-        loss = torch.sum(advantages ** 2) * c
+        loss = torch.sum(L2_loss(target_baseline_enc, baseline_enc)) * c    
     elif enc_type in [2, 3]:
         rv_tran = actor_net.rv_tran
         baseline_enc = new_actor_out.baseline_enc[:, :, ind]
@@ -45,38 +43,35 @@ def compute_baseline_loss(new_actor_out,
             input = torch.flatten(baseline_enc, 0, 1),
             target = torch.flatten(target_baseline_enc, 0, 1)
         ) * c
-    elif enc_type == 4:     
-        baseline_enc = new_actor_out.baseline_enc[:, :, ind]
-        target_baseline_enc = (target_baseline - actor_net.baseline_beta[ind]) / actor_net.baseline_alpha[ind]
-        advantages = baseline_enc - target_baseline_enc
-        loss = torch.sum(advantages ** 2) * c
     return loss
 
 def compute_policy_gradient_loss(logits_ls, actions_ls, masks_ls, c_ls, advantages):
     assert len(logits_ls) == len(actions_ls) == len(masks_ls) == len(c_ls)
     loss = 0.    
     for logits, actions, masks, c in zip(logits_ls, actions_ls, masks_ls, c_ls):
-        cross_entropy = torch.nn.CrossEntropyLoss(reduction="none")(
-            input = torch.flatten(logits, 0, 1),
-            target = torch.flatten(actions, 0, 1)
-            )
-        cross_entropy = cross_entropy.view_as(advantages)
-        adv_cross_entropy = cross_entropy * advantages.detach()
-        loss = loss + torch.sum(adv_cross_entropy * (1-masks)) * c
+        if torch.sum(1-masks) > 0.:     
+            cross_entropy = torch.nn.CrossEntropyLoss(reduction="none")(
+                input = torch.flatten(logits, 0, 1),
+                target = torch.flatten(actions, 0, 1)
+                )
+            cross_entropy = cross_entropy.view_as(advantages)
+            adv_cross_entropy = cross_entropy * advantages.detach()
+            loss = loss + torch.sum(adv_cross_entropy * (1-masks)) * c
     return loss  
 
-def compute_entropy_loss(logits_ls, masks_ls, c_ls, mask_ent):
+def compute_entropy_loss(logits_ls, masks_ls, c_ls):
     """Return the entropy loss, i.e., the negative entropy of the policy."""
     loss = 0.
     assert(len(logits_ls) == len(masks_ls) == len(c_ls))
     for logits, masks, c in zip(logits_ls, masks_ls, c_ls):
-        logits = torch.flatten(logits, 0, 1)
-        ent = -torch.nn.CrossEntropyLoss(reduction="none")(
-            input = logits,
-            target = F.softmax(logits, dim=-1))
-        ent = ent.view_as(masks)  
-        if mask_ent: ent = ent * (1-masks)
-        loss = loss + torch.sum(ent) * c 
+        if torch.sum(1-masks) > 0.:     
+            logits = torch.flatten(logits, 0, 1)
+            ent = -torch.nn.CrossEntropyLoss(reduction="none")(
+                input = logits,
+                target = F.softmax(logits, dim=-1))
+            ent = ent.view_as(masks)  
+            ent = ent * (1-masks)
+            loss = loss + torch.sum(ent) * c 
     return loss
 
 def action_log_probs(policy_logits, actions):
@@ -90,13 +85,14 @@ def from_logits(
     clip_rho_threshold=1.0, clip_pg_rho_threshold=1.0, lamb=1.0, norm_stat=None):
     """V-trace for softmax policies."""
     assert(len(behavior_logits_ls) == len(target_logits_ls) == len(actions_ls) == len(masks_ls))
-    log_rhos = 0.       
+    log_rhos = torch.tensor(0., device=behavior_logits_ls[0].device)
     for behavior_logits, target_logits, actions, masks in zip(behavior_logits_ls, 
              target_logits_ls, actions_ls, masks_ls):
-        behavior_log_probs = action_log_probs(behavior_logits, actions)        
-        target_log_probs = action_log_probs(target_logits, actions)
-        log_rho = target_log_probs - behavior_log_probs
-        log_rhos = log_rhos + log_rho * (1-masks)
+        if torch.sum(1-masks) > 0.:            
+            behavior_log_probs = action_log_probs(behavior_logits, actions)        
+            target_log_probs = action_log_probs(target_logits, actions)
+            log_rho = target_log_probs - behavior_log_probs
+            log_rhos = log_rhos + log_rho * (1-masks)
     
     vtrace_returns = from_importance_weights(
         log_rhos=log_rhos,
@@ -120,55 +116,26 @@ def from_logits(
         **vtrace_returns._asdict(),
     )
 
-@torch.no_grad()
-def update_b_norm_stat(b_norm_stat, target_baseline):
-    if b_norm_stat is None:
-        buffer = FifoBuffer(100000, device=target_baseline.device)
-    else:
-        buffer = b_norm_stat[-1]
-    buffer.push(target_baseline)
-    lq = buffer.get_percentile(0.05)
-    uq = buffer.get_percentile(0.95)
-    mean = buffer.get_mean()
-    return (lq, uq, mean, buffer)
-
-@torch.no_grad()
-def update_baseline_scale(b_norm_stat, actor_net, n, norm_b, adj, optimizer):
-    old_alpha = torch.clone(actor_net.baseline_alpha[n])
-    old_beta = torch.clone(actor_net.baseline_beta[n])
-    new_alpha = torch.clamp(b_norm_stat[1] - b_norm_stat[0], min=norm_b, max=None)
-    if adj:
-        new_alpha = old_alpha * torch.clamp(new_alpha / old_alpha, min=0.997, max=1.003)
-    new_beta = b_norm_stat[2]
-    actor_net.baseline_alpha[n] = new_alpha
-    actor_net.baseline_beta[n] = new_beta 
-    ratio = old_alpha / new_alpha
-    if adj or ratio < 1:
-        actor_net.baseline.weight.data[n, :] *= ratio
-        actor_net.baseline.bias.data[n] = (
-            ratio * actor_net.baseline.bias.data[n] +
-            (old_beta - new_beta) / new_alpha
-            )
-        optimizer.state[actor_net.baseline.weight]['exp_avg'][n, :] *= ratio
-        optimizer.state[actor_net.baseline.bias]['exp_avg'][n] *= ratio
-        optimizer.state[actor_net.baseline.weight]['exp_avg_sq'][n, :] *= (ratio**2)
-        optimizer.state[actor_net.baseline.bias]['exp_avg_sq'][n] *= (ratio**2)
-
-@ray.remote
-class ActorLearner():
+class SActorLearner():
     def __init__(self, buffers:dict, rank: int, flags: argparse.Namespace):
-        self.param_buffer = buffers["actor_param"]
-        self.actor_buffer = buffers["actor"]
+
+        if buffers is not None:
+            self.param_buffer = buffers["actor_param"]
+            self.actor_buffer = buffers["actor"]
+        else:
+            self.param_buffer = None
+            self.actor_buffer = None
+
         self.rank = rank
         self.flags = flags
         self._logger = util.logger()
         self.time = flags.profile
 
         env = Environment(flags, model_wrap=True, env_n=1)
-        self.actor_net = ActorNet(obs_shape=env.model_out_shape, 
-                                      gym_obs_shape=env.gym_env_out_shape,
-                                      num_actions=env.num_actions, 
-                                      flags=flags)
+        self.actor_net = ActorNet(obs_shape=env.model_out_shape if not self.flags.disable_model else None, 
+                                  gym_obs_shape=env.gym_env_out_shape,
+                                  num_actions=env.num_actions, 
+                                  flags=flags)
         env.close()
         # initialize learning setting
 
@@ -178,19 +145,31 @@ class ActorLearner():
         else:
             self._logger.info("Actor-learning: Not using CUDA.")
             self.device = torch.device("cpu")
-
-        self.step = 0
-        self.real_step = 0
-        self.tot_eps = 0
-        self.last_returns = deque(maxlen=400)
-        self.last_im_returns = deque(maxlen=40000)
-        self.last_cur_returns = deque(maxlen=400)
         
-        self.optimizer = torch.optim.Adam(self.actor_net.parameters(),lr=flags.learning_rate)
+        if not self.flags.use_rms:
+            self.optimizer = torch.optim.Adam(self.actor_net.parameters(),lr=flags.learning_rate)
+        else:
+            self.optimizer = torch.optim.RMSprop(self.actor_net.parameters(),
+                                                 lr=flags.learning_rate,
+                                                 momentum=0,
+                                                 eps=0.01,
+                                                 alpha=0.99)
         lr_lambda = lambda epoch: 1 - min(epoch * self.flags.unroll_length * self.flags.batch_size, 
         self.flags.total_steps * self.flags.rec_t) / (self.flags.total_steps * self.flags.rec_t)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
-
+        
+        # other init. variables for consume_data
+        self.step = 0
+        self.tot_eps = 0
+        self.real_step = 0
+        max_actor_id = self.flags.gpu_num_actors * self.flags.gpu_num_p_actors + \
+            self.flags.cpu_num_actors * self.flags.cpu_num_p_actors
+        self.last_returns = RetBuffer(max_actor_id, mean_n=400)
+        self.last_im_returns = RetBuffer(max_actor_id, mean_n=20000)
+        self.last_cur_returns = RetBuffer(max_actor_id, mean_n=400)
+        self.anneal_c = 1
+        self.n = 0
+  
         if self.flags.preload_actor and not flags.load_checkpoint:
             checkpoint = torch.load(self.flags.preload_actor, map_location=torch.device('cpu'))
             self.actor_net.set_weights(checkpoint["actor_net_state_dict"])  
@@ -214,184 +193,146 @@ class ActorLearner():
         self.check_point_path = "%s/%s/%s" % (flags.savedir, flags.xpid, "ckp_actor.tar")       
 
         # set shared buffer's weights
-        self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
+        if self.param_buffer is not None:
+            self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
 
         # move network and optimizer to process device
         self.actor_net.to(self.device)
-        util.optimizer_to(self.optimizer, self.device)
-        if self.time: self.timing = util.Timings()        
+        util.optimizer_to(self.optimizer, self.device)      
 
-        self.norm_stat = None
-        self.im_norm_stat = None
-        self.cur_norm_stat = None
+        self.norm_stat, self.im_norm_stat, self.cur_norm_stat = None, None, None
 
-        self.b_norm_stat = None
-        self.b_im_norm_stat = None
-        self.b_cur_norm_stat = None
+        # variables for timing
+        self.queue_n = 0                
+        self.timer = timeit.default_timer 
+        self.start_time = self.timer()
+        self.sps_buffer = [(self.step, self.start_time)] * 36
+        self.sps = 0
+        self.sps_buffer_n = 0
+        self.sps_start_time, self.sps_start_step = self.start_time, self.step
+        self.ckp_start_time = int(time.strftime("%M")) // 10
+
+        if self.flags.float16:
+            self.scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
 
     def learn_data(self):
+        timing = util.Timings() if self.time else None
         try:
-            timer = timeit.default_timer     
-            start_time = timer()
-            sps = 0
-            sps_buffer = [(self.step, start_time)] * 36
-            sps_buffer_n = 0
-            sps_start_time, sps_start_step = start_time, self.step
-            ckp_start_time = int(time.strftime("%M")) // 10
-            queue_n = 0
-            n = 0
-            if self.flags.float16:
-                scaler = torch.cuda.amp.GradScaler(init_scale=2**8)
-            
-            self.anneal_c = 1
-
-            data_ptr = self.actor_buffer.read.remote()
             while (self.real_step < self.flags.total_steps):   
-                if self.time: self.timing.reset()            
+                if timing is not None: timing.reset()            
                 # get data remotely    
                 while (True):
                     data_ptr = self.actor_buffer.read.remote()
                     data = ray.get(data_ptr)                    
                     if data is not None: break                
                     time.sleep(0.001)
-                    queue_n += 0.001
-                if self.time: self.timing.time("get_data")
-                # start consume data
-
-                train_actor_out, initial_actor_state  = data
+                    self.queue_n += 0.001
+                if timing is not None: timing.time("get_data")
+                train_actor_out, initial_actor_state = data
                 train_actor_out = util.tuple_map(train_actor_out, lambda x:torch.tensor(x, device=self.device))
                 initial_actor_state = util.tuple_map(initial_actor_state, lambda x:torch.tensor(x, device=self.device))
-                actor_id = train_actor_out.id                
-                if self.time: self.timing.time("convert_data")
-
-                if self.real_step < self.flags.actor_warm_up_n:
-                    stats = self.compute_stat(train_actor_out, None, None, actor_id)   
-                    self._logger.info("Preloading: %d/%d" % (self.real_step, self.flags.actor_warm_up_n))
-                    time.sleep(5)
-                    continue                           
-                
-                # compute losses
-                if self.flags.float16:
-                    with torch.cuda.amp.autocast():
-                        losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
-                else:
-                    losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
-                total_loss = losses["total_loss"]
-                if self.time: self.timing.time("compute loss")    
-
-                #with profile(activities=[
-                #    ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True, with_stack=True) as prof:
-                #    with record_function("compute_grad"):
-
-                # gradient descent on loss
-                self.optimizer.zero_grad()
-                if self.flags.float16:
-                    scaler.scale(total_loss).backward()
-                else:
-                    total_loss.backward()
-                if self.time: self.timing.time("compute gradient")
-
-                #print(prof.key_averages(group_by_stack_n=5).table(sort_by="self_cuda_time_total", row_limit=10))
-
-                optimize_params = self.optimizer.param_groups[0]['params']
-                if self.flags.float16: scaler.unscale_(self.optimizer)
-                if self.flags.grad_norm_clipping > 0:                
-                    total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
-                    total_norm = total_norm.detach().cpu().item()
-                else:
-                    total_norm = util.compute_grad_norm(optimize_params)     
-                if self.time: self.timing.time("compute norm")
-
-                if self.flags.float16:
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                else:
-                    self.optimizer.step()            
-                if self.time: self.timing.time("grad descent")
-
-                self.scheduler.step()         
-
-                if self.flags.critic_enc_type == 4:
-                    # update baseline_scale
-                    adj = self.real_step > 100000
-                    update_baseline_scale(self.b_norm_stat, self.actor_net, 0, self.flags.critic_norm_b, adj, self.optimizer)
-                    if self.flags.im_cost > 0.:
-                        adj = self.real_step > self.flags.model_warm_up_n + 100000
-                        update_baseline_scale(self.b_im_norm_stat, self.actor_net, 1, self.flags.critic_norm_b, adj, self.optimizer)
-                    if self.flags.cur_cost > 0. and self.real_step > self.flags.cur_warm_up_n:
-                        adj = self.real_step > self.flags.cur_warm_up_n + 100000
-                        update_baseline_scale(self.b_cur_norm_stat, self.actor_net, 2, self.flags.critic_norm_b, adj, self.optimizer)
-
-                self.anneal_c = max(1 - self.real_step / (
-                        self.flags.total_steps), 0)
-                
-                # statistic output
-                stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id) 
-                stats["sps"] = sps                  
-
-                # write to log file
-                self.plogger.log(stats)        
-
-                # print statistics
-                if timer() - start_time > 5:                    
-                    sps_buffer[sps_buffer_n] = (self.step, timer())
-                    sps_buffer_n = (sps_buffer_n + 1) % len(sps_buffer)
-                    sps = ((sps_buffer[sps_buffer_n-1][0] - sps_buffer[sps_buffer_n][0]) / 
-                           (sps_buffer[sps_buffer_n-1][1] - sps_buffer[sps_buffer_n][1]))                    
-                    tot_sps = (self.step - sps_start_step) / (timer() - sps_start_time) 
-                    print_str =  "[%s] Steps %i @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Ret %f (%f/%f). Loss %.2f" % (
-                        self.flags.xpid, self.real_step, sps, tot_sps, 
-                        queue_n, self.tot_eps, stats["rmean_episode_return"], 
-                        stats["rmean_im_episode_return"],  stats["rmean_cur_episode_return"], total_loss)
-                    print_stats = ["max_rollout_depth", "entropy_loss", "reg_loss", "total_norm", "sat"]                    
-                    for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
-                    if self.flags.return_norm_type != -1:
-                        print_str += " norm_diff (%.4f/%.4f/%.4f)" % (
-                            stats["norm_diff"], stats["im_norm_diff"], stats["cur_norm_diff"])
-                    if self.flags.critic_enc_type == 4:
-                        print_str += " b_norm_diff (%.4f/%.4f/%.4f)" % (
-                            stats["b_norm_diff"], stats["b_im_norm_diff"], stats["b_cur_norm_diff"])
-                        print_str += " b_alpha (%.4f/%.4f/%.4f) b_beta (%.4f/%.4f/%.4f)" %(
-                            stats["b_alpha"], stats["b_im_alpha"], stats["b_cur_alpha"],
-                            stats["b_beta"], stats["b_im_beta"], stats["b_cur_beta"],
-                        )
-
-                    self._logger.info(print_str)
-                    start_time = timer()                    
-                    queue_n = 0
-                    if self.time: print(self.timing.summary()) 
-                
-                if int(time.strftime("%M")) // 10 != ckp_start_time:
-                    self.save_checkpoint()
-                    ckp_start_time = int(time.strftime("%M")) // 10
-
-                if self.time: self.timing.time("misc")  
-                del train_actor_out, losses, total_loss, stats, total_norm
-                torch.cuda.empty_cache()
-
-                # update shared buffer's weights
-                if n % 1 == 0:
-                    self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
-                n += 1
-                if self.time: self.timing.time("set weight")                  
-            
+                if timing is not None: timing.time("convert_data")
+                data = (train_actor_out, initial_actor_state)
+                # start consume data
+                self.consume_data(data)     
+                del train_actor_out, initial_actor_state, data        
+                ray.internal.free(data_ptr)   
+                self.param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())                
+                if timing is not None: timing.time("set weight")                              
             self.close(0)  
-            return True        
-        
+            return True                
         except Exception as e:
             self._logger.error(f"Exception detected in learn_actor: {e}")
             self._logger.error(traceback.format_exc())
         finally:
             self.close(0)  
             return True 
+        
+    def consume_data(self, data, timing=None):
+        train_actor_out, initial_actor_state = data
+        actor_id = train_actor_out.id                
+          
+        # compute losses
+        if self.flags.float16:
+            with torch.cuda.amp.autocast():
+                losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
+        else:
+            losses, train_actor_out = self.compute_losses(train_actor_out, initial_actor_state)
+        total_loss = losses["total_loss"]
+        if timing is not None: timing.time("compute loss")    
 
-    def close(self, exit_code=0):
-        self.plogger.close()
+        # gradient descent on loss
+        self.optimizer.zero_grad()
+        if self.flags.float16:
+            self.scaler.scale(total_loss).backward()
+        else:
+            total_loss.backward()
+        if timing is not None: timing.time("compute gradient")    
 
-    def compute_losses(self, train_actor_out: TrainActorOut, initial_actor_state: tuple):
+        optimize_params = self.optimizer.param_groups[0]['params']
+        if self.flags.float16: self.scaler.unscale_(self.optimizer)
+        if self.flags.grad_norm_clipping > 0:                
+            total_norm = torch.nn.utils.clip_grad_norm_(optimize_params, self.flags.grad_norm_clipping)
+            total_norm = total_norm.detach().cpu().item()
+        else:
+            total_norm = util.compute_grad_norm(optimize_params)     
+        if timing is not None: timing.time("compute norm")
+
+        if self.flags.float16:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()            
+        if timing is not None: timing.time("grad descent")
+
+        self.scheduler.step()      
+        self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
+        
+        # statistic output
+        stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id) 
+        stats["sps"] = self.sps                  
+
+        # write to log file
+        self.plogger.log(stats)                        
+
+        # print statistics
+        if self.timer() - self.start_time > 5:                    
+            self.sps_buffer[self.sps_buffer_n] = (self.step, self.timer())
+            self.sps_buffer_n = (self.sps_buffer_n + 1) % len(self.sps_buffer)
+            self.sps = ((self.sps_buffer[self.sps_buffer_n-1][0] - self.sps_buffer[self.sps_buffer_n][0]) / 
+                        (self.sps_buffer[self.sps_buffer_n-1][1] - self.sps_buffer[self.sps_buffer_n][1]))                    
+            tot_sps = (self.step - self.sps_start_step) / (self.timer() - self.sps_start_time) 
+            print_str =  "[%s] Steps %i @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Ret %f (%f/%f). Loss %.2f" % (
+                self.flags.xpid, self.real_step, self.sps, tot_sps, 
+                self.queue_n, self.tot_eps, stats["rmean_episode_return"], 
+                stats["rmean_im_episode_return"],  stats["rmean_cur_episode_return"], total_loss)
+            print_stats = ["max_rollout_depth", "entropy_loss", "reg_loss", "total_norm", "sat", "mean_abs_v"]                    
+            for k in print_stats: print_str += " %s %.2f" % (k, stats[k])
+            if self.flags.return_norm_type != -1:
+                print_str += " norm_diff (%.4f/%.4f/%.4f)" % (
+                    stats["norm_diff"], stats["im_norm_diff"], stats["cur_norm_diff"])
+
+            self._logger.info(print_str)
+            self.start_time = self.timer()                    
+            self.queue_n = 0
+            if self.time: print(self.timing.summary()) 
+        
+        if int(time.strftime("%M")) // 10 != self.ckp_start_time:
+            self.save_checkpoint()
+            self.ckp_start_time = int(time.strftime("%M")) // 10
+
+        if timing is not None: timing.time("misc")  
+        del train_actor_out, losses, total_loss, stats, total_norm
+        torch.cuda.empty_cache()
+
+        # update shared buffer's weights
+        self.n += 1
+
+    def compute_losses(self, train_actor_out, initial_actor_state):
         # compute loss and then discard the first step in train_actor_out
 
         T, B = train_actor_out.done.shape
+        T = T - 1
         new_actor_out, unused_state = self.actor_net(train_actor_out, initial_actor_state)
 
         # Take final value function slice for bootstrapping.
@@ -400,11 +341,7 @@ class ActorLearner():
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         train_actor_out = util.tuple_map(train_actor_out, lambda x: x[1:])
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
-
         rewards = train_actor_out.reward
-
-        if self.flags.only_cur and self.flags.cur_cost > 0.:
-            rewards[:, :, 0] = rewards[:, :, 2]
 
         # compute advantage w.r.t real rewards     
         discounts = (~train_actor_out.done).float() * self.im_discounting     
@@ -412,9 +349,8 @@ class ActorLearner():
         behavior_logits_ls = [train_actor_out.policy_logits, train_actor_out.im_policy_logits, train_actor_out.reset_policy_logits]
         target_logits_ls = [new_actor_out.policy_logits, new_actor_out.im_policy_logits, new_actor_out.reset_policy_logits]
         actions_ls = [train_actor_out.action, train_actor_out.im_action, train_actor_out.reset_action]        
-        im_mask = (train_actor_out.cur_t == 0).float()
+        im_mask = (train_actor_out.cur_t == 0).float() if not self.flags.disable_model else torch.ones(T, B, device=self.device)
         real_mask = 1 - im_mask
-        zero_mask = torch.zeros_like(im_mask)
         masks_ls = [real_mask, im_mask, im_mask]                
         c_ls = [self.flags.real_cost, self.flags.real_im_cost, self.flags.real_im_cost]
 
@@ -431,11 +367,6 @@ class ActorLearner():
             lamb=self.flags.lamb,
             norm_stat=self.norm_stat
         )    
-        if self.flags.critic_enc_type == 4: 
-            self.b_norm_stat = update_b_norm_stat(
-                b_norm_stat=self.b_norm_stat,
-                target_baseline=vtrace_returns.vs,      
-            )
         self.norm_stat = vtrace_returns.norm_stat
         advs = vtrace_returns.pg_advantages        
         pg_loss = compute_policy_gradient_loss(target_logits_ls, actions_ls, masks_ls, c_ls, advs)          
@@ -445,11 +376,8 @@ class ActorLearner():
             target_baseline=vtrace_returns.vs,
             actor_net=self.actor_net,
             c=self.flags.real_cost,
-            enc_type=self.flags.critic_enc_type,
+            flags=self.flags
         )
-        if self.flags.critic_enc_type == 4:
-            baseline_loss = baseline_loss * self.actor_net.baseline_alpha[0] / self.norm_stat[2]
-            
         # compute advantage w.r.t curiosity rewards
         if self.flags.cur_cost > 0. and self.real_step > self.flags.cur_warm_up_n:
             discounts = (~train_actor_out.done).float() * self.im_discounting   
@@ -474,11 +402,6 @@ class ActorLearner():
                 lamb=self.flags.lamb,
                 norm_stat=self.cur_norm_stat
             )    
-            if self.flags.critic_enc_type == 4: 
-                self.b_cur_norm_stat = update_b_norm_stat(
-                    b_norm_stat=self.b_cur_norm_stat,
-                    target_baseline=vtrace_returns.vs,      
-                )
             self.cur_norm_stat = vtrace_returns.norm_stat
             advs = vtrace_returns.pg_advantages            
             
@@ -489,10 +412,8 @@ class ActorLearner():
                 target_baseline=vtrace_returns.vs,
                 actor_net=self.actor_net,
                 c=self.flags.cur_cost if not self.flags.cur_cost_anneal else self.flags.cur_cost * self.anneal_c,
-                enc_type=self.flags.critic_enc_type,
+                flags=self.flags
             )       
-            if self.flags.critic_enc_type == 4:
-                cur_baseline_loss = cur_baseline_loss * self.actor_net.baseline_alpha[2] / self.cur_norm_stat[2]     
         else:
             cur_pg_loss = torch.zeros(1, device=self.device)
             cur_baseline_loss = torch.zeros(1, device=self.device)
@@ -523,12 +444,7 @@ class ActorLearner():
                 flags=self.flags,
                 lamb=self.flags.lamb,
                 norm_stat=self.im_norm_stat
-            )    
-            if self.flags.critic_enc_type == 4: 
-                self.b_im_norm_stat = update_b_norm_stat(
-                    b_norm_stat=self.b_im_norm_stat,
-                    target_baseline=vtrace_returns.vs,      
-                )
+            )     
             self.im_norm_stat = vtrace_returns.norm_stat
 
             advs = vtrace_returns.pg_advantages
@@ -539,10 +455,9 @@ class ActorLearner():
                 target_baseline=vtrace_returns.vs,
                 actor_net=self.actor_net,
                 c=self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c,
-                enc_type=self.flags.critic_enc_type,
+                flags=self.flags
             )       
-            if self.flags.critic_enc_type == 4:
-                im_baseline_loss = im_baseline_loss * self.actor_net.baseline_alpha[1] / self.im_norm_stat[2]     
+            
         else:
             im_pg_loss = torch.zeros(1, device=self.device)
             im_baseline_loss = torch.zeros(1, device=self.device)
@@ -552,7 +467,7 @@ class ActorLearner():
         im_ent_c = self.flags.im_entropy_cost * (self.flags.real_im_cost + ((
             self.flags.im_cost if not self.flags.im_cost_anneal else self.flags.im_cost * self.anneal_c) if self.flags.im_cost > 0. else 0))
         c_ls = [self.flags.entropy_cost * self.flags.real_cost, im_ent_c, im_ent_c]
-        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls, self.flags.entropy_type==1)    
+        entropy_loss = compute_entropy_loss(target_logits_ls, masks_ls, c_ls)    
 
         reg_loss = self.flags.reg_cost * torch.sum(new_actor_out.reg_loss)
         total_loss = pg_loss + baseline_loss + entropy_loss + reg_loss         
@@ -575,8 +490,9 @@ class ActorLearner():
                   }
         return losses, train_actor_out
 
-    def compute_stat(self, train_actor_out: TrainActorOut, losses: dict, total_norm: float, actor_id: torch.Tensor):
+    def compute_stat(self, train_actor_out, losses, total_norm, actor_id):
         """Update step, real_step and tot_eps; return training stat for printing"""
+        T, B, *_ = train_actor_out.episode_return.shape
         if torch.any(train_actor_out.real_done):
             episode_returns = train_actor_out.episode_return[train_actor_out.real_done][:, 0]  
             episode_returns = tuple(episode_returns.detach().cpu().numpy())
@@ -586,32 +502,48 @@ class ActorLearner():
             done_ids = tuple(done_ids.detach().cpu().numpy())
         else:
             episode_returns, episode_lens, done_ids = (), (), ()
-        self.last_returns.extend(episode_returns)
-        rmean_episode_return = np.average(self.last_returns) if len(self.last_returns) > 0 else 0.
+        self.last_returns.insert(episode_returns, done_ids)
+        rmean_episode_return = self.last_returns.get_mean()
 
         if self.flags.im_cost > 0.:
-            im_episode_returns = train_actor_out.episode_return[train_actor_out.cur_t==0][:, 1]  
-            im_episode_returns = tuple(im_episode_returns.detach().cpu().numpy())
-            self.last_im_returns.extend(im_episode_returns)
-        rmean_im_episode_return = np.average(self.last_im_returns) if len(self.last_im_returns) > 0 else 0.
+            self.last_im_returns.insert_raw(train_actor_out.episode_return, 
+                                            ind=1, 
+                                            actor_id=actor_id, 
+                                            done=train_actor_out.cur_t==0)
+            rmean_im_episode_return = self.last_im_returns.get_mean()
+        else:
+            rmean_im_episode_return = 0.
 
         if self.flags.cur_cost > 0.:
-            cur_episode_returns = train_actor_out.episode_return[train_actor_out.real_done][:, 2]  
-            cur_episode_returns = tuple(cur_episode_returns.detach().cpu().numpy())
-            self.last_cur_returns.extend(cur_episode_returns)
-        rmean_cur_episode_return = np.average(self.last_cur_returns) if len(self.last_cur_returns) > 0 else 0.
+            self.last_cur_returns.insert_raw(train_actor_out.episode_return, 
+                                            ind=2, 
+                                            actor_id=actor_id, 
+                                            done=train_actor_out.real_done)
+            rmean_cur_episode_return = self.last_cur_returns.get_mean()
+        else:
+            rmean_cur_episode_return = 0.
 
-        max_rollout_depth = (train_actor_out.max_rollout_depth[train_actor_out.cur_t == 0]).detach().cpu().numpy()
-        max_rollout_depth = np.average(max_rollout_depth) if len (max_rollout_depth) > 0 else 0.     
-        cur_real_step = torch.sum(train_actor_out.cur_t==0).item()
-        mean_plan_step = self.flags.unroll_length * self.flags.batch_size / max(cur_real_step, 1)   
+        if not self.flags.disable_model:
+            max_rollout_depth = (train_actor_out.max_rollout_depth[train_actor_out.cur_t == 0]).detach().cpu().numpy()
+            max_rollout_depth = np.average(max_rollout_depth) if len (max_rollout_depth) > 0 else 0.     
+            cur_real_step = torch.sum(train_actor_out.cur_t==0).item()
+            mean_plan_step = self.flags.unroll_length * self.flags.batch_size / max(cur_real_step, 1)   
+        else:
+            max_rollout_depth = 0.
+            cur_real_step = T * B
+            mean_plan_step = 0.
 
         self.step += self.flags.unroll_length * self.flags.batch_size
         self.real_step += cur_real_step
         self.tot_eps += torch.sum(train_actor_out.real_done).item()
 
-        sat = torch.mean(torch.max(torch.softmax(train_actor_out.policy_logits[train_actor_out.cur_t == 0], 
+        if train_actor_out.cur_t is not None:
+            real_mask = train_actor_out.cur_t == 0
+        else:
+            real_mask = torch.ones(T, B, device=self.device, dtype=bool)
+        sat = torch.mean(torch.max(torch.softmax(train_actor_out.policy_logits[real_mask], 
                                                  dim=-1), dim=-1)[0]).item()
+        mean_abs_v = torch.mean(torch.abs(train_actor_out.baseline)).item()
 
         stats = {"step": self.step,
                 "real_step": self.real_step,
@@ -627,6 +559,7 @@ class ActorLearner():
                 "max_rollout_depth": max_rollout_depth,
                 "total_norm": total_norm,
                 "sat": sat,
+                "mean_abs_v": mean_abs_v,
                 }
 
         if losses is not None: 
@@ -641,28 +574,6 @@ class ActorLearner():
             if self.cur_norm_stat is not None:
                 stats["cur_norm_diff"] = (self.cur_norm_stat[1] - self.cur_norm_stat[0]).item()
 
-        if self.flags.critic_enc_type == 4:
-            stats["b_norm_diff"] = (self.b_norm_stat[1] - self.b_norm_stat[0]).item()
-            stats["b_im_norm_diff"] = 0.
-            stats["b_cur_norm_diff"] = 0.
-            if self.b_im_norm_stat is not None:
-                stats["b_im_norm_diff"] = (self.b_im_norm_stat[1] - self.b_im_norm_stat[0]).item()
-            if self.b_cur_norm_stat is not None:
-                stats["b_cur_norm_diff"] = (self.b_cur_norm_stat[1] - self.b_cur_norm_stat[0]).item()  
-            stats["b_alpha"] = self.actor_net.baseline_alpha[0].item()
-            stats["b_beta"] = self.actor_net.baseline_beta[0].item()
-            if self.flags.im_cost > 0:
-                stats["b_im_alpha"] = self.actor_net.baseline_alpha[1].item()
-                stats["b_im_beta"] = self.actor_net.baseline_beta[1].item()
-            else:
-                stats["b_im_alpha"] = 0.
-                stats["b_im_beta"] = 0.
-            if self.flags.cur_cost > 0:
-                stats["b_cur_alpha"] = self.actor_net.baseline_alpha[2].item()
-                stats["b_cur_beta"] = self.actor_net.baseline_beta[2].item()
-            else:
-                stats["b_cur_alpha"] = 0.
-                stats["b_cur_beta"] = 0.
         return stats
 
     def save_checkpoint(self):
@@ -693,3 +604,83 @@ class ActorLearner():
         self.scheduler.load_state_dict(train_checkpoint["actor_net_scheduler_state_dict"])       
         self.actor_net.set_weights(train_checkpoint["actor_net_state_dict"])        
         self._logger.info("Loaded actor checkpoint from %s" % check_point_path)   
+
+    def close(self, exit_code=0):
+        self.plogger.close()        
+
+@ray.remote
+class ActorLearner(SActorLearner):
+    pass
+
+class RetBuffer():
+    def __init__(self, max_actor_id, mean_n=400):
+        """
+        Compute the trailing mean return by storing the last return for each actor
+        and average them;
+        Args:
+            max_actor_id (int): maximum actor id
+            mean_n (int): size of data for computing mean
+        """
+        buffer_n = mean_n // max_actor_id + 1
+        self.return_buffer = np.zeros((max_actor_id, buffer_n))
+        self.return_buffer_pointer = np.zeros(max_actor_id, dtype=int) # store the current pointer 
+        self.return_buffer_n = np.zeros(max_actor_id, dtype=int) # store the processed data size
+        self.max_actor_id = max_actor_id
+        self.mean_n = mean_n
+        self.all_filled = False
+    
+    def insert(self, returns, actor_ids):
+        """
+        Insert new returnss to the return buffer
+        Args:
+            returns (tuple): tuple of float, the return of each ended episode
+            actor_ids (tuple): tuple of int, the actor id of the corresponding ended episode
+        """
+        # actor_id is a tuple of integer, corresponding to the returns
+        if len(returns) == 0: return
+        assert len(returns) == len(actor_ids)
+        for r, actor_id in zip(returns, actor_ids):
+            # Find the current pointer for the actor
+            pointer = self.return_buffer_pointer[actor_id]
+            # Update the return buffer for the actor with the new return
+            self.return_buffer[actor_id, pointer] = r
+            # Update the pointer for the actor
+            self.return_buffer_pointer[actor_id] = (pointer + 1) % self.return_buffer.shape[1]
+            # Update the processed data size for the actor
+            self.return_buffer_n[actor_id] = min(self.return_buffer_n[actor_id] + 1, self.return_buffer.shape[1])
+        
+        if not self.all_filled:
+            # check if all filled
+            self.all_filled = np.all(self.return_buffer_n >= self.return_buffer.shape[1])
+
+    def insert_raw(self, episode_returns, ind, actor_id, done):
+        episode_returns = episode_returns[done][:, ind]        
+        episode_returns = tuple(episode_returns.detach().cpu().numpy())        
+        done_ids = actor_id.broadcast_to(done.shape)[done]
+        done_ids = tuple(done_ids.detach().cpu().numpy())
+        self.insert(episode_returns, done_ids)
+
+    def get_mean(self):
+        """
+        Compute the mean of the returns in the buffer;
+        """
+        if self.all_filled:
+            overall_mean = np.mean(self.return_buffer)
+        else:
+            # Create a mask of filled items in the return buffer
+            col_indices = np.arange(self.return_buffer.shape[1])
+            # Create a mask of filled items in the return buffer
+            filled_mask = col_indices[np.newaxis, :] < self.return_buffer_n[:, np.newaxis]
+            if np.any(filled_mask):
+                # Compute the sum of returns for each actor considering only filled items
+                sum_returns = np.sum(self.return_buffer * filled_mask)
+                # Compute the mean for each actor by dividing the sum by the processed data size
+                overall_mean = sum_returns / np.sum(filled_mask.astype(float))
+            else:
+                overall_mean = 0.
+        return overall_mean
+
+
+
+
+

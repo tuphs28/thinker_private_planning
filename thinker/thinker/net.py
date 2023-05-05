@@ -2,6 +2,7 @@ from collections import namedtuple
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint, checkpoint_sequential
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM
 from math import prod
@@ -11,7 +12,7 @@ ActorOut = namedtuple('ActorOut', ['policy_logits', 'im_policy_logits', 'reset_p
 OutNetOut = namedtuple('OutNetOut', ['single_rs',  'rs', 'r_enc_logits', 'dones',
                                      'done_logits', 'vs', 'v_enc_logits', 'logits', 'state'])
 ModelNetOut = namedtuple('ModelNetOut', ['single_rs', 'rs', 'r_enc_logits',
-                                         'dones', 'done_logits', 'xs', 'state'])
+                                         'dones', 'done_logits', 'xs', 'hs', 'state'])
 PredNetOut = namedtuple('PredNetOut', ['single_rs', 'rs', 'r_enc_logits', 'dones', 'done_logits',
                                        'vs', 'v_enc_logits', 'logits', 
                                        'hs', 'pred_zs', 'true_zs', 'state'])
@@ -23,17 +24,12 @@ def add_hw(x, h, w):
 def mlp(input_size, layer_sizes, output_size, output_activation=nn.Identity, 
         activation=nn.ReLU, momentum=0.1, zero_init=False, norm=True):
     """MLP layers
-    Parameters
-    ----------
-    input_size: int
-        dim of inputs
-    layer_sizes: list
-        dim of hidden layers
-    output_size: int
-        dim of outputs
-    init_zero: bool
-        zero initialization for the last layer (including w and b).
-        This can provide stable zero outputs in the beginning.
+    args:
+        input_size (int): dim of inputs
+        layer_sizes (list): dim of hidden layers
+        output_size (int): dim of outputs
+        init_zero (bool): zero initialization for the last layer (including w and b).
+            This can provide stable zero outputs in the beginning.
     """
     sizes = [input_size] + layer_sizes + [output_size]
     layers = []
@@ -63,7 +59,6 @@ def conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
 
 class ResBlock(nn.Module):
     expansion: int = 1
-
     def __init__(self, inplanes, outplanes=None, stride=1, downsample=None, disable_bn=False):
         super().__init__()
         if outplanes is None: outplanes = inplanes 
@@ -98,124 +93,99 @@ class ResBlock(nn.Module):
         out = self.relu(out)
         return out
 
-
 class ActorEncoder(nn.Module):
-    def __init__(self, input_shape, num_actions, frame_encode, double_encode, compress_size, drc, rnn_grad_scale):
+    def __init__(self, 
+                 input_shape, 
+                 num_actions, 
+                 flags):
         super(ActorEncoder, self).__init__()
         self.input_shape = input_shape        
-        self.frame_encode = frame_encode
-        self.double_encode = double_encode
-        self.compress = compress_size > 0
-        self.compress_size = compress_size        
-        self.drc = drc
-        self.rnn_grad_scale = rnn_grad_scale        
-        encoder_out_channels = 32
+        self.num_actions = num_actions
+        self.flags = flags
+        self.frame_encode = flags.actor_see_type == 0  
+        self.out_size = 256
 
-        if frame_encode:
-            downscale_c = 4
+        if flags.actor_see_type == 0:
+            # see the frame directly; we need to have frame encoding
             self.frame_encoder = FrameEncoder(input_shape=input_shape, num_actions=num_actions, 
-                    downscale_c=downscale_c, concat_action=False)
+                downscale_c=2, size_nn=flags.model_size_nn, concat_action=False, grayscale=flags.grayscale)
             input_shape = self.frame_encoder.out_shape
+        
+        # following code is from Torchbeast, which is the same as Impala deep model
+        in_channels = input_shape[0]               
+        self.feat_convs = []
+        self.resnet1 = []
+        self.resnet2 = []
+        self.convs = []
+        for num_ch in [64, 64, 32]:
+            feats_convs = []
+            feats_convs.append(
+                nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=num_ch,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                )
+            )
+            #feats_convs.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+            self.feat_convs.append(nn.Sequential(*feats_convs))
+            in_channels = num_ch
+            for i in range(2):
+                resnet_block = []
+                resnet_block.append(nn.ReLU())
+                resnet_block.append(
+                    nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=num_ch,
+                        kernel_size=3,
+                        stride=1,
+                        padding=1,
+                    )
+                )
+                resnet_block.append(nn.ReLU())
+                resnet_block.append(
+                    nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=num_ch,
+                        kernel_size=3,
+                        stride=1,
+                        padding=1,
+                    )
+                )
+                if i == 0:
+                    self.resnet1.append(nn.Sequential(*resnet_block))
+                else:
+                    self.resnet2.append(nn.Sequential(*resnet_block))
+        self.feat_convs = nn.ModuleList(self.feat_convs)
+        self.resnet1 = nn.ModuleList(self.resnet1)
+        self.resnet2 = nn.ModuleList(self.resnet2)
 
-        self.three_d_input = len(self.input_shape) == 3            
-        if not self.three_d_input:
-            # the input is not 3D, we use MLP layers
-            in_size = prod(self.input_shape)
-            self.core = nn.Sequential(nn.Linear(in_size, 256), nn.ReLU(),
-                                      nn.Linear(256, 256), nn.ReLU())
-            core_out_size = 256
-        else:
-            in_channels = input_shape[0]
-            in_hw = input_shape[1]
-
-            # input shape here is (in_channels, in_hw, in_hw)
-            if not drc:
-                self.conv = nn.Sequential(
-                    nn.Conv2d(in_channels=in_channels, out_channels=encoder_out_channels*2, kernel_size=3, padding='same'), 
-                    nn.ReLU(), 
-                    nn.Conv2d(in_channels=encoder_out_channels*2, out_channels=encoder_out_channels, kernel_size=3, padding='same'), 
-                    nn.ReLU())            
-            else:
-                self.conv = nn.Sequential(
-                    nn.Conv2d(in_channels=in_channels, out_channels=encoder_out_channels, kernel_size=3, padding='same'), 
-                    nn.ReLU())
-                self.drc_core = ConvAttnLSTM(h=in_hw, w=in_hw,
-                                            input_dim=encoder_out_channels, hidden_dim=encoder_out_channels, kernel_size=3, num_layers=3, 
-                                            num_heads=8, mem_n=0, attn=False, attn_mask_b=0.,
-                                            grad_scale=self.rnn_grad_scale)                   
-            core_out_size = encoder_out_channels * in_hw * in_hw
-            
-        if self.compress:            
-            self.fc = nn.Sequential(nn.Linear(core_out_size, compress_size), nn.ReLU())
-
-        self.out_size = core_out_size if not self.compress else compress_size
-        if self.double_encode: self.out_size *= 2
-
-        self.initial_state(1)
-
-    def initial_state(self, batch_size, device=None):
-        if self.drc:
-            state = self.drc_core.init_state(batch_size, device=device)
-            self.core_state_sep_ind = len(state)
-            if self.double_encode:
-                state = state + self.actor_encoder.drc_core.init_state(batch_size, device=device)
-        else:
-            state = None
-        return state
+        # out shape after conv is: (num_ch, input_shape[1], input_shape[2])
+        core_out_size = num_ch * input_shape[1] * input_shape[2]
+        self.fc = nn.Sequential(nn.Linear(core_out_size, self.out_size), nn.ReLU())        
     
-    def forward(self, x, core_state=(), done=None):
+    def forward(self, x):
         """encode the state or model's encoding inside the actor network
         args:
-            x: input tensor of shape (T, B, C, H, W); can be state or model's encoding,
-            mask: mask tensor of shape (T, B); boolean
-            core_state: core_state for drc module (only when drc is enabled)
-            done: done tensor of shape (T, B); boolean
+            x: input tensor of shape (B, C, H, W); can be state or model's encoding
         return:
-            output: output tensor of shape (T*B, self.out_size)"""
-        if not self.double_encode:
-            return self.forward_single(x, core_state, done)
-        else:
-            _, _, C, *_ = x.shape
-            enc_1, core_state_1 = self.forward_single(x[:, :, :C//2], core_state[:self.core_state_sep_ind] if self.drc else None, done)
-            enc_2, core_state_2 = self.forward_single(x[:, :, C//2:], core_state[self.core_state_sep_ind:] if self.drc else None, done)
-            enc = torch.concat([enc_1, enc_2], dim=1)
-            if self.drc:
-                core_state = core_state_1 + core_state_2
-            else:
-                core_state = None
-            return enc, core_state    
-        
-    def forward_single(self, x, core_state=(), done=None):
-        T, B, *_ = x.shape
-        x = x.float()
-        x = torch.flatten(x, 0, 1)  
-
-        if self.frame_encode:
-            x = self.frame_encoder(x, actions=None)
-        if not self.three_d_input:
-            x = torch.flatten(x, start_dim=1)
-            x = self.core(x)
-            core_state = None
-        else:
-            x = self.conv(x)
-            if self.drc:
-                core_input = x.view(*((T, B) + x.shape[1:]))
-                core_output_list = []
-                notdone = ~(done.bool())
-                for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):
-                    for t in range(3):                
-                        if t > 0: nd = torch.ones(B, device=x.device, dtype=torch.bool)
-                        nd = nd.view(-1)      
-                        output, core_state = self.drc_core(input, core_state, nd, nd) # output shape: 1, B, core_output_size    
-                    core_output_list.append(output)              
-                core_output = torch.cat(core_output_list)   
-                x = torch.flatten(core_output, start_dim=0, end_dim=1)
-            else:
-                core_state = None
-            x = torch.flatten(x, start_dim=1)
-        if self.compress: 
-            x = self.fc(x)
-        return x, core_state
+            output: output tensor of shape (B, self.out_size)"""
+        assert x.dtype in [torch.float, torch.float16]
+        if self.flags.actor_see_type == 0:
+            x = self.frame_encoder(x, actions=None)        
+        res_input = None
+        for i, fconv in enumerate(self.feat_convs):
+            x = fconv(x)
+            res_input = x
+            x = self.resnet1[i](x)
+            x += res_input
+            res_input = x
+            x = self.resnet2[i](x)
+            x += res_input
+        x = torch.flatten(x, start_dim=1)
+        x = self.fc(F.relu(x))
+        return x
 
 class ActorNetBase(nn.Module):    
     def __init__(self, obs_shape, gym_obs_shape, num_actions, flags):
@@ -235,61 +205,59 @@ class ActorNetBase(nn.Module):
         self.num_rewards += int(flags.im_cost > 0.)
         self.num_rewards += int(flags.cur_cost > 0.)
         self.actor_see_type = flags.actor_see_type # -1 for nothing, 0. for predicted / true frame, 1. for z, 2. for h.
-        self.actor_see_double_encode = flags.actor_see_double_encode # Whether the actor see the model encoded state or the raw env state        
-        self.actor_encode_concat_type = flags.actor_encode_concat_type # Type of concating the encoding to model's output
-        self.actor_drc = flags.actor_drc             # Whether to use drc in encoding state
-        self.rnn_grad_scale = flags.rnn_grad_scale   # Grad scale for hidden state in RNN
         self.enc_type = flags.critic_enc_type 
-        self.model_type_nn = flags.model_type_nn
-        self.model_size_nn = flags.model_size_nn
-        self.model_downscale_c = flags.model_downscale_c
+        self.disable_model = flags.disable_model
+        self.disable_mem = flags.disable_mem
         self.flags = flags
 
-        # encoder for state or encoding output        
+        # encoder for state or encoding output     
+        last_out_size = self.num_actions + self.num_rewards
+        if not self.disable_model:
+            last_out_size += self.num_actions + 2
+
         if self.actor_see_type >= 0:
             if self.actor_see_type == 0:
                 input_shape = gym_obs_shape
             else:
-                if self.model_type_nn in [0, 1,  2,  3]:
-                    if self.model_type_nn in [0, 1]:
-                        in_channels = int(256 // flags.model_downscale_c)
-                    elif self.model_type_nn in [2]:
-                        in_channels = 128
-                    elif self.model_type_nn in [3]:
-                        in_channels = 64
-                    input_shape = (in_channels, gym_obs_shape[1]//16, gym_obs_shape[2]//16)
-            compress_size = 128 if self.actor_encode_concat_type == 1 else 256
-            self.actor_encoder = ActorEncoder(input_shape=input_shape, num_actions=num_actions,
-                frame_encode=self.actor_see_type == 0, double_encode=self.actor_see_double_encode, 
-                compress_size=compress_size, drc=self.actor_drc, rnn_grad_scale=self.rnn_grad_scale)        
-
-        in_channels = self.obs_shape[0]
-        if self.actor_see_type >= 0 and self.actor_encode_concat_type == 1:
-            in_channels = in_channels + self.actor_encoder.out_size
-
-        self.initial_enc = nn.Sequential(nn.Linear(in_channels, self.tran_dim), 
-                                              nn.ReLU(),
-                                              nn.Linear(self.tran_dim, self.tran_dim), 
-                                              nn.ReLU())
-
-        self.core = ConvAttnLSTM(h=1, w=1,
-                                input_dim=self.tran_dim, hidden_dim=self.tran_dim,
-                                kernel_size=1, num_layers=self.tran_layer_n,
-                                num_heads=8, mem_n=self.tran_mem_n, attn=not self.tran_lstm_no_attn,
-                                attn_mask_b=self.attn_mask_b, grad_scale=self.rnn_grad_scale)                         
-        
-        last_out_size = 256           
-        self.fc = nn.Sequential(nn.Linear(self.tran_dim, last_out_size),  nn.ReLU())              
-        if self.actor_see_type >= 0 and self.actor_encode_concat_type == 0:             
-            last_out_size = last_out_size + self.actor_encoder.out_size
+                in_channels = int(256 // flags.model_downscale_c)
+                if self.actor_see_type == 3:
+                    in_channels *= 2
+                input_shape = (in_channels, 
+                               gym_obs_shape[1]//16 + int((gym_obs_shape[1]%16)>0), 
+                               gym_obs_shape[2]//16 + int((gym_obs_shape[2]%16)>0))
+            self.actor_encoder = ActorEncoder(input_shape=input_shape, 
+                                              num_actions=num_actions,
+                                              flags=flags)
+            last_out_size += self.actor_encoder.out_size 
             
-        self.im_policy = nn.Linear(last_out_size, self.num_actions)        
-        self.policy = nn.Linear(last_out_size, self.num_actions)       
-        self.reset = nn.Linear(last_out_size, 2)    
+        if self.obs_shape is not None:
+            # there is model's tree stat. output
+            self.initial_enc = nn.Sequential(nn.Linear(self.obs_shape[0], self.tran_dim), nn.ReLU())            
+            if self.tran_layer_n >= 1:
+                self.core = ConvAttnLSTM(h=1, 
+                                         w=1,
+                                         input_dim=self.tran_dim, 
+                                         hidden_dim=self.tran_dim,
+                                         kernel_size=1, 
+                                         num_layers=self.tran_layer_n,
+                                         num_heads=8, 
+                                         mem_n=self.tran_mem_n, 
+                                         attn=not self.tran_lstm_no_attn,
+                                         attn_mask_b=self.attn_mask_b)  
+            self.model_stat_fc = nn.Sequential(nn.Linear(self.tran_dim, self.tran_dim),  nn.ReLU())   
+            last_out_size += self.tran_dim
+        
+        self.policy = nn.Linear(last_out_size, self.num_actions)               
 
+        if not self.disable_model:
+            self.im_policy = nn.Linear(last_out_size, self.num_actions)        
+            self.reset = nn.Linear(last_out_size, 2)    
+
+        self.rv_tran = None
         if self.enc_type == 0:
-            self.baseline = nn.Linear(last_out_size, self.num_rewards)      
-            self.rv_tran = None
+            self.baseline = nn.Linear(last_out_size, self.num_rewards)                  
+            if self.flags.reward_clipping > 0:
+                self.baseline_clamp = self.flags.reward_clipping / (1 - self.flags.discounting)
         elif self.enc_type == 1:
             self.baseline = nn.Linear(last_out_size, self.num_rewards)      
             self.rv_tran = RVTran(enc_type = self.enc_type)
@@ -297,31 +265,26 @@ class ActorNetBase(nn.Module):
             self.out_n = self.rv_tran.encoded_n
             self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)      
             self.rv_tran = RVTran(enc_type = self.enc_type)
-        elif self.enc_type == 4:
-            self.baseline = nn.Linear(last_out_size, self.num_rewards)  
-            self.register_buffer("baseline_alpha", torch.ones(self.num_rewards))
-            self.register_buffer("baseline_beta", torch.zeros(self.num_rewards))
-            self.rv_tran = None
 
         if flags.critic_zero_init:                
             nn.init.constant_(self.baseline.weight, 0.)
             nn.init.constant_(self.baseline.bias, 0.)
 
-        self.initial_state(1) # just for setting core_state_sep_ind
-
     def initial_state(self, batch_size, device=None):
-        state = self.core.init_state(batch_size, device=device) 
-        self.core_state_sep_ind = len(state)
-        if self.actor_see_type >= 0 and self.actor_drc:
-            state = state + self.actor_encoder.initial_state(batch_size, device=device)
+        if self.obs_shape is not None and self.tran_layer_n >= 1:
+            state = self.core.init_state(batch_size, device=device) 
+        else:
+            state = ()
         return state
 
-    def forward(self, obs, core_state=()):
+    def forward(self, obs, core_state=(), greedy=False):
         """one-step forward for the actor;
         args:
             obs (EnvOut):
-                model_out (tensor): model output with shape (T x B x C) or (B x C)
-                done  (tensor): if episode ends with shape (T x B) or (B)
+                model_out (tensor): model statistic output with shape (T x B x C) 
+                model_encodes (tensor): model encoding output with shape (T x B x C X H X W)
+                gym_env_out (tensor): frame output (only for perfect_model) with shape (T x B x C X H X W)
+                done  (tensor): if episode ends with shape (T x B) 
                 cur_t (tensor): current planning step with shape (T x B) 
                 and other environment output that is not used.
         return:
@@ -335,89 +298,110 @@ class ActorNetBase(nn.Module):
                 baseline (tensor): prediced baseline (T x B x 1) or (T x B x 2)
                 reg_loss (tensor): regularization loss (T x B)
         """
-                
-        x = obs.model_out
         done = obs.done
-        
-        if len(x.shape) == 2: x = x.unsqueeze(0)
-        if len(done.shape) == 1: done = done.unsqueeze(0)  
-            
-        T, B, *_ = x.shape
-        x = torch.flatten(x, 0, 1)  # Merge time and batch.  
+        assert len(done.shape) == 2, f"done shape should be (T, B) instead of {done.shape}"
+        T, B = done.shape        
 
+        final_out = []
+
+        last_action = torch.flatten(obs.last_action, 0, 1)
+        last_re_action =  F.one_hot(last_action[:,0], self.num_actions)
+        final_out.append(last_re_action)
+
+        if not self.disable_model:
+            last_im_action =  F.one_hot(last_action[:,1], self.num_actions)
+            last_reset_action =  F.one_hot(last_action[:,2], 2)
+            final_out.append(last_im_action)
+            final_out.append(last_reset_action)
+
+        last_reward = torch.clamp(torch.flatten(obs.reward, 0, 1), -1, +1)
+        final_out.append(last_reward)
+        
+        # compute model encoding branch
         if self.actor_see_type >= 0:
-            if self.actor_see_type == 0 and self.flags.perfect_model:
-                actor_enc_in = obs.gym_env_out.float() / 255.
+            if self.actor_see_type == 0 and (self.disable_model or self.flags.perfect_model):
+                model_enc = obs.gym_env_out.float() / 255.
             else:
-                actor_enc_in = obs.model_encodes
+                model_enc = obs.model_encodes
+            model_enc = torch.flatten(model_enc, 0, 1)
+            model_enc = self.actor_encoder(model_enc)
+            final_out.append(model_enc)
 
-            encoder_out, core_state_ = self.actor_encoder(actor_enc_in,                                              
-                                             core_state = core_state[self.core_state_sep_ind:],
-                                             done=done)
-            
-        if self.actor_encode_concat_type == 1 and self.actor_see_type >= 0:
-            x = torch.concat([x, encoder_out], dim=1)
-        x = self.initial_enc(x)                
+        # compute model stat branch
+        if self.obs_shape is not None:
+            model_stat = torch.flatten(obs.model_out, 0, 1)
+            model_stat = self.initial_enc(model_stat)   
+            if self.tran_layer_n >= 1:
+                core_input = model_stat.view(*((T, B) + model_stat.shape[1:]))
+                core_output_list = []
+                notdone = ~(done.bool())
+                core_input = core_input.unsqueeze(-1).unsqueeze(-1)
+                for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):  
+                    if self.disable_mem:
+                        core_state = tuple(torch.zeros_like(s) for s in core_state)
+                    for t in range(self.tran_t):                
+                        if t > 0: nd = torch.ones_like(notdone)          
+                        nd = nd.view(-1)      
+                        output, core_state = self.core(input, core_state, nd, nd) # output shape: 1, B, core_output_size                 
+                        #output, core_state = checkpoint(self.core, input, core_state, nd, nd)
+                    core_output_list.append(output)                             
+                core_output = torch.cat(core_output_list)              
+                core_output = torch.flatten(core_output, 0, 1)        
+                model_stat = torch.flatten(core_output, start_dim=1)
+            model_stat = self.model_stat_fc(model_stat)
+            final_out.append(model_stat)
 
-        core_input = x.view(*((T, B) + x.shape[1:]))
-        core_output_list = []
-        core_state = core_state[:self.core_state_sep_ind]
-        notdone = ~(done.bool())
-        core_input = core_input.unsqueeze(-1).unsqueeze(-1)
-        for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):  
-            for t in range(self.tran_t):                
-                if t > 0: nd = torch.ones(B, device=x.device, dtype=torch.bool)                 
-                nd = nd.view(-1)      
-                output, core_state = self.core(input, core_state, nd, nd) # output shape: 1, B, core_output_size                 
-            core_output_list.append(output)                             
-        core_output = torch.cat(core_output_list)              
-        core_output = torch.flatten(core_output, 0, 1)        
-        core_output = torch.flatten(core_output, start_dim=1)
-        x = self.fc(core_output)
-
-        if self.actor_encode_concat_type == 0 and self.actor_see_type >= 0:
-            x = torch.concat([x, encoder_out], dim=1)
+        final_out = torch.concat(final_out, dim=-1)    
    
-        policy_logits = self.policy(x)
-        im_policy_logits = self.im_policy(x)
-        reset_policy_logits = self.reset(x)
+        policy_logits = self.policy(final_out)        
+        if not greedy:
+            action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
+        else:
+            action = torch.argmax(policy_logits, dim=1)
+        policy_logits = policy_logits.view(T, B, self.num_actions)
+        action = action.view(T, B)     
 
-        action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
-        im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
-        reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
+        if not self.disable_model:
+            im_policy_logits = self.im_policy(final_out)
+            if not greedy:
+                im_action = torch.multinomial(F.softmax(im_policy_logits, dim=1), num_samples=1)
+            else:
+                im_action = torch.argmax(im_policy_logits, dim=1)
+            im_policy_logits = im_policy_logits.view(T, B, self.num_actions)
+            im_action = im_action.view(T, B) 
+            reset_policy_logits = self.reset(final_out)            
+            if not greedy:
+                reset_action = torch.multinomial(F.softmax(reset_policy_logits, dim=1), num_samples=1)
+            else:
+                reset_action = torch.argmax(reset_policy_logits, dim=1)
+            reset_policy_logits = reset_policy_logits.view(T, B, 2)
+            reset_action = reset_action.view(T, B) 
+        else:
+            im_policy_logits, im_action, reset_policy_logits, reset_action = None, None, None, None
         
-        if self.enc_type ==0 :
-            baseline = self.baseline(x)
+        if self.enc_type ==0:
+            baseline = self.baseline(final_out)   
+            if self.flags.reward_clipping > 0:         
+                baseline = torch.clamp(baseline, -self.baseline_clamp, +self.baseline_clamp)
             baseline_enc = None
         elif self.enc_type == 1: 
-            baseline_enc_s = self.baseline(x)
+            baseline_enc_s = self.baseline(final_out)
             baseline = self.rv_tran.decode(baseline_enc_s)
             baseline_enc = baseline_enc_s
-        elif self.enc_type in [2,3]: 
-            baseline_enc_logit = self.baseline(x).reshape(T*B, self.num_rewards, self.out_n)
+        elif self.enc_type in [2, 3]: 
+            baseline_enc_logit = self.baseline(final_out).reshape(T*B, self.num_rewards, self.out_n)
             baseline_enc_v = F.softmax(baseline_enc_logit, dim=-1)
             baseline = self.rv_tran.decode(baseline_enc_v)
             baseline_enc = baseline_enc_logit
-        elif self.enc_type == 4: 
-            baseline_enc = self.baseline(x)
-            baseline = baseline_enc * self.baseline_alpha + self.baseline_beta
+        
+        baseline_enc = baseline_enc.view((T, B) + baseline_enc.shape[1:]) if baseline_enc is not None else None
+        baseline = baseline.view(T, B, self.num_rewards)    
                    
         reg_loss = (1e-3 * torch.sum(policy_logits**2, dim=-1) / 2 + 
-                    1e-3 * torch.sum(im_policy_logits**2, dim=-1) / 2 + 
-                    1e-3 * torch.sum(reset_policy_logits**2, dim=-1) / 2 + 
-                    1e-5 * torch.sum(core_output**2, dim=-1) / 2)
-        reg_loss = reg_loss.view(T, B)
-        
-        policy_logits = policy_logits.view(T, B, self.num_actions)
-        im_policy_logits = im_policy_logits.view(T, B, self.num_actions)
-        reset_policy_logits = reset_policy_logits.view(T, B, 2)
-        
-        action = action.view(T, B)      
-        im_action = im_action.view(T, B)      
-        reset_action = reset_action.view(T, B)                 
-
-        baseline_enc = baseline_enc.view((T, B) + baseline_enc.shape[1:]) if baseline_enc is not None else None
-        baseline = baseline.view(T, B, self.num_rewards)        
+                    1e-6 * torch.sum(final_out**2, dim=-1).view(T, B) / 2)        
+        if not self.disable_model:
+            reg_loss += 1e-3 * torch.sum(im_policy_logits**2, dim=-1) / 2 + \
+                        1e-3 * torch.sum(reset_policy_logits**2, dim=-1) / 2                       
 
         actor_out = ActorOut(policy_logits=policy_logits,                         
                              im_policy_logits=im_policy_logits,                         
@@ -429,8 +413,6 @@ class ActorNetBase(nn.Module):
                              baseline=baseline, 
                              reg_loss=reg_loss,)       
         
-        if self.actor_see_type >= 0 and self.actor_drc:
-            core_state = core_state + core_state_
         return actor_out, core_state
 
     def get_weights(self):
@@ -445,97 +427,66 @@ class ActorNetBase(nn.Module):
             self.load_state_dict({k:v.to(device) for k, v in weights.items()})  
 
 def ActorNet(obs_shape, gym_obs_shape, num_actions, flags):
-    if flags.actor_net_ver == 1:
-        return ActorNetBase(obs_shape, gym_obs_shape, num_actions, flags)
-    elif flags.actor_net_ver == 0:
-        from thinker.legacy import LegacyActorNet
-        return LegacyActorNet(obs_shape, gym_obs_shape, num_actions, flags)
+    return ActorNetBase(obs_shape, gym_obs_shape, num_actions, flags)
 
 # Model Network
 
 class FrameEncoder(nn.Module):    
-    def __init__(self, num_actions, input_shape, type_nn=0, 
-                 size_nn=1, downscale_c=2, concat_action=True, 
-                 decoder=False, frame_copy=False):
+    def __init__(self, 
+                 num_actions, 
+                 input_shape,
+                 size_nn=1, 
+                 downscale_c=2, 
+                 concat_action=True, 
+                 decoder=False, 
+                 frame_copy=False, 
+                 grayscale=False,
+                 disable_bn=False):
         super(FrameEncoder, self).__init__() 
         self.num_actions = num_actions
-        self.type_nn = type_nn
         self.size_nn = size_nn
         self.downscale_c = downscale_c
         self.decoder = decoder
         self.frame_copy = frame_copy
+        self.grayscale = grayscale
         frame_channels, h, w = input_shape
-
-        if type_nn in [0, 1]:
-            self.concat_action = concat_action
-        elif type_nn in [2, 3]:
-            self.concat_action = False        
+        self.concat_action = concat_action  
 
         if self.concat_action:
             in_channels=frame_channels+num_actions
         else:
             in_channels=frame_channels        
 
-        if type_nn in [0, 1]:
-            # mu zero
-            if type_nn == 0:
-                n_block = 1  * self.size_nn
-            elif type_nn == 1:
-                n_block = 2 * self.size_nn
+        n_block = 1  * self.size_nn
+        out_channels = int(128//downscale_c)
 
-            out_channels = int(128//downscale_c)
+        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=2, padding=1) 
+        res = [ResBlock(inplanes=out_channels, disable_bn=disable_bn) for _ in range(n_block)] # Deep: 2 blocks here
+        self.res1 = nn.Sequential(*res)
+        self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels*2, 
+                            kernel_size=3, stride=2, padding=1) 
+        res =  [ResBlock(inplanes=out_channels*2, disable_bn=disable_bn) for _ in range(n_block)] # Deep: 3 blocks here
+        self.res2 = nn.Sequential(*res)
+        self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
+        res = [ResBlock(inplanes=out_channels*2, disable_bn=disable_bn) for _ in range(n_block)] # Deep: 3 blocks here
+        self.res3 = nn.Sequential(*res)
+        self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
+        self.out_shape = (out_channels*2, h//16 + int((h%16)>0), w//16 + int((w%16)>0))
 
-            self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=2, padding=1) 
-            res = [ResBlock(inplanes=out_channels) for _ in range(n_block)] # Deep: 2 blocks here
-            self.res1 = nn.Sequential(*res)
-            self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels*2, 
-                                kernel_size=3, stride=2, padding=1) 
-            res =  [ResBlock(inplanes=out_channels*2) for _ in range(n_block)] # Deep: 3 blocks here
-            self.res2 = nn.Sequential(*res)
-            self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
-            res = [ResBlock(inplanes=out_channels*2) for _ in range(n_block)] # Deep: 3 blocks here
-            self.res3 = nn.Sequential(*res)
-            self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
-            self.out_shape = (out_channels*2, h//16, w//16)
-
-            if decoder:
-                d_conv = [ResBlock(inplanes=out_channels*2) for _ in range(n_block)]
-                kernel_sizes = [4, 4, 4, 4]
-                conv_channels = [frame_channels if not self.frame_copy else 3, 
-                                 out_channels, out_channels*2, out_channels*2, out_channels*2]
-                for i in range(4):
-                    if i in [1, 3]:
-                        d_conv.extend([ResBlock(inplanes=conv_channels[4-i]) for _ in range(n_block)])
-                    d_conv.append(nn.ReLU())
-                    d_conv.append(nn.ConvTranspose2d(conv_channels[4-i], conv_channels[4-i-1], 
-                                          kernel_size=kernel_sizes[i], stride=2, padding=1))    
-                self.d_conv = nn.Sequential(*d_conv)
-
-        elif type_nn in [2, 3]:
-            # efficient zero
-            num_block = 1 if type_nn in [2] else (2 * self.size_nn)
-            out_channels = 64 if type_nn in [2] else 128
-            self.conv1 = nn.Conv2d(in_channels, out_channels // 2, kernel_size=3, stride=2, padding=1, bias=False)
-            self.bn1 = nn.BatchNorm2d(out_channels // 2)
-            self.resblocks1 = nn.ModuleList(
-                [ResBlock(out_channels // 2, out_channels // 2) for _ in range(num_block)]
-            )
-            self.conv2 = nn.Conv2d(out_channels // 2, out_channels, kernel_size=3, stride=2, padding=1, bias=False,)
-            self.downsample_block = ResBlock(out_channels // 2, out_channels, stride=2, downsample=self.conv2)
-            self.resblocks2 = nn.ModuleList(
-                [ResBlock(out_channels, out_channels) for _ in range(num_block)]
-            )
-            self.pooling1 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
-            self.resblocks3 = nn.ModuleList(
-                [ResBlock(out_channels, out_channels) for _ in range(num_block)]
-            )
-            self.pooling2 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)   
-            self.resblocks4 = nn.ModuleList(
-                [ResBlock(out_channels, out_channels) for _ in range(num_block)]
-            )              
-            self.out_shape = (out_channels, h//16, w//16)
+        if decoder:
+            d_conv = [ResBlock(inplanes=out_channels*2, disable_bn=disable_bn) for _ in range(n_block)]
+            kernel_sizes = [4, 4, 4, 4]
+            conv_channels = [frame_channels if not self.frame_copy else (3 if not self.grayscale else 1), 
+                                out_channels, out_channels*2, out_channels*2, out_channels*2]
+            for i in range(4):
+                if i in [1, 3]:
+                    d_conv.extend([ResBlock(inplanes=conv_channels[4-i], disable_bn=disable_bn) for _ in range(n_block)])
+                d_conv.append(nn.ReLU())
+                d_conv.append(nn.ConvTranspose2d(conv_channels[4-i], conv_channels[4-i-1], 
+                                        kernel_size=kernel_sizes[i], stride=2, padding=1))    
+            self.d_conv = nn.Sequential(*d_conv)
     
-    def forward(self, x, actions, flatten=False):      
+    def forward(self, x, actions=None, flatten=False):      
         """
         Args:
           x (tensor): frame with shape B, C, H, W        
@@ -546,34 +497,16 @@ class FrameEncoder(nn.Module):
             input_shape = x.shape
             x = x.view((x.shape[0]*x.shape[1],) + x.shape[2:])
             actions = actions.view((actions.shape[0]*actions.shape[1],) + actions.shape[2:])
-        if self.type_nn in [0, 1]:
-            if self.concat_action:
-                actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
-                x = torch.concat([x, actions], dim=1)
-            x = F.relu(self.conv1(x))
-            x = self.res1(x)
-            x = F.relu(self.conv2(x))
-            x = self.res2(x)
-            x = self.avg1(x)
-            x = self.res3(x)
-            x = self.avg2(x)
-            z = x
-        elif self.type_nn in [2, 3]:
-            x = self.conv1(x)
-            x = self.bn1(x)
-            x = nn.functional.relu(x)
-            for block in self.resblocks1:
-                x = block(x)
-            x = self.downsample_block(x)
-            for block in self.resblocks2:
-                x = block(x)
-            x = self.pooling1(x)
-            for block in self.resblocks3:
-                x = block(x)
-            x = self.pooling2(x)
-            for block in self.resblocks4:
-                x = block(x)
-            z = x            
+        if self.concat_action:
+            actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
+            x = torch.concat([x, actions], dim=1)
+        x = F.relu(self.conv1(x))
+        x = self.res1(x)
+        x = F.relu(self.conv2(x))
+        x = self.res2(x)
+        x = self.avg1(x)
+        x = self.res3(x)
+        z = self.avg2(x)
         if flatten:
             z = z.view(input_shape[:2]+z.shape[1:])
         return z
@@ -586,90 +519,66 @@ class FrameEncoder(nn.Module):
         if flatten:
             input_shape = z.shape
             z = z.view((z.shape[0]*z.shape[1],) + z.shape[2:])
-        if self.type_nn in [0, 1]:
-            x = self.d_conv(z)                        
-        else: raise Exception("%d model_type_nn does not support decoder" % self.type_nn)
-
+        #x = checkpoint_sequential(self.d_conv, segments=1, input=z)
+        x = self.d_conv(z)                        
         if flatten:
             x = x.view(input_shape[:2]+x.shape[1:])
         return x
     
 class DynamicModel(nn.Module):
-    def __init__(self, num_actions, inplanes, type_nn=0, size_nn=1, 
+    def __init__(self, num_actions, inplanes, size_nn=1, 
                  outplanes=None, disable_half_grad=False, disable_bn=False):        
         super(DynamicModel, self).__init__()
         self.num_actions = num_actions     
         self.inplanes = inplanes
-        self.type_nn = type_nn
         self.size_nn = size_nn        
         self.disable_half_grad = disable_half_grad
         if outplanes is None: outplanes = inplanes
 
-        if type_nn == 0:
-            res = [ResBlock(inplanes=inplanes+num_actions, 
-                            outplanes=outplanes, disable_bn=disable_bn)] + [
-                    ResBlock(inplanes=outplanes, disable_bn=disable_bn) for i in range(4 * self.size_nn)]
-            self.res = nn.Sequential(*res)
-            self.outplanes = outplanes 
-        elif type_nn == 1:             
-            res = [ResBlock(inplanes=inplanes if i == 0 else outplanes, 
-                            outplanes=outplanes,
-                            disable_bn=disable_bn) for i in range(15)] + [
-                    ResBlock(inplanes=outplanes, 
-                             outplanes=outplanes*num_actions,
-                             disable_bn=disable_bn)]
-            self.res = nn.Sequential(*res)    
-            self.outplanes = outplanes 
-        elif type_nn in [2, 3]:
-            num_block = 1 if type_nn == 2 else (4 * self.size_nn)
-            self.conv1 =  conv3x3(inplanes+num_actions, outplanes)
-            self.bn1 = nn.BatchNorm2d(outplanes) if not disable_bn else nn.Identity()
-            res = [ResBlock(inplanes=outplanes, disable_bn=disable_bn) for i in range(num_block)]
-            self.res = nn.Sequential(*res)   
-            self.outplanes = outplanes 
+        res = [ResBlock(inplanes=inplanes+num_actions, 
+                        outplanes=outplanes, disable_bn=disable_bn)] + [
+                ResBlock(inplanes=outplanes, disable_bn=disable_bn) for i in range(4 * self.size_nn)]
+        self.res = nn.Sequential(*res)
+        self.outplanes = outplanes 
     
     def forward(self, h, actions): 
         x = h
         b, c, height, width = x.shape      
-        if self.training and self.type_nn in [0, 1, 2, 3] and not self.disable_half_grad:
+        if self.training and not self.disable_half_grad:
             # no half-gradient for dreamer net
             x.register_hook(lambda grad: grad * 0.5)
-        if self.type_nn == 0:
-            actions = actions.unsqueeze(-1).unsqueeze(-1).tile  ([1, 1, x.shape[2], x.shape[3]])        
-            x = torch.concat([x, actions], dim=1)
-            out = self.res(x)
-        elif self.type_nn == 1:            
-            res_out = self.res(x).view(b, self.num_actions, self.outplanes, height, width)        
-            actions = actions.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            out = torch.sum(actions * res_out, dim=1)
-        elif self.type_nn in [2,3]:  
-            actions = actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])        
-            out = torch.concat([x, actions], dim=1)
-            out = self.conv1(out)
-            out = self.bn1(out)
-            out = out + x
-            out = nn.functional.relu(out)
-            out = self.res(out)
+        actions = actions.unsqueeze(-1).unsqueeze(-1).tile  ([1, 1, x.shape[2], x.shape[3]])        
+        x = torch.concat([x, actions], dim=1)
+        out = self.res(x)
         return out
     
 class Output_rvpi(nn.Module):   
-    def __init__(self, num_actions, input_shape, value_prefix, max_unroll_length, 
-            enc_type, stop_vpi_grad, zero_init, type_nn, size_nn,
-            predict_v_pi=True, predict_r=True, predict_done=False, disable_bn=False,
-            prefix=""):         
+    def __init__(self, 
+                 num_actions, 
+                 input_shape, 
+                 value_prefix, 
+                 value_clamp,
+                 max_unroll_length, 
+                 enc_type, 
+                 zero_init, 
+                 size_nn,
+                 predict_v_pi=True, 
+                 predict_r=True, 
+                 predict_done=False, 
+                 disable_bn=False,
+                 prefix=""):         
         super(Output_rvpi, self).__init__()    
         
         self.input_shape = input_shape
-        self.type_nn = type_nn
         self.size_nn = size_nn
         self.value_prefix = value_prefix
+        self.value_clamp = value_clamp
         self.max_unroll_length = max_unroll_length
         self.enc_type = enc_type
-        self.stop_vpi_grad = stop_vpi_grad
         self.predict_v_pi = predict_v_pi
         self.predict_r = predict_r
         self.predict_done = predict_done
-        self.prefix = prefix
+        self.prefix = prefix        
 
         assert self.enc_type in [0, 2, 3], "model encoding type can only be 0, 2, 3"
 
@@ -683,85 +592,47 @@ class Output_rvpi(nn.Module):
 
         layer_norm = nn.BatchNorm2d if not disable_bn else nn.Identity
 
-        if self.type_nn in [0, 1]:
-            self.conv1 = nn.Conv2d(in_channels=c, out_channels=c//2, kernel_size=3, padding='same') 
-            self.conv2 = nn.Conv2d(in_channels=c//2, out_channels=c//4, kernel_size=3, padding='same') 
-            fc_in = h * w * (c // 4)  
+        self.conv1 = nn.Conv2d(in_channels=c, out_channels=c//2, kernel_size=3, padding='same') 
+        self.conv2 = nn.Conv2d(in_channels=c//2, out_channels=c//4, kernel_size=3, padding='same') 
+        fc_in = h * w * (c // 4)  
 
-            if predict_v_pi:
-                self.fc_logits = nn.Linear(fc_in, num_actions)         
-                self.fc_v = nn.Linear(fc_in, out_n) 
-                if zero_init:                
-                    nn.init.constant_(self.fc_v.weight, 0.)
-                    nn.init.constant_(self.fc_v.bias, 0.)
-                    nn.init.constant_(self.fc_logits.weight, 0.)
-                    nn.init.constant_(self.fc_logits.bias, 0.) 
+        if predict_v_pi:
+            self.fc_logits = nn.Linear(fc_in, num_actions)         
+            self.fc_v = nn.Linear(fc_in, out_n) 
+            if zero_init:                
+                nn.init.constant_(self.fc_v.weight, 0.)
+                nn.init.constant_(self.fc_v.bias, 0.)
+                nn.init.constant_(self.fc_logits.weight, 0.)
+                nn.init.constant_(self.fc_logits.bias, 0.) 
 
-            if predict_done:
-                self.fc_done = nn.Linear(fc_in,1) 
-                if zero_init:                
-                    nn.init.constant_(self.fc_done.weight, 0.)
+        if predict_done:
+            self.fc_done = nn.Linear(fc_in,1) 
+            if zero_init:                
+                nn.init.constant_(self.fc_done.weight, 0.)
 
-            if predict_r and not self.value_prefix:
-                self.fc_r = nn.Linear(fc_in, out_n)      
-                if zero_init:
-                    nn.init.constant_(self.fc_r.weight, 0.)
-                    nn.init.constant_(self.fc_r.bias, 0.)
-
-        elif self.type_nn in [2, 3]:
-            num_block = 1 if self.type_nn  == 2 else 2 * self.size_nn
-            out_channels = 16 if self.type_nn  == 2 else 16 * self.size_nn
-            self.resblocks = nn.ModuleList(
-                [ResBlock(c, c) for _ in range(num_block)]
-            )
-            fc_in = h * w * out_channels            
-            if predict_v_pi:
-                self.conv1x1_v = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
-                self.bn_v = layer_norm(out_channels) 
-                self.fc_v = mlp(fc_in, [32], out_n, zero_init=zero_init, norm=not disable_bn)                   
-                self.conv1x1_logits = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)            
-                self.bn_logits = layer_norm(out_channels) 
-                self.fc_logits = mlp(fc_in, [32], num_actions, zero_init=zero_init, norm=not disable_bn)                 
-
-            if predict_done:
-                self.conv1x1_done = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
-                self.bn_done = layer_norm(out_channels)
-                self.fc_done = mlp(fc_in, [32], 1, zero_init=zero_init, norm=not disable_bn)            
-
-            if predict_r and not self.value_prefix:
-                self.conv1x1_r = nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1)
-                self.bn_r = layer_norm(out_channels) 
-                self.fc_r = mlp(fc_in, [32], out_n, zero_init=zero_init, norm=not disable_bn)
+        if predict_r and not self.value_prefix:
+            self.fc_r = nn.Linear(fc_in, out_n)      
+            if zero_init:
+                nn.init.constant_(self.fc_r.weight, 0.)
+                nn.init.constant_(self.fc_r.bias, 0.)
 
         if predict_r and self.value_prefix:
-            if self.type_nn in [0, 1, 2, 3]:
-                self.conv1x1_reward = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)            
-                self.bn_r_1 = layer_norm(16)
-                self.lstm_input_size=16*input_shape[1]*input_shape[2]
-            elif self.type_nn in [4]:
-                self.lstm_input_size = c
+            self.conv1x1_reward = nn.Conv2d(in_channels=c, out_channels=16, kernel_size=1)            
+            self.bn_r_1 = layer_norm(16)
+            self.lstm_input_size=16*input_shape[1]*input_shape[2]
             self.lstm = nn.LSTM(input_size=self.lstm_input_size, hidden_size=512)
             self.bn_r_2 = nn.Identity() if disable_bn else nn.BatchNorm1d(512)
             out_n = self.rv_tran.encoded_n if self.enc_type in [2, 3] else 1
             self.fc_r = mlp(512, [64], out_n, zero_init=zero_init, norm=not disable_bn)                
         
     def forward(self, h, predict_reward=True, state={}):   
-        if self.stop_vpi_grad: h = h.detach()
         x = h
         b = x.shape[0]       
         state_ = {}
-        if self.type_nn in [0, 1]:
-            x_ = F.relu(self.conv1(x))
-            x_ = F.relu(self.conv2(x_))
-            x_ = torch.flatten(x_, start_dim=1)
-            x_v, x_logits, x_done = x_, x_, x_
-        elif self.type_nn in [2, 3]:
-            for block in self.resblocks: x = block(x)
-            if self.predict_v_pi:
-                x_v = torch.flatten(nn.functional.relu(self.bn_v(self.conv1x1_v(x))), start_dim=1)
-                x_logits = torch.flatten(nn.functional.relu(self.bn_logits(self.conv1x1_logits(x))), start_dim=1)
-            if self.predict_done:
-                x_done = torch.flatten(nn.functional.relu(self.bn_done(self.conv1x1_done(x))), start_dim=1)                
+        x_ = F.relu(self.conv1(x))
+        x_ = F.relu(self.conv2(x_))
+        x_ = torch.flatten(x_, start_dim=1)
+        x_v, x_logits, x_done = x_, x_, x_  
 
         if self.predict_v_pi:
             logits = self.fc_logits(x_logits)
@@ -772,6 +643,8 @@ class Output_rvpi(nn.Module):
             else:
                 v_enc_logit = None
                 v = self.fc_v(x_v).squeeze(-1)
+                if self.value_clamp is not None and self.value_clamp > 0:
+                    v = torch.clamp(v, -self.value_clamp, self.value_clamp)
         else:
             v, v_enc_logit, logits = None, None, None
 
@@ -808,10 +681,7 @@ class Output_rvpi(nn.Module):
                 x_r = self.bn_r_2(x_r)
                 x_r = nn.functional.relu(x_r)
             else:
-                if self.type_nn in [0, 1]:
-                    x_r = x_
-                elif self.type_nn in [2, 3]:
-                    x_r = torch.flatten(nn.functional.relu(self.bn_r(self.conv1x1_r(x))), start_dim=1)
+                x_r = x_
             r_out = self.fc_r(x_r)
             if self.enc_type in [2, 3]:
                 r_enc_logit = r_out
@@ -857,33 +727,35 @@ class ModelNetV(nn.Module):
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
         self.enc_type = flags.model_enc_type
-        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
-        self.size_nn = flags.model_size_nn # size_nn: int to adjust for the depth of model net (for model_type_nn == 3 only)
+        self.size_nn = flags.model_size_nn # size_nn: int to adjust for the depth of model net
         self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
         self.frame_copy = flags.frame_copy 
+        self.grayscale = flags.grayscale
         self.encoder = FrameEncoder(num_actions=num_actions, 
                                          input_shape=obs_shape, 
-                                         type_nn=self.type_nn, 
                                          size_nn=self.size_nn,
                                          downscale_c=self.downscale_c,
                                          decoder=True,
-                                         frame_copy=self.frame_copy)
+                                         frame_copy=self.frame_copy,
+                                         grayscale=self.grayscale)
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]
         self.RNN = DynamicModel(num_actions=num_actions, 
                                 inplanes=inplanes, 
-                                type_nn=self.type_nn, 
                                 size_nn=self.size_nn,
                                 disable_half_grad=True,
                                 disable_bn=self.flags.model_disable_bn)  
+        if self.flags.reward_clipping > 0:
+            value_clamp = self.flags.reward_clipping / (1 - self.flags.discounting)
+        else:
+            value_clamp = None
         self.out = Output_rvpi(num_actions=num_actions, 
                                 input_shape=self.hidden_shape, 
                                 value_prefix=flags.value_prefix,
+                                value_clamp=value_clamp,
                                 max_unroll_length=flags.model_k_step_return, 
                                 enc_type=self.enc_type,
-                                stop_vpi_grad=False, 
                                 zero_init=flags.model_zero_init, 
-                                type_nn=self.type_nn, 
                                 size_nn=self.size_nn,
                                 predict_v_pi=False,
                                 predict_r=True,
@@ -906,35 +778,44 @@ class ModelNetV(nn.Module):
         k, b, *_ = actions.shape
         k = k - 1
         if not one_hot: actions = F.one_hot(actions, self.num_actions) 
+        if k > 1: util.print_mem("M1.1.1")
         h = self.encoder(x, actions[0])           
         hs = [h.unsqueeze(0)]
+        if k > 1: util.print_mem("M1.1.2")
         for t in range(1, k+1):              
             h = self.RNN(h=h, actions=actions[t])  
             hs.append(h.unsqueeze(0))
+            if k > 1: util.print_mem("M1.1.3")
         hs = torch.concat(hs, dim=0)
+        if k > 1: util.print_mem("M1.1.4")
 
         state = {"m_h": h}        
         if len(hs) > 1:
             xs = self.encoder.decode(hs[1:], flatten=True)  
+            if k > 1: util.print_mem("M1.1.5")
             if self.frame_copy:
+                copy_n = 1 if self.grayscale else 3
                 stacked_x = x
                 stacked_xs = []
                 for i in range(k):
-                    stacked_x = torch.concat([stacked_x[:,3:], xs[i]], dim=1)
+                    stacked_x = torch.concat([stacked_x[:,copy_n:], xs[i]], dim=1)
                     stacked_xs.append(stacked_x)
                 xs = torch.stack(stacked_xs, dim=0)
-                state["last_x"] = stacked_x[:, 3:]
+                state["last_x"] = stacked_x[:, copy_n:]
+            if k > 1: util.print_mem("M1.1.6")
         else:
             xs = None
             if self.frame_copy:
-                state["last_x"] = x[:, 3:]
-
+                copy_n = 1 if self.grayscale else 3
+                state["last_x"] = x[:, copy_n:]
+        if k > 1: util.print_mem("M1.1.7")
         outs = []
         r_state = self.out.init_state(bsz=b, device=x.device)    
         for t in range(1, k+1):      
             out = self.out(hs[t], predict_reward=True, state=r_state)
             outs.append(out)
             r_state = out.state        
+        if k > 1: util.print_mem("M1.1.8")
         state.update(r_state)
         return ModelNetOut(
             single_rs=util.safe_concat(outs, "single_rs", 0),
@@ -943,6 +824,7 @@ class ModelNetV(nn.Module):
             dones=util.safe_concat(outs, "dones", 0), 
             done_logits=util.safe_concat(outs, "done_logits", 0), 
             xs=xs,
+            hs=hs,
             state=state,
             )
     
@@ -962,7 +844,7 @@ class ModelNetV(nn.Module):
         out = self.out(h, predict_reward=True, state=state)        
         state = {"m_h": h}
         state.update(out.state)
-        if self.frame_copy: state["last_x"] = x[:, 3:]
+        if self.frame_copy: state["last_x"] = x[:, (1 if self.grayscale else 3):]
 
         return ModelNetOut(
             single_rs=util.safe_unsqueeze(out.single_rs, 0),
@@ -971,6 +853,7 @@ class ModelNetV(nn.Module):
             dones=util.safe_unsqueeze(out.dones, 0),
             done_logits=util.safe_unsqueeze(out.done_logits, 0),
             xs=util.safe_unsqueeze(x, 0),
+            hs=util.safe_unsqueeze(h, 0),
             state=state,
             )
     
@@ -981,37 +864,39 @@ class PredNetV(nn.Module):
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
         self.enc_type = flags.model_enc_type
-        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
-        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
+        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net
         self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
         self.use_rnn = not flags.perfect_model # dont use rnn if we have perfect dynamic
         self.receive_z = flags.duel_net # rnn receives z only when we are using duel net
         self.predict_rd = not flags.duel_net and not flags.perfect_model # network also predicts reward and done if not duel net under non-perfect dynamic
+        self.grayscale = flags.grayscale
 
         self.encoder = FrameEncoder(num_actions=num_actions, 
                                         input_shape=obs_shape, 
-                                        type_nn=self.type_nn, 
                                         size_nn=self.size_nn,
                                         downscale_c=self.downscale_c,
-                                        decoder=False)
+                                        decoder=False,
+                                        grayscale=self.grayscale)
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]
         if self.use_rnn:
             self.RNN = DynamicModel(num_actions=num_actions, 
                                     inplanes=inplanes*2 if self.receive_z else inplanes, 
                                     outplanes=inplanes,
-                                    type_nn=self.type_nn, 
                                     size_nn=self.size_nn,
                                     disable_half_grad=False,
                                     disable_bn=self.flags.model_disable_bn)    
+        if self.flags.reward_clipping > 0:
+            value_clamp = self.flags.reward_clipping / (1 - self.flags.discounting)
+        else:
+            value_clamp = None
         self.out = Output_rvpi(num_actions=num_actions, 
                                    input_shape=self.hidden_shape, 
                                    value_prefix=flags.value_prefix,
+                                   value_clamp=value_clamp,
                                    max_unroll_length=flags.model_k_step_return, 
                                    enc_type=self.enc_type,
-                                   stop_vpi_grad=False, 
                                    zero_init=flags.model_zero_init, 
-                                   type_nn=self.type_nn, 
                                    size_nn=self.size_nn,
                                    predict_v_pi=True,
                                    predict_r=self.predict_rd,
@@ -1160,8 +1045,7 @@ class DuelNetBase(nn.Module):
         self.obs_shape = obs_shape
         self.num_actions = num_actions          
         self.enc_type = flags.model_enc_type
-        self.type_nn = flags.model_type_nn # type_nn: type of neural network for the model; 0 for small, 1 for large, 2 for small enet, 3 for large enet
-        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net (for model_type_nn == 3 only)
+        self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net 
         self.duel_net = flags.duel_net
         if self.duel_net:
             self.model_net = ModelNetV(obs_shape, num_actions, flags)
@@ -1211,6 +1095,8 @@ class DuelNetBase(nn.Module):
             ys = pred_net_out.pred_zs
         elif self.flags.actor_see_type == 2:
             ys = pred_net_out.hs
+        elif self.flags.actor_see_type == 3:
+            ys = torch.concat([model_net_out.hs, pred_net_out.hs], dim=2)
         else:
             ys = None
 
@@ -1258,6 +1144,8 @@ class DuelNetBase(nn.Module):
             ys = pred_net_out.pred_zs
         elif self.flags.actor_see_type == 2:
             ys = pred_net_out.hs
+        elif self.flags.actor_see_type == 3:
+            ys = torch.concat([model_net_out.hs, pred_net_out.hs], dim=2)
         else:
             ys = None
 

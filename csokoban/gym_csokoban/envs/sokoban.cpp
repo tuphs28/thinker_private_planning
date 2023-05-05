@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <random>
+#include <cassert>
 
 constexpr float reward_step = -0.01f, reward_box_off = -1.f, reward_box_on = +1.f, reward_finish = +10.f;
 constexpr int max_step_n = 120;
@@ -95,7 +96,7 @@ void Sokoban::read_spirits() {
 	read_bmp(img_dir, "player" + s, spirites[4]);
 	read_bmp(img_dir, "player_on_target" + s, spirites[5]);
 	read_bmp(img_dir, "box_target" + s, spirites[6]);
-	defEngine = default_random_engine(seed);
+	defEngine = std::mt19937(seed);
 }
 
 void Sokoban::move_pos(const action a, int& x, int& y) {
@@ -225,7 +226,7 @@ int Sokoban::read_level(const int room_id)
 	char file_name[10];
 	snprintf(file_name, 10, "%03d.txt", room_id / 1000);
 	string full_path = level_dir + "//" + file_name;
-	//std::cout << "reading from " << full_path << endl;
+	//std::cout << "reading from " << full_path << " level " << room_id << endl;
 	ifstream in(full_path.c_str(), ios::in);
 	if (in.is_open())
 	{
@@ -252,6 +253,11 @@ int Sokoban::read_level(const int room_id)
 		};
 		in.close();
 	}
+    if (box_left != 4) {
+        std::ostringstream error_msg;
+        error_msg << "box_left must be equal to 4 (room_id: " << room_id << ")";
+        throw std::runtime_error(error_msg.str());
+    }
 	return 0;
 }
 
@@ -285,9 +291,10 @@ void Sokoban::render(unsigned char* obs) {
 }
 
 void Sokoban::reset(unsigned char* obs) {	
-	uniform_int_distribution<int> roomDist(0, 900 * 1000 - 1);
+	uniform_int_distribution<int> roomDist(0, level_num - 1);
 	uniform_int_distribution<int> stepDist(0, 5);
 	int room_id = roomDist(defEngine);	
+	// std::cout << "sampling from " << level_num * 1000 - 1 << " and get " << room_id << " seed : " << seed << endl;
 	read_level(room_id);
 	step_n = stepDist(defEngine);
 	render(obs);
@@ -348,5 +355,6 @@ void Sokoban::restore_state(const unsigned char* room_status, const int& step_n,
 
 void Sokoban::set_seed(unsigned int seed){
 	this->seed = seed;
-	defEngine.seed(seed);	
+	defEngine = std::mt19937(seed);
+	//std::cout << "seed is called to set to " << seed << endl;
 }

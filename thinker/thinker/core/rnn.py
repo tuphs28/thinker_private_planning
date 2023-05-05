@@ -145,7 +145,7 @@ class ConvAttnLSTMCell(nn.Module):
 class ConvAttnLSTM(nn.Module):
 
     def __init__(self, h, w, input_dim, hidden_dim, kernel_size, 
-            num_layers, num_heads, mem_n, attn, attn_mask_b, grad_scale):
+            num_layers, num_heads, mem_n, attn, attn_mask_b, grad_scale=1):
     
         super(ConvAttnLSTM, self).__init__()
         

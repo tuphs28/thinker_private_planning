@@ -28,9 +28,9 @@ def Environment(flags, model_wrap=True, env_n=1, device=None, time=False, debug=
         environment
     """
     if flags.env == "Sokoban-v0": import gym_sokoban
-    if flags.env == "cSokoban-v0": import gym_csokoban
+    if "cSokoban" in flags.env: import gym_csokoban
 
-    env = AsyncVectorEnv([lambda: PreWrap(gym.make(flags.env), flags.env) for _ in range(env_n)])
+    env = AsyncVectorEnv([lambda: PreWrap(gym.make(flags.env), flags) for _ in range(env_n)])
     num_actions = env.action_space[0].n    
     if model_wrap:              
         wrapper = cVecModelWrapper if flags.perfect_model else cVecFullModelWrapper
@@ -41,17 +41,13 @@ def Environment(flags, model_wrap=True, env_n=1, device=None, time=False, debug=
         env = PostVecModelWrapper(env, env_n, num_actions, flags, model_wrap=False, device=device)
     return env
 
-def PreWrap(env, name, test=False):
-    if name == "cSokoban-v0":
+def PreWrap(env, flags, test=False):
+    name = flags.env
+    if "cSokoban" in name:
         env = TransposeWrap(env)
-        # ensures env returns truncated_done in info
-        test_env = gym.make(name)
-        test_env.reset()
-        _, _, _, info = test_env.step(0)
-        assert "truncated_done" in info, "incorrect cSokoban return"
     elif name == "Sokoban-v0":
         env = NoopWrapper(env, cost=-0.01)
-        env = WarpFrame(env, width=80, height=80, grayscale=False)
+        env = WarpFrame(env, width=80, height=80, grayscale=flags.grayscale)
         env = TimeLimit_(env, max_episode_steps=120)
         env = TransposeWrap(env)
     else:        
@@ -64,7 +60,9 @@ def PreWrap(env, name, test=False):
             episode_life=True,
             clip_rewards=False,
             frame_stack=True,
-            scale=False,)
+            scale=False,
+            grayscale=flags.grayscale,
+            frame_wh=flags.frame_wh)
         env = TransposeWrap(env)
     return env
 
@@ -82,11 +80,13 @@ class PostVecModelWrapper(gym.Wrapper):
         self.model_out_shape = env.model_out_shape if self.model_wrap else None
         self.gym_env_out_shape = env.gym_env_out_shape if self.model_wrap else env.observation_space.shape[1:]
 
-    def initial(self, model_net=None):
-        reward_shape = 1 
+    def initial(self, model_net=None):        
         if self.model_wrap:
-            reward_shape += int(self.flags.im_cost > 0.) + int(self.flags.cur_cost > 0.)
-        action_shape = 3
+            reward_shape = 1 + int(self.flags.im_cost > 0.) + int(self.flags.cur_cost > 0.)
+            action_shape = 3
+        else:
+            reward_shape = 1
+            action_shape = 1 
         self.last_action = torch.zeros(self.env_n, action_shape, dtype=torch.long, device=self.device)
         self.episode_return = torch.zeros(1, self.env_n, reward_shape, dtype=torch.float32, device=self.device)
         self.episode_step = torch.zeros(1, self.env_n, dtype=torch.long, device=self.device)
@@ -130,8 +130,8 @@ class PostVecModelWrapper(gym.Wrapper):
             real_done = info["real_done"]
             truncated_done = info["truncated_done"]
         else:
-            real_done = [d["real_done"] for d in info] if "real_done" in info[0] else done
-            truncated_done = [d["truncated_done"] for d in info] if "truncated_done" in info[0] else False
+            real_done = [d["real_done"] if "real_done" in d else done[n] for n, d in enumerate(info)]
+            truncated_done = [d["truncated_done"] if "truncated_done" in d else False for d in info]
 
         if self.model_wrap:
             model_out, gym_env_out, model_encodes = out
@@ -163,14 +163,14 @@ class PostVecModelWrapper(gym.Wrapper):
 
         self.episode_step[:, real_done] = 0.
         self.episode_return[:, real_done] = 0.
-        if self.flags.im_cost > 0.:
+        if self.flags.im_cost > 0. and self.model_wrap:
             self.episode_return[:, info["cur_t"]==0, 1] = 0.
         
         if self.model_wrap:
             self.last_action[info["cur_t"]==0] = action[0, info["cur_t"]==0]
             self.last_action[:, 1:] = action[0, :, 1:]
         else:
-            self.last_action = action
+            self.last_action[:] = action[0].unsqueeze(-1)
 
         if self.flags.reward_clipping > 0:
             reward = torch.clamp(reward, - self.flags.reward_clipping, self.flags.reward_clipping)
@@ -583,14 +583,14 @@ class ScaledFloatFrame(gym.ObservationWrapper):
         # with smaller replay buffers only.
         return np.array(observation).astype(np.float32) / 255.0
 
-def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, scale=False):
+def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, scale=False, grayscale=False, frame_wh=96):
     """Configure environment for DeepMind-style Atari.
     """
     if episode_life:
         env = EpisodicLifeEnv(env)
     if 'FIRE' in env.unwrapped.get_action_meanings():
         env = FireResetEnv(env)
-    env = WarpFrame(env, width=96, height=96, grayscale=False)
+    env = WarpFrame(env, width=frame_wh, height=frame_wh, grayscale=grayscale)
     if scale:
         env = ScaledFloatFrame(env)
     if clip_rewards:

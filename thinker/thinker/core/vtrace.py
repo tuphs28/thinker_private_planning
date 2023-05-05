@@ -47,13 +47,15 @@ VTraceFromLogitsReturns = collections.namedtuple(
 
 VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages norm_stat")
 
-
 def action_log_probs(policy_logits, actions):
     return -F.nll_loss(
         F.log_softmax(torch.flatten(policy_logits, 0, -2), dim=-1),
         torch.flatten(actions),
         reduction="none",
     ).view_as(actions)
+
+def adv_l2(target_x, x):
+    return target_x - x
 
 @torch.no_grad()
 def from_importance_weights(
@@ -117,43 +119,39 @@ def from_importance_weights(
 
             if flags.return_norm_buffer_n <= 0:
                 if not flags.return_norm_use_std:
-                    new_lq = torch.quantile(norm_v, 1 - flags.return_norm_per).detach()
-                    new_uq = torch.quantile(norm_v, flags.return_norm_per).detach()            
+                    new_lq = torch.quantile(norm_v, 0.05).detach()
+                    new_uq = torch.quantile(norm_v, 0.95).detach()            
                 else:
                     new_lq = 0
                     new_uq = torch.sqrt(torch.mean(torch.square(norm_v)))
                 if norm_stat is None:
                     norm_stat = (new_lq, new_uq)
                 else:
-                    norm_stat = (norm_stat[0]*flags.return_norm_decay + new_lq*(1-flags.return_norm_decay),
-                                    norm_stat[1]*flags.return_norm_decay + new_uq*(1-flags.return_norm_decay),)
+                    norm_stat = (norm_stat[0]*0.99 + new_lq*(1-0.99),
+                                 norm_stat[1]*0.99 + new_uq*(1-0.99),)
                 norm_factor = torch.clamp(norm_stat[1] - norm_stat[0], min=flags.return_norm_b)               
                 norm_stat = norm_stat + (norm_factor,)
             else:
                 if norm_stat is None:
-                    buffer = FifoBuffer(flags.return_norm_buffer_n, device=target_values.device)
+                    buffer = FifoBuffer(100000, device=target_values.device)
                 else:
                     buffer = norm_stat[-1]
                 buffer.push(norm_v)
-                if not flags.return_norm_use_std:
-                    lq = buffer.get_percentile(1 - flags.return_norm_per)
-                    uq = buffer.get_percentile(flags.return_norm_per)
-                else:
-                    lq = 0.
-                    uq = torch.sqrt(buffer.get_variance())                
+                lq = buffer.get_percentile(0.05)
+                uq = buffer.get_percentile(0.95)              
                 norm_stat = (lq, uq,)          
                 norm_factor = torch.clamp(norm_stat[1] - norm_stat[0], min=flags.return_norm_b)               
                 norm_stat = norm_stat + (norm_factor, buffer)
-        
+   
         if enc_type in [0, 4] or not flags.return_norm_type == -1:
-            pg_advantages = clipped_pg_rhos * (target_values - values)
+            pg_advantages = clipped_pg_rhos * adv_l2(target_values, values)
             if not flags.return_norm_type == -1:
                 #pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
                 pg_advantages = pg_advantages / norm_factor                
         elif enc_type == 1:
-            pg_advantages = clipped_pg_rhos * (rv_tran.encode(target_values) - values_enc)
+            pg_advantages = clipped_pg_rhos * adv_l2(rv_tran.encode(target_values), values_enc)
         elif enc_type in [2, 3]:
-            pg_advantages = clipped_pg_rhos * (rv_tran.encode(target_values) - 
+            pg_advantages = clipped_pg_rhos * adv_l2(rv_tran.encode(target_values),
                                                rv_tran.encode_s(rv_tran.decode(values_enc)))
         else:
             raise Exception("Unknown reward type: ", rv_tran)

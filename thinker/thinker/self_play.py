@@ -12,9 +12,10 @@ from thinker.buffer import AB_CAN_WRITE, AB_FULL, AB_FINISH
 from thinker.net import ActorNet, ModelNet, ActorOut
 from thinker.env import Environment, EnvOut
 from thinker.learn_model import SModelLearner
+from thinker.learn_actor import SActorLearner
 import thinker.util as util
 
-_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc"])
+_fields = tuple(item for item in ActorOut._fields + EnvOut._fields if item not in ["baseline_enc", "reg_loss"])
 TrainActorOut = namedtuple('TrainActorOut', _fields + ('id',))
 TrainModelOut = namedtuple('TrainModelOut', ['gym_env_out', 'policy_logits', 
     'action', 'reward', 'done', 'truncated_done', 'baseline'])
@@ -28,7 +29,8 @@ class SelfPlayWorker():
                  policy_params:dict, 
                  rank: int, 
                  num_p_actors: int, 
-                 flags:argparse.Namespace):                        
+                 flags:argparse.Namespace,
+                 base_seed: int = 1):                        
         self._logger = util.logger()
         if not flags.disable_cuda and torch.cuda.is_available() and num_p_actors > 1:
             self.device = torch.device("cuda")
@@ -48,40 +50,42 @@ class SelfPlayWorker():
 
         self.policy = policy
         self.policy_params = policy_params
+        self.greedy_policy = self.policy_params is not None and 'greedy' in self.policy_params and self.policy_params['greedy']
         self.rank = rank
         self.num_p_actors = num_p_actors
         self.flags = flags
+        self.model_wrap = policy==PO_NET and not flags.disable_model        
         self.timing = util.Timings()
-        self.actor_id = (torch.arange(self.num_p_actors) + self.rank * self.num_p_actors).unsqueeze(0)
-        self.time = self.rank == 0 and flags.profile
+        self.actor_id = (torch.arange(self.num_p_actors, device=self.device) + self.rank * self.num_p_actors).unsqueeze(0)
+        self.time = self.rank == 0 and flags.profile        
 
-        self.env = Environment(flags, model_wrap=policy==PO_NET, env_n=num_p_actors, device=self.device)
-        seed = [1 + i + num_p_actors * rank for i in range(num_p_actors)]
+        self.env = Environment(flags, model_wrap=self.model_wrap, env_n=num_p_actors, device=self.device)
+        seed = [base_seed + i + num_p_actors * rank for i in range(num_p_actors)]
         self.env.seed(seed)
 
-        if self.policy==PO_NET:
-            self.actor_net = ActorNet(obs_shape=self.env.model_out_shape, 
+        if self.policy==PO_NET and not self.flags.merge_play_actor:
+            self.actor_net = ActorNet(obs_shape=self.env.model_out_shape if self.model_wrap else None, 
                                       gym_obs_shape=self.env.gym_env_out_shape,
                                       num_actions=self.env.num_actions, 
                                       flags=flags)
             self.actor_net.to(self.device)
             self.actor_net.train(False)
 
-        if not self.flags.self_play_merge:
+        if not self.flags.merge_play_model and not self.flags.disable_model:
             self.model_net = ModelNet(obs_shape=self.env.gym_env_out_shape, num_actions=self.env.num_actions, flags=flags)
             self.model_net.train(False)
             self.model_net.to(self.device)
 
         # the networks weight are set by the respective learner; but if the respective
         # learner does not exist, then rank 0 worker will set the weights
-        if rank == 0 and not self.flags.train_actor and self.policy==PO_NET:
+        if rank == 0 and not self.flags.train_actor and self.policy==PO_NET and not self.flags.merge_play_actor:
             if self.flags.preload_actor:
                 checkpoint = torch.load(self.flags.preload_actor, map_location=torch.device('cpu'))
                 self.actor_net.set_weights(checkpoint["actor_net_state_dict"])  
                 self._logger.info("Loadded actor network from %s" % self.flags.preload_actor)
             self.actor_param_buffer.set_data.remote("actor_net", self.actor_net.get_weights())
 
-        if rank == 0 and not self.flags.train_model and not self.flags.self_play_merge:
+        if rank == 0 and not self.flags.train_model and not self.flags.merge_play_model and not self.flags.disable_model:
             if self.flags.preload_model:
                 checkpoint = torch.load(self.flags.preload_model, map_location=torch.device('cpu'))
                 self.model_net.set_weights(checkpoint["model_state_dict"] if "model_state_dict" in 
@@ -90,7 +94,7 @@ class SelfPlayWorker():
             self.model_param_buffer.set_data.remote("model_net", self.model_net.get_weights())
         
         # synchronize weight before start
-        if self.policy==PO_NET:
+        if not self.flags.merge_play_actor and self.policy==PO_NET:
             while(True):
                 weights = ray.get(self.actor_param_buffer.get_data.remote("actor_net")) # set by actor_learner
                 if weights is not None:
@@ -98,7 +102,7 @@ class SelfPlayWorker():
                     break
                 time.sleep(0.1)
 
-        if not self.flags.self_play_merge:
+        if not self.flags.merge_play_model and not self.flags.disable_model:
             while(True):
                 weights = ray.get(self.model_param_buffer.get_data.remote("model_net")) # set by rank 0 self_play_worker or model learner
                 if weights is not None:
@@ -106,20 +110,26 @@ class SelfPlayWorker():
                     break
                 time.sleep(0.1)      
 
-        if self.flags.self_play_merge:
+        if self.flags.merge_play_model and not self.flags.disable_model and rank == 0:
             self.model_learner = SModelLearner(buffers=buffers, rank=0, flags=flags)
             self.model_net = self.model_learner.model_net
             self.model_net.train(False)
 
-        if flags.train_model: 
+        if flags.train_model and not self.flags.disable_model: 
             self.model_local_buffer = [self.empty_model_buffer(), self.empty_model_buffer()]        
             self.model_n = 0
             self.model_t = 0
 
+        if self.flags.merge_play_actor and rank == 0:
+            self.actor_learner = SActorLearner(buffers=None, rank=0, flags=flags)
+            self.actor_net = self.actor_learner.actor_net
+            self.actor_net.train(False)
+
         if self.rank == 0:
             if self.policy==PO_NET:
                 self._logger.info("Actor network size: %d" % sum(p.numel() for p in self.actor_net.parameters()))
-            self._logger.info("Model network size: %d" % sum(p.numel() for p in self.model_net.parameters()))
+            if not self.flags.disable_model:
+                self._logger.info("Model network size: %d" % sum(p.numel() for p in self.model_net.parameters()))
 
     def gen_data(self, test_eps_n:int=0, verbose:bool=True):
         """ Generate self-play data
@@ -130,47 +140,43 @@ class SelfPlayWorker():
             verbose (bool): whether to print output
         """
         try:            
-            with torch.no_grad():
-                if verbose: self._logger.info("Actor %d started. %s" % (self.rank, "(test mode)" if test_eps_n > 0 else ""))
-                n = 0            
-                if test_eps_n > 0: self.test_eps_done_n = torch.zeros(self.num_p_actors, device=self.device)
-
-                if self.policy == PO_NET:
-                    env_out = self.env.initial(self.model_net)      
-                else:
-                    env_out = self.env.initial()   
-                
-                if self.policy == PO_NET:                          
-                    actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)                    
-                    actor_out, _ = self.actor_net(env_out, actor_state)   
-                elif self.policy == PO_MODEL:
-                    actor_out = self.po_model(env_out, self.model_net)
-                    action = actor_out.action
-                    actor_state = None
-                elif self.policy == PO_NSTEP:
-                    actor_out = self.po_nstep(self.env, self.model_net)
-                    action = actor_out.action
-                    actor_state = None                
-
-                train_actor = self.flags.train_actor and self.policy == PO_NET and test_eps_n == 0
-                train_model = self.flags.train_model and test_eps_n == 0
-                # config for preloading before actor network start learning
-                preload_needed = self.flags.train_model and self.flags.load_checkpoint
-                preload = False            
-                learner_actor_start = train_actor and (not preload_needed or preload)
-
-                timer = timeit.default_timer
-                start_time = timer()
-
-                #actor_weights_ptr = self.actor_param_buffer.get_data.remote("actor_net")
-                #model_weights_ptr = self.model_param_buffer.get_data.remote("model_net")
-                data_full_ptr = self.actor_buffer.get_status.remote()
-
-                if not self.flags.self_play_merge:
-                    signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")
             
+            if verbose: self._logger.info("Actor %d started. %s" % (self.rank, "(test mode)" if test_eps_n > 0 else ""))
+            n = 0            
+            if test_eps_n > 0: self.test_eps_done_n = torch.zeros(self.num_p_actors, device=self.device)
+
+            if self.policy == PO_NET and self.model_wrap:
+                env_out = self.env.initial(self.model_net)   
+            else:
+                env_out = self.env.initial()   
+            
+            if self.policy == PO_NET:                          
+                actor_state = self.actor_net.initial_state(batch_size=self.num_p_actors, device=self.device)                    
+                actor_out, _ = self.actor_net(env_out, actor_state)   
+            elif self.policy == PO_MODEL:
+                actor_out = self.po_model(env_out, self.model_net)
+                action = actor_out.action
+                actor_state = None
+            elif self.policy == PO_NSTEP:
+                actor_out = self.po_nstep(self.env, self.model_net)
+                action = actor_out.action
+                actor_state = None                
+
+            train_actor = self.flags.train_actor and self.policy == PO_NET and test_eps_n == 0
+            train_model = self.flags.train_model and test_eps_n == 0
+            # config for preloading before actor network start learning
+            preload_needed = self.flags.train_model and self.flags.load_checkpoint
+            preload = False            
+            learner_actor_start = train_actor and (not preload_needed or preload)
+
+            timer = timeit.default_timer
+            start_time = timer()
+
+            if not self.flags.merge_play_model:
+                signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")
+        
             while (True):      
-                with torch.no_grad():
+                with torch.set_grad_enabled(False):
                     if self.time: self.timing.reset()
                     # prepare train_actor_out data to be written
                     initial_actor_state = actor_state
@@ -184,12 +190,15 @@ class SelfPlayWorker():
                             # policy from applying actor network on the model-wrapped environment
                             if self.flags.float16 and self.device == torch.device("cuda"):
                                 with torch.autocast(device_type='cuda', dtype=torch.float16):    
-                                    actor_out, actor_state = self.actor_net(env_out, actor_state)    
+                                    actor_out, actor_state = self.actor_net(env_out, actor_state, greedy=self.greedy_policy)    
                             else:
-                                actor_out, actor_state = self.actor_net(env_out, actor_state)    
+                                actor_out, actor_state = self.actor_net(env_out, actor_state, greedy=self.greedy_policy)    
                             if self.time: self.timing.time("actor_net")
-                            action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
-                            action = torch.cat([a.unsqueeze(-1) for a in action], dim=-1)     
+                            if not self.flags.disable_model:
+                                action = [actor_out.action, actor_out.im_action, actor_out.reset_action]
+                                action = torch.cat([a.unsqueeze(-1) for a in action], dim=-1)     
+                            else:
+                                action = actor_out.action.unsqueeze(-1)
                         elif self.policy == PO_MODEL:
                             # policy directly from the model
                             actor_out = self.po_model(env_out, self.model_net)
@@ -197,15 +206,16 @@ class SelfPlayWorker():
                         elif self.policy == PO_NSTEP:
                             actor_out = self.po_nstep(self.env, self.model_net)
                             action = actor_out.action
-                        if self.policy == PO_NET:
+                        if self.policy == PO_NET and self.model_wrap:
                             if self.flags.float16 and self.device == torch.device("cuda"):
                                 with torch.autocast(device_type='cuda', dtype=torch.float16): 
                                     env_out = self.env.step(action, self.model_net)
                             else:
                                 env_out = self.env.step(action, self.model_net)
-                            if self.time: self.timing.time("step env")
                         else:
                             env_out = self.env.step(action)
+                        
+                        if self.time: self.timing.time("step env")
                         # write the data to the respective buffers
                         if learner_actor_start:
                             self.write_actor_buffer(env_out, actor_out, t+1)       
@@ -225,7 +235,7 @@ class SelfPlayWorker():
                             finish, all_returns = self.write_test_buffer(
                                 env_out, actor_out, test_eps_n, verbose)
                             if finish: return all_returns
-                    if learner_actor_start:
+                    if learner_actor_start and not self.flags.merge_play_actor:
                         # send the data to remote actor buffer
                         initial_actor_state = util.tuple_map(initial_actor_state, lambda x: x.cpu().numpy())
                         status = 0
@@ -251,22 +261,10 @@ class SelfPlayWorker():
                                 self._logger.info("Preloading: %d/%d" % (tran_n, self.flags.model_buffer_n))
                         learner_actor_start = not preload_needed or preload
                     if self.time: self.timing.time("mics3")                    
-                    # update model weight                
-                    if n % self.flags.splay_actor_update_freq == 0 and self.flags.train_actor and self.policy == PO_NET :
-                            actor_weights_ptr = self.actor_param_buffer.get_data.remote("actor_net")
-                            weights = ray.get(actor_weights_ptr)                            
-                            self.actor_net.set_weights(weights)
-                            del weights
-                    if self.time: self.timing.time("update actor net weight")                    
-                    if n % self.flags.splay_model_update_freq == 0 and self.flags.train_model and not self.flags.self_play_merge: 
-                            model_weights_ptr = self.model_param_buffer.get_data.remote("model_net")
-                            weights = ray.get(model_weights_ptr)                                      
-                            self.model_net.set_weights(weights)     
-                            del weights
-                    if self.time: self.timing.time("update model net weight")                    
+                                       
                     # Signal control for all self-play threads (only when it is not in testing mode)
                     # note that the signal control is only between learn_model and self_play (not learn_actor)
-                    if test_eps_n == 0 and n % 1 == 0 and not self.flags.self_play_merge: 
+                    if test_eps_n == 0 and n % 1 == 0 and not self.flags.merge_play_model: 
                         signals = ray.get(signal_ptr)
                         signal_ptr = self.signal_buffer.get_data.remote("self_play_signals")                                    
                         if (signals is not None and "term" in signals and signals["term"]): return True     
@@ -277,11 +275,31 @@ class SelfPlayWorker():
                             if (signals is not None and "term" in signals and signals["term"]): return True             
                     if self.time: self.timing.time("signal control")                                                
 
-                if self.flags.self_play_merge:
-                    del self.actor_local_buffer
+                if self.flags.merge_play_actor:  
+                    data = (self.actor_local_buffer, initial_actor_state)
+                    self.actor_net.train(True)
+                    self.actor_learner.consume_data(data)
+                    self.actor_net.train(False)
+
+                if self.flags.merge_play_model:      
+                    torch.cuda.empty_cache()        
                     self.model_net.train(True)
                     self.model_learner.s_learn_data(timing = self.timing if self.time else None)
                     self.model_net.train(False)
+
+                # update model weight                
+                if n % self.flags.splay_actor_update_freq == 0 and self.flags.train_actor and self.policy == PO_NET and not self.flags.merge_play_actor:
+                    actor_weights_ptr = self.actor_param_buffer.get_data.remote("actor_net")
+                    weights = ray.get(actor_weights_ptr)                            
+                    self.actor_net.set_weights(weights)
+                    del weights
+                if self.time: self.timing.time("update actor net weight")                    
+                if n % self.flags.splay_model_update_freq == 0 and self.flags.train_model and not self.flags.merge_play_model: 
+                    model_weights_ptr = self.model_param_buffer.get_data.remote("model_net")
+                    weights = ray.get(model_weights_ptr)                                      
+                    self.model_net.set_weights(weights)     
+                    del weights
+                if self.time: self.timing.time("update model net weight") 
 
                 n += 1
                 if self.time and timer() - start_time > 5: 
@@ -296,30 +314,45 @@ class SelfPlayWorker():
 
     def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int):
         # write local 
+        
         if t == 0:
-            fields = {"id": self.actor_id}
+            if not self.flags.merge_play_actor:
+                id = self.actor_id
+            else:
+                id = [self.actor_id[0]]
+            fields = {"id": id}
             for field in TrainActorOut._fields:
-                if field == "id": continue
+                if field in ["id"]: continue
                 out = getattr(env_out if field in EnvOut._fields else actor_out, field)
                 fields[field] = None
                 if out is None: continue
-                if not self.flags.perfect_model and field in ["gym_env_out"]: continue
+                if not self.flags.perfect_model and not self.flags.disable_model and field in ["gym_env_out"]: continue
                 if self.flags.actor_see_type < 0 and field in ["gym_env_out", "model_encodes"]: continue                
                 if self.flags.actor_see_type >= 1 and field == "gym_env_out": continue                
-                fields[field] = torch.empty(size=(self.flags.unroll_length+1, self.num_p_actors)+out.shape[2:], 
-                    dtype=out.dtype, device=self.device)
+                if not self.flags.merge_play_actor:
+                    fields[field] = torch.empty(size=(self.flags.unroll_length+1, self.num_p_actors)+out.shape[2:], 
+                        dtype=out.dtype, device=self.device)
+                else:
+                    fields[field] = []
                 # each is in the shape of (T x B xdim_1 x dim_2 ...)
             self.actor_local_buffer = TrainActorOut(**fields)
             
         for field in TrainActorOut._fields:
-            v = getattr(self.actor_local_buffer, field)            
+            v = getattr(self.actor_local_buffer, field)    
             if v is not None and field not in ["id"]:
-                v[t] = getattr(env_out if field in EnvOut._fields else actor_out, field)[0]
+                new_val = getattr(env_out if field in EnvOut._fields else actor_out, field)[0]
+                if not self.flags.merge_play_actor:
+                    v[t] = new_val
+                else:
+                    v.append(new_val)
         
         if self.time: self.timing.time("write_actor_buffer")
         if t == self.flags.unroll_length:
             # post-processing
-            self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.cpu().numpy())
+            if not self.flags.merge_play_actor:
+                self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: x.cpu().numpy())
+            else:
+                self.actor_local_buffer = util.tuple_map(self.actor_local_buffer, lambda x: torch.stack(x, dim=0))
         if self.time: self.timing.time("move_actor_buffer_to_cpu")
 
     def empty_model_buffer(self):
@@ -355,8 +388,7 @@ class SelfPlayWorker():
         if t >= cap_t + 2 * k - 2:
             # finish writing a buffer, send it
             send_model_local_buffer = util.tuple_map(self.model_local_buffer[n], lambda x: x.cpu().numpy())
-            send_model_local_buffer_ptr = ray.put(send_model_local_buffer)
-            self.model_buffer.write.remote(send_model_local_buffer_ptr, self.rank)            
+            self.model_buffer.write.remote(ray.put(send_model_local_buffer), self.rank)            
             self.model_local_buffer[n] = self.empty_model_buffer()
             self.model_n = 1 - n
             self.model_t = t - cap_t + 1
@@ -374,9 +406,14 @@ class SelfPlayWorker():
                 all_returns = ray.get(self.test_buffer.extend_data.remote("episode_returns", [r]))  
                 all_returns = np.array(all_returns)         
                 if verbose:       
-                    self._logger.info("%d Mean (Std.) : %.4f (%.4f) - %.4f" % (len(all_returns),
-                        np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns)), r))
-                if torch.all(self.test_eps_done_n >= test_eps_n): return True, all_returns
+                    log_str = "%d Mean (Std.) : %.4f (%.4f) - %.4f" % (len(all_returns),
+                        np.mean(all_returns), np.std(all_returns)/np.sqrt(len(all_returns)), r)
+                    if "Sokoban" in self.flags.env:
+                        solved = (all_returns > 10).astype(float)
+                        log_str += " Solve rate: %.4f (%.4f)" % (np.mean(solved), np.std(solved)/np.sqrt(len(solved)))
+                    self._logger.info(log_str)
+            if torch.all(self.test_eps_done_n >= test_eps_n): 
+                return True, all_returns
                 
         return False, None
 

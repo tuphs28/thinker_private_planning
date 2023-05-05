@@ -13,19 +13,23 @@ import thinker.util as util
 if __name__ == "__main__":
 
     logger = util.logger()
-
     logger.info("Initializing...")    
 
-    ray.init()
     st_time = time.time()
     flags = util.parse()
     if not hasattr(flags, 'cmd'):
         flags.cmd = ' '.join(sys.argv)    
 
+    ray.init(num_cpus=int(flags.ray_cpu) if flags.ray_cpu > 0 else None,
+             num_gpus=int(flags.ray_gpu) if flags.ray_gpu > 0 else None,
+             object_store_memory=int(flags.ray_mem*1024**3) if flags.ray_mem > 0 else None,
+            )
+
     num_gpus_available = torch.cuda.device_count()
     num_cpus_available = ray.cluster_resources()['CPU']
     logger.info("Detected %d GPU %d CPU" % (num_gpus_available, num_cpus_available))
 
+    gpu_n = min(int(num_gpus_available-1), 3)
     if not flags.disable_auto_res:
         if flags.self_play_cpu:
             flags.gpu_num_actors = 0
@@ -39,32 +43,50 @@ if __name__ == "__main__":
                 flags.gpu_learn_model = 1
         else: 
             flags.cpu_num_actors = 0 #int(num_cpus_available-8)
-            flags.cpu_num_p_actors = 1
-            flags.gpu_num_actors = [1, 1, 2, 2][int(num_gpus_available-1)]
-            flags.gpu_num_p_actors = [64, 32, 32, 32][int(num_gpus_available-1)]
-            flags.gpu_self_play = [0.25, 0.5, 0.5, 1][int(num_gpus_available-1)]
-            flags.gpu_learn_actor = [0.25, 0.5, 1, 1][int(num_gpus_available-1)]
-            flags.gpu_learn_model = [0.5, 1, 1, 1][int(num_gpus_available-1)]            
+            flags.cpu_num_p_actors = 1            
+            flags.gpu_num_actors = [1, 1, 2, 2][gpu_n]
+            flags.gpu_num_p_actors = [64, 32, 32, 32][gpu_n]
+            flags.gpu_self_play = [0.25, 0.5, 0.5, 1][gpu_n]
+            flags.gpu_learn_actor = [0.25, 0.5, 1, 1][gpu_n]
+            flags.gpu_learn_model = [0.5, 1, 1, 1][gpu_n]            
             if not flags.train_model:
                 flags.gpu_learn_model = 0
-                flags.gpu_num_actors = [2, 2, 2, 2][int(num_gpus_available-1)]
-                flags.gpu_self_play = [0.25, 0.5, 1, 1][int(num_gpus_available-1)]
+                flags.gpu_num_actors = [2, 2, 2, 2][gpu_n]
+                flags.gpu_self_play = [0.25, 0.5, 1, 1][gpu_n]
     
-    if flags.self_play_merge:
+    if flags.merge_play_model:
         flags.cpu_num_actors = 0        
         flags.gpu_num_actors = 1
         flags.gpu_num_p_actors = 64
-        flags.gpu_self_play = [0.5, 1, 1, 1][int(num_gpus_available-1)]       
-        flags.gpu_learn_actor = [0.5, 1, 1, 1][int(num_gpus_available-1)] 
+        flags.gpu_self_play = [0.5, 1, 1, 1][gpu_n]       
+        flags.gpu_learn_actor = [0.5, 1, 1, 1][gpu_n] 
         flags.gpu_learn_model = 0        
+        flags.test_policy_type = -1
+    
+    if flags.merge_play_actor:
+        flags.cpu_num_actors = 0        
+        flags.gpu_num_actors = 1
+        flags.gpu_num_p_actors = flags.batch_size
+        flags.gpu_self_play = [0.5, 1, 1, 1][gpu_n]   
+        flags.gpu_learn_actor = 0
+        flags.gpu_learn_model = [0.5, 1, 1, 1][gpu_n]        
+        flags.test_policy_type = -1
+
+    if flags.merge_play_actor and flags.merge_play_model:
+        flags.cpu_num_actors = 0        
+        flags.gpu_num_actors = 1
+        flags.gpu_num_p_actors = flags.batch_size
+        flags.gpu_self_play = 1  
+        flags.gpu_learn_actor = 0
+        flags.gpu_learn_model = 0     
         flags.test_policy_type = -1
 
     buffers = {
-        "actor": ActorBuffer.options(num_cpus=1).remote(batch_size=flags.batch_size),
+        "actor": ActorBuffer.options(num_cpus=1).remote(batch_size=flags.batch_size) if not flags.merge_play_actor else None,
         "model": ModelBuffer.options(num_cpus=1).remote(flags),
-        "actor_param": GeneralBuffer.options(num_cpus=1).remote(),
-        "model_param": GeneralBuffer.options(num_cpus=1).remote() if not flags.self_play_merge else None,
-        "signal": GeneralBuffer.options(num_cpus=1).remote() if not flags.self_play_merge else None,
+        "actor_param": GeneralBuffer.options(num_cpus=1).remote() if not flags.merge_play_actor else None,
+        "model_param": GeneralBuffer.options(num_cpus=1).remote() if not flags.merge_play_model else None,
+        "signal": GeneralBuffer.options(num_cpus=1).remote() if not flags.merge_play_model else None,
         "test": None,
     }
 
@@ -98,7 +120,9 @@ if __name__ == "__main__":
             policy_params=None, 
             rank=n, 
             num_p_actors=flags.gpu_num_p_actors,
-            flags=flags) for n in range(flags.gpu_num_actors)])
+            base_seed=flags.base_seed,
+            flags=flags,
+            ) for n in range(flags.gpu_num_actors)])
         
     if flags.cpu_num_actors > 0:
         self_play_workers.extend([SelfPlayWorker.options(
@@ -107,14 +131,15 @@ if __name__ == "__main__":
             buffers=buffers,    
             policy=flags.policy_type, 
             policy_params=None, 
-            rank=n + flags.gpu_num_actors, 
+            rank=n+flags.gpu_num_actors, 
             num_p_actors=flags.cpu_num_p_actors,
+            base_seed=flags.base_seed,
             flags=flags) for n in range(flags.cpu_num_actors)])        
 
     r_worker = [x.gen_data.remote() for x in self_play_workers]    
     r_learner = []
 
-    if flags.train_actor:
+    if flags.train_actor and not flags.merge_play_actor:
         actor_learner = ActorLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_actor).remote(
             buffers, 0, flags)
         r_learner.append(actor_learner.learn_data.remote())
@@ -131,7 +156,7 @@ if __name__ == "__main__":
     else:
         model_tester = None
 
-    if flags.train_model and not flags.self_play_merge:
+    if flags.train_model and not flags.merge_play_model:
         model_learner = ModelLearner.options(num_cpus=1, num_gpus=flags.gpu_learn_model).remote(
             buffers, 0, flags, model_tester)
         r_learner.append(model_learner.learn_data.remote())
@@ -139,18 +164,20 @@ if __name__ == "__main__":
     if flags.use_wandb: 
         log_worker = LogWorker.options(num_cpus=1, num_gpus=0).remote(flags)
         r_log_worker = log_worker.start.remote()
-      
-    ray.get(r_learner[0])   
-    logger.info("Finished actor learner...")
-    buffers["actor"].set_finish.remote()    
-    buffers["model"].set_finish.remote()  
-    if not flags.self_play_merge: buffers["signal"].update_dict_item.remote("self_play_signals", "term", True)  
-    if len(r_learner) > 1: ray.get(r_learner[1])    
-    logger.info("Finished model learner...")
-    ray.get(r_worker)
-    logger.info("Finished self-play worker...")
+        
+    if not flags.merge_play_actor:
+        ray.get(r_learner[0])   
+        logger.info("Finished actor learner...")
+        r_learner = r_learner[1:]
+    else:
+        ray.get(r_worker)
+        logger.info("Finished self-play worker...")
+    if not flags.merge_play_actor: buffers["actor"].set_finish.remote()    
+    buffers["model"].set_finish.remote()    
+    if not flags.merge_play_model: buffers["signal"].update_dict_item.remote("self_play_signals", "term", True)  
+    if len(r_learner) > 0: ray.get(r_learner)    
+    logger.info("Finished model learner...")    
     if flags.use_wandb: log_worker.__ray_terminate__.remote()
     logger.info("Finished log worker...")
-
-    logger.info("time required: %fs" % (time.time()-st_time))
+    logger.info("Time required: %fs" % (time.time()-st_time))
 
