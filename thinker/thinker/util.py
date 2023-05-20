@@ -950,7 +950,7 @@ class Wandb:
         self.wandb.init(
             project="thinker",
             config=flags,
-            entity=os.getenv("WANDB_USER", "stephen-chung"),
+            entity=os.getenv("WANDB_USER", ""),
             reinit=True,
             # Restore parameters
             resume="allow",
