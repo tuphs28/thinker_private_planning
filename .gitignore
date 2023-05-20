@@ -9,6 +9,7 @@ wandb
 *.pyc
 *.pyd
 *.so
+*.ipynb
 .vscode
 csokoban/build
 csokoban/gym_csokoban.egg-info
