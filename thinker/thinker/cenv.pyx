@@ -160,34 +160,40 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector
         node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type):
+cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int mask_type):
     cdef float[:] result = np.zeros((pnode[0].num_actions*5+5) if detailed else (pnode[0].num_actions*5+2), dtype=np.float32) 
     cdef int i
     result[pnode[0].action] = 1. # action
     if enc_type == 0:
         result[pnode[0].num_actions] = pnode[0].r # reward
-        result[pnode[0].num_actions+1] = pnode[0].v # value
+        if not mask_type in [2]: 
+            result[pnode[0].num_actions+1] = pnode[0].v # value
         for i in range(int(pnode[0].ppchildren[0].size())):
             child = pnode[0].ppchildren[0][i][0]
-            result[pnode[0].num_actions+2+i] = child.logit # child_logits
-            result[pnode[0].num_actions*2+2+i] = average(child.prollout_qs[0]) # child_rollout_qs_mean
-            result[pnode[0].num_actions*3+2+i] = maximum(child.prollout_qs[0]) # child_rollout_qs_max
-            result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
-        if detailed:
+            if not mask_type in [2]: 
+                result[pnode[0].num_actions+2+i] = child.logit # child_logits
+            if not mask_type in [1, 2]: 
+                result[pnode[0].num_actions*2+2+i] = average(child.prollout_qs[0]) # child_rollout_qs_mean
+                result[pnode[0].num_actions*3+2+i] = maximum(child.prollout_qs[0]) # child_rollout_qs_max
+                result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
+        if detailed and not mask_type in [1, 2]:
             pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
             result[pnode[0].num_actions*5+2] = pnode[0].trail_r / pnode[0].discounting
             result[pnode[0].num_actions*5+3] = pnode[0].rollout_q / pnode[0].discounting
             result[pnode[0].num_actions*5+4] = pnode[0].max_q
     else:
         result[pnode[0].num_actions] = enc(pnode[0].r) # reward
-        result[pnode[0].num_actions+1] = enc(pnode[0].v) # value
+        if not mask_type in [2]: 
+            result[pnode[0].num_actions+1] = enc(pnode[0].v) # value
         for i in range(int(pnode[0].ppchildren[0].size())):
             child = pnode[0].ppchildren[0][i][0]
-            result[pnode[0].num_actions+2+i] = child.logit # child_logits
-            result[pnode[0].num_actions*2+2+i] = enc(average(child.prollout_qs[0])) # child_rollout_qs_mean
-            result[pnode[0].num_actions*3+2+i] = enc(maximum(child.prollout_qs[0])) # child_rollout_qs_max
-            result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
-        if detailed:
+            if not mask_type in [2]: 
+                result[pnode[0].num_actions+2+i] = child.logit # child_logits
+            if not mask_type in [1, 2]: 
+                result[pnode[0].num_actions*2+2+i] = enc(average(child.prollout_qs[0])) # child_rollout_qs_mean
+                result[pnode[0].num_actions*3+2+i] = enc(maximum(child.prollout_qs[0])) # child_rollout_qs_max
+                result[pnode[0].num_actions*4+2+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
+        if detailed and not mask_type in [1, 2]:
             pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
             result[pnode[0].num_actions*5+2] = enc(pnode[0].trail_r / pnode[0].discounting)
             result[pnode[0].num_actions*5+3] = enc(pnode[0].rollout_q / pnode[0].discounting)
@@ -236,6 +242,7 @@ cdef class cVecFullModelWrapper():
     """
     # setting
     cdef int rec_t
+    cdef int rep_rec_t
     cdef float discounting
     cdef float depth_discounting
     cdef int max_allow_depth
@@ -256,6 +263,7 @@ cdef class cVecFullModelWrapper():
     cdef float cur_enc_cost
     cdef bool cur_done_gate
     cdef bool time 
+    cdef int stat_mask_type
     cdef bool debug
 
     # python object
@@ -295,7 +303,12 @@ cdef class cVecFullModelWrapper():
         assert not flags.perfect_model, "this class only supports imperfect model"
         self.device = torch.device("cpu") if device is None else device
         self.env = env     
-        self.rec_t = flags.rec_t               
+        if flags.test_rec_t > 0:
+            self.rec_t = flags.test_rec_t
+            self.rep_rec_t = flags.rec_t         
+        else:
+            self.rec_t = flags.rec_t           
+            self.rep_rec_t = flags.rec_t         
         self.discounting = flags.discounting
         self.depth_discounting = flags.depth_discounting
         self.max_allow_depth = flags.max_depth
@@ -313,8 +326,9 @@ cdef class cVecFullModelWrapper():
         self.cur_v_cost = flags.cur_v_cost
         self.cur_enc_cost = flags.cur_enc_cost
         self.cur_done_gate = flags.cur_done_gate
+        self.stat_mask_type = flags.stat_mask_type
         self.env_n = env_n
-        self.obs_n = 9 + self.num_actions * 10 + self.rec_t
+        self.obs_n = 9 + self.num_actions * 10 + self.rep_rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
         self.gym_env_out_shape = env.observation_space.shape[1:]
 
@@ -724,17 +738,18 @@ cdef class cVecFullModelWrapper():
         result_np = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         cdef float[:, :] result = result_np        
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, mask_type=self.stat_mask_type)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, mask_type=self.stat_mask_type)    
             # reset
             if action is None or status[i] == 1:
                 result[i, idx2] = 1.
             else:
                 result[i, idx2] = action[i, 2]
             # time
-            result[i, idx2+1+self.cur_t[i]] = 1.
+            if self.cur_t[i] < self.rep_rec_t:
+                result[i, idx2+1+self.cur_t[i]] = 1.
             # deprec
-            result[i, idx2+self.rec_t+1] = (self.discounting ** (self.rollout_depth[i]))           
+            result[i, idx2+self.rep_rec_t+1] = (self.discounting ** (self.rollout_depth[i]))           
         return result
 
     cdef compute_model_encodes(self, vector[Node*] nodes):
@@ -787,6 +802,7 @@ cdef class cVecModelWrapper():
     """
     # setting
     cdef int rec_t
+    cdef int rep_rec_t
     cdef float discounting
     cdef float depth_discounting
     cdef int max_allow_depth
@@ -800,6 +816,7 @@ cdef class cVecModelWrapper():
     cdef int obs_n    
     cdef int env_n
     cdef bool time 
+    cdef int stat_mask_type
     cdef bool debug
 
     # python object
@@ -838,7 +855,12 @@ cdef class cVecModelWrapper():
         assert flags.perfect_model, "this class only supports perfect model"
         self.device = torch.device("cpu") if device is None else device
         self.env = env     
-        self.rec_t = flags.rec_t               
+        if flags.test_rec_t > 0:
+            self.rec_t = flags.test_rec_t
+            self.rep_rec_t = flags.rec_t         
+        else:
+            self.rec_t = flags.rec_t  
+            self.rep_rec_t = flags.rec_t   
         self.discounting = flags.discounting
         self.depth_discounting = flags.depth_discounting
         self.max_allow_depth = flags.max_depth
@@ -849,8 +871,9 @@ cdef class cVecModelWrapper():
         self.enc_type = flags.model_enc_type
         self.actor_see_type = flags.actor_see_type      
         self.actor_see_double_encode = False
+        self.stat_mask_type = flags.stat_mask_type
         self.env_n = env_n
-        self.obs_n = 9 + self.num_actions * 10 + self.rec_t
+        self.obs_n = 9 + self.num_actions * 10 + self.rep_rec_t
         self.model_out_shape = (self.obs_n, 1, 1)
         self.gym_env_out_shape = env.observation_space.shape[1:]
 
@@ -1201,15 +1224,16 @@ cdef class cVecModelWrapper():
         result_np = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         cdef float[:, :] result = result_np        
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, mask_type=self.stat_mask_type)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, mask_type=self.stat_mask_type)    
             # reset
             if action is None or status[i] == 1:
                 result[i, idx2] = 1.
             else:
                 result[i, idx2] = action[i, 2]
             # time
-            result[i, idx2+1+self.cur_t[i]] = 1.
+            if self.cur_t[i] < self.rep_rec_t:
+                result[i, idx2+1+self.cur_t[i]] = 1.
             # deprec
             result[i, idx2+self.rec_t+1] = (self.discounting ** (self.rollout_depth[i]))           
         return result

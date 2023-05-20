@@ -101,7 +101,6 @@ class VectorEnv(gym.Env):
         self.restore_state_async(data, inds)
         return self.restore_state_wait()
 
-
     def close_extras(self, **kwargs):
         r"""Clean up the extra resources e.g. beyond what's in this base class."""
         raise NotImplementedError()

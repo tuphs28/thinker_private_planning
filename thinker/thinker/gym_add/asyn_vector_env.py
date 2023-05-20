@@ -7,7 +7,8 @@ from copy import deepcopy
 from thinker.gym_add.vector_env import VectorEnv
 
 from gym import logger
-#from gym.vector.vector_env import VectorEnv
+
+# from gym.vector.vector_env import VectorEnv
 from gym.error import (
     AlreadyPendingCallError,
     NoAsyncCallError,
@@ -33,6 +34,7 @@ class AsyncState(Enum):
     WAITING_STEP = "step"
     WAITING_CLONE_STATE = "clone_state"
     WAITING_RESTORE_STATE = "restore_state"
+
 
 class AsyncVectorEnv(VectorEnv):
     """Vectorized environment that runs multiple environments in parallel. It
@@ -194,8 +196,8 @@ class AsyncVectorEnv(VectorEnv):
                 pipe.send(("reset", None))
         else:
             for n, ind in enumerate(inds):
-                self.parent_pipes[ind].send(("reset", None))   
-        self.inds = inds         
+                self.parent_pipes[ind].send(("reset", None))
+        self.inds = inds
         self._state = AsyncState.WAITING_RESET
 
     def reset_wait(self, timeout=None):
@@ -225,7 +227,11 @@ class AsyncVectorEnv(VectorEnv):
                 "{0} second{1}.".format(timeout, "s" if timeout > 1 else "")
             )
 
-        rec_pipes = self.parent_pipes if self.inds is None else [self.parent_pipes[i] for i in self.inds]
+        rec_pipes = (
+            self.parent_pipes
+            if self.inds is None
+            else [self.parent_pipes[i] for i in self.inds]
+        )
         results, successes = zip(*[pipe.recv() for pipe in rec_pipes])
         self._raise_if_errors(successes)
         self._state = AsyncState.DEFAULT
@@ -235,11 +241,13 @@ class AsyncVectorEnv(VectorEnv):
                 results, self.observations, self.single_observation_space
             )
         if self.inds is None:
-            ret_observations = deepcopy(self.observations) if self.copy else self.observations
+            ret_observations = (
+                deepcopy(self.observations) if self.copy else self.observations
+            )
         else:
-            ret_observations = np.array([self.observations[i] for i in self.inds])        
-            if self.copy: 
-                ret_observations = deepcopy(ret_observations) 
+            ret_observations = np.array([self.observations[i] for i in self.inds])
+            if self.copy:
+                ret_observations = deepcopy(ret_observations)
         return ret_observations
 
     def clone_state_async(self, inds):
@@ -259,7 +267,8 @@ class AsyncVectorEnv(VectorEnv):
         self._assert_is_running()
         if self._state != AsyncState.WAITING_CLONE_STATE:
             raise NoAsyncCallError(
-                "Calling `clone_state_wait` without any prior call " "to `clone_state_async`.",
+                "Calling `clone_state_wait` without any prior call "
+                "to `clone_state_async`.",
                 AsyncState.WAITING_CLONE_STATE.value,
             )
 
@@ -269,11 +278,11 @@ class AsyncVectorEnv(VectorEnv):
                 "The call to `clone_state_wait` has timed out after "
                 "{0} second{1}.".format(timeout, "s" if timeout > 1 else "")
             )
-        rec_pipes = [self.parent_pipes[i] for i in self.inds]        
+        rec_pipes = [self.parent_pipes[i] for i in self.inds]
         results, successes = zip(*[pipe.recv() for pipe in rec_pipes])
         self._raise_if_errors(successes)
         self._state = AsyncState.DEFAULT
-        
+
         return results
 
     def restore_state_async(self, env_states, inds):
@@ -293,7 +302,8 @@ class AsyncVectorEnv(VectorEnv):
         self._assert_is_running()
         if self._state != AsyncState.WAITING_RESTORE_STATE:
             raise NoAsyncCallError(
-                "Calling `restore_state_wait` without any prior call " "to `restore_state_async`.",
+                "Calling `restore_state_wait` without any prior call "
+                "to `restore_state_async`.",
                 AsyncState.WAITING_RESTORE_STATE.value,
             )
 
@@ -303,13 +313,12 @@ class AsyncVectorEnv(VectorEnv):
                 "The call to `clone_state_wait` has timed out after "
                 "{0} second{1}.".format(timeout, "s" if timeout > 1 else "")
             )
-        rec_pipes = [self.parent_pipes[i] for i in self.inds]        
+        rec_pipes = [self.parent_pipes[i] for i in self.inds]
         results, successes = zip(*[pipe.recv() for pipe in rec_pipes])
         self._raise_if_errors(successes)
         self._state = AsyncState.DEFAULT
-        
-        return results
 
+        return results
 
     def step_async(self, actions, inds=None):
         """
@@ -369,7 +378,11 @@ class AsyncVectorEnv(VectorEnv):
                 "The call to `step_wait` has timed out after "
                 "{0} second{1}.".format(timeout, "s" if timeout > 1 else "")
             )
-        rec_pipes = self.parent_pipes if self.inds is None else [self.parent_pipes[i] for i in self.inds]
+        rec_pipes = (
+            self.parent_pipes
+            if self.inds is None
+            else [self.parent_pipes[i] for i in self.inds]
+        )
         results, successes = zip(*[pipe.recv() for pipe in rec_pipes])
         self._raise_if_errors(successes)
         self._state = AsyncState.DEFAULT
@@ -380,19 +393,24 @@ class AsyncVectorEnv(VectorEnv):
                 self.observations = concatenate(
                     observations_list, self.observations, self.single_observation_space
                 )
-                ret_observations = deepcopy(self.observations) if self.copy else self.observations
+                ret_observations = (
+                    deepcopy(self.observations) if self.copy else self.observations
+                )
             else:
-                for i in self.inds: self.observations[i] = observations_list[i]
+                for i in self.inds:
+                    self.observations[i] = observations_list[i]
                 ret_observations = np.array([self.observations[i] for i in self.inds])
-                if self.copy: 
-                    ret_observations = deepcopy(ret_observations) 
+                if self.copy:
+                    ret_observations = deepcopy(ret_observations)
         else:
             if self.inds is None:
-                ret_observations = deepcopy(self.observations) if self.copy else self.observations
+                ret_observations = (
+                    deepcopy(self.observations) if self.copy else self.observations
+                )
             else:
-                ret_observations = np.array([self.observations[i] for i in self.inds])        
-                if self.copy: 
-                    ret_observations = deepcopy(ret_observations) 
+                ret_observations = np.array([self.observations[i] for i in self.inds])
+                if self.copy:
+                    ret_observations = deepcopy(ret_observations)
 
         return (
             ret_observations,
@@ -420,7 +438,7 @@ class AsyncVectorEnv(VectorEnv):
                 logger.warn(
                     "Calling `close` while waiting for a pending "
                     "call to `{0}` to complete.".format(self._state.value)
-                )                
+                )
                 function = getattr(self, "{0}_wait".format(self._state.value))
                 function(timeout)
         except mp.TimeoutError:
@@ -511,14 +529,14 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
                 pipe.send((observation, True))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
-                #if done: observation = env.reset()
+                # if done: observation = env.reset()
                 pipe.send(((observation, reward, done, info), True))
             elif command == "clone_state":
                 env_state = env.clone_state()
                 pipe.send((env_state, True))
             elif command == "restore_state":
                 env_state = env.restore_state(data)
-                pipe.send((None, True))    
+                pipe.send((None, True))
             elif command == "seed":
                 env.seed(data)
                 pipe.send((None, True))
@@ -557,7 +575,7 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 pipe.send((None, True))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
-                #if done:
+                # if done:
                 #    observation = env.reset()
                 write_to_shared_memory(
                     index, observation, shared_memory, observation_space
@@ -565,10 +583,10 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 pipe.send(((None, reward, done, info), True))
             elif command == "clone_state":
                 env_state = env.clone_state()
-                pipe.send((env_state, True))      
+                pipe.send((env_state, True))
             elif command == "restore_state":
                 env_state = env.restore_state(data)
-                pipe.send((None, True))    
+                pipe.send((None, True))
             elif command == "seed":
                 env.seed(data)
                 pipe.send((None, True))
