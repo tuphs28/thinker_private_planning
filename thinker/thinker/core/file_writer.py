@@ -170,12 +170,13 @@ class FileWriter:
                 # Need at least two lines in order to read the last tick:
                 # the first is the csv header and the second is the first line
                 # of data.
-                self.fieldnames = lines[0]
+                if len(lines) > 0:
+                    self.fieldnames = lines[0]
+                    if "# _tick" in self.fieldnames:
+                        self.fieldnames = [x if x != "# _tick" else "_tick" for x in self.fieldnames]
                 if len(lines) > 1:
                     self._tick = int(lines[-2][0]) + 1
-            if "# _tick" in self.fieldnames:
-                self.fieldnames = [x if x != "# _tick" else "_tick" for x in self.fieldnames]
-        self._fieldfile = open(self.paths["fields"], "a")
+            
         self._fieldwriter = csv.writer(self._fieldfile)
         self._logfile = open(self.paths["logs"], "a")
         self._logwriter = csv.DictWriter(self._logfile, fieldnames=self.fieldnames)
