@@ -8,6 +8,7 @@ import ray
 import thinker.util as util
 from thinker.net import ActorNet, ModelNet
 from thinker.env import Environment
+from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL, PO_MCTS
 
 
 def gen_video_wandb(video_stats, grayscale):
@@ -71,12 +72,13 @@ class SLogWorker:
         self.last_actor_tick = -1
         self.last_model_tick = -1
         self.real_step = -1
-        self.last_real_step_v = -1
+        self.last_real_step_v = -self.flags.policy_vis_freq
         self.last_real_step_c = -1
-        self.vis_policy = self.flags.policy_vis_freq > 0
+        self.vis_policy = self.flags.policy_vis_freq > 0 and flags.policy_type == PO_NET and flags.duel_net
         self.device = torch.device("cpu")
         self._logger = util.logger()
         self._logger.info("Initalizing log worker")
+        self.log_actor = True
         self.log_model = flags.train_model and not self.flags.disable_model
         self.log_freq = 10  # log frequency (in second)
         self.wlogger = util.Wandb(flags)
@@ -119,7 +121,7 @@ class SLogWorker:
                 # visualize policy
                 if (
                     self.real_step - self.last_real_step_v >= self.flags.policy_vis_freq
-                    and self.flags.policy_vis_freq > 0
+                    and self.vis_policy
                 ):
                     self._logger.info(
                         f"Steps {self.real_step}: Uploading video to wandb..."
@@ -182,9 +184,10 @@ class SLogWorker:
 
     def log_stat(self):
         try:
-            actor_stat, self.actor_fields, self.last_actor_tick = self.read_stat(
-                self.actor_log_path, self.actor_fields, self.last_actor_tick, "actor"
-            )
+            if self.log_actor:
+                actor_stat, self.actor_fields, self.last_actor_tick = self.read_stat(
+                    self.actor_log_path, self.actor_fields, self.last_actor_tick, "actor"
+                )
             if self.log_model:
                 model_stat, self.model_fields, self.last_model_tick = self.read_stat(
                     self.model_log_path,
@@ -193,10 +196,12 @@ class SLogWorker:
                     "model",
                 )
             stat = {}
-            if self.log_model and model_stat is not None:
+            if self.log_model and model_stat is not None:                
                 stat.update(model_stat)
+                if not self.log_actor:
+                    self.real_step = model_stat["real_step"]
 
-            if actor_stat is not None:
+            if self.log_actor and actor_stat is not None:
                 self.real_step = actor_stat["real_step"]
                 stat.update(actor_stat)
 
@@ -238,7 +243,7 @@ class SLogWorker:
             self._logger.error(f"Steps {self.real_step}: Error loading checkpoint: {e}")
             return None
 
-        if not self.env_init:
+        if True: #not self.env_init:
             env_out = self.env.initial(self.model_net)
             self.actor_state = self.actor_net.initial_state(
                 batch_size=1, device=self.device
@@ -341,6 +346,8 @@ class SLogWorker:
             self._logger.error(
                 f"Steps {self.real_step}: Header size and data size mismatch"
             )
+            print("header:", header)
+            print("data:", data)
             return None
         for n, (key, value) in enumerate(zip(header, data)):
             try:

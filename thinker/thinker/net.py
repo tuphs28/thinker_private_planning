@@ -231,13 +231,13 @@ class BaseNet(nn.Module):
 
 
 class ActorEncoder(nn.Module):
-    def __init__(self, input_shape, num_actions, flags):
+    def __init__(self, input_shape, num_actions, flags, out_size=256):
         super(ActorEncoder, self).__init__()
         self.input_shape = input_shape
         self.num_actions = num_actions
         self.flags = flags
         self.frame_encode = flags.actor_see_type == 0
-        self.out_size = 256
+        self.out_size = out_size
 
         if flags.actor_see_type == 0:
             # see the frame directly; we need to have frame encoding

@@ -1,5 +1,6 @@
+import os
 import time, timeit
-from collections import namedtuple
+from collections import namedtuple, deque
 import numpy as np
 import argparse
 import traceback
@@ -36,7 +37,7 @@ TrainModelOut = namedtuple(
         "baseline",
     ],
 )
-PO_NET, PO_MODEL, PO_NSTEP = 0, 1, 2
+PO_NET, PO_MODEL, PO_NSTEP, PO_MCTS = 0, 1, 2, 3
 
 
 @ray.remote
@@ -63,6 +64,7 @@ class SelfPlayWorker:
         self.model_param_buffer = buffers["model_param"]
         self.signal_buffer = buffers["signal"]
         self.test_buffer = buffers["test"]
+        self.record_buffer = buffers["record"]
 
         self._logger.info(
             "Initalizing actor %d with device %s %s"
@@ -72,7 +74,6 @@ class SelfPlayWorker:
                 "(test mode)" if self.test_buffer is not None else "",
             )
         )
-
         self.policy = policy
         self.policy_params = policy_params
         self.greedy_policy = (
@@ -83,7 +84,7 @@ class SelfPlayWorker:
         self.rank = rank
         self.num_p_actors = num_p_actors
         self.flags = flags
-        self.model_wrap = policy == PO_NET and not flags.disable_model
+        self.model_wrap = policy in [PO_NET, PO_MCTS] and not flags.disable_model
         self.timing = util.Timings()
         self.actor_id = (
             torch.arange(self.num_p_actors, device=self.device)
@@ -125,8 +126,9 @@ class SelfPlayWorker:
             and not self.flags.merge_play_actor
         ):
             if self.flags.preload_actor:
+                preload_actor_path = os.path.join(self.flags.preload_actor, "ckp_actor.tar")
                 checkpoint = torch.load(
-                    self.flags.preload_actor, map_location=torch.device("cpu")
+                    preload_actor_path, map_location=torch.device("cpu")
                 )
                 self.actor_net.set_weights(checkpoint["actor_net_state_dict"])
                 self._logger.info(
@@ -143,8 +145,9 @@ class SelfPlayWorker:
             and not self.flags.disable_model
         ):
             if self.flags.preload_model:
+                preload_model_path = os.path.join(self.flags.preload_model, "ckp_model.tar")
                 checkpoint = torch.load(
-                    self.flags.preload_model, map_location=torch.device("cpu")
+                    preload_model_path, map_location=torch.device("cpu")
                 )
                 self.model_net.set_weights(
                     checkpoint["model_state_dict"]
@@ -209,6 +212,25 @@ class SelfPlayWorker:
                     % sum(p.numel() for p in self.model_net.parameters())
                 )
 
+        if self.policy == PO_MCTS:
+            if self.flags.flex_q:
+                self.q_min = None
+                self.q_max = None
+            
+            self.record_len = 20
+            pre_shape = (self.record_len, self.num_p_actors)
+            self.record = {
+                "episode_return":  torch.zeros(pre_shape, dtype=torch.float32, device=self.device),
+                "episode_step":  torch.zeros(pre_shape, dtype=torch.int, device=self.device),
+                "real_done": torch.zeros(pre_shape, dtype=torch.bool, device=self.device),
+            }
+            self.record_t = 0
+            self.real_step = 0
+            con = torch.tensor([0.25]*self.env.num_actions, device=self.device)
+            self.dir_dist = torch.distributions.dirichlet.Dirichlet(con, validate_args=None)
+            self.dir_noise = self.dir_dist.sample((self.num_p_actors,))
+            #if self.rank == 0: self.record_buffer.set_real_step(self.real_step)
+
     def gen_data(self, test_eps_n: int = 0, verbose: bool = True):
         """Generate self-play data
         Args:
@@ -229,7 +251,7 @@ class SelfPlayWorker:
                     self.num_p_actors, device=self.device
                 )
 
-            if self.policy == PO_NET and self.model_wrap:
+            if self.model_wrap:
                 env_out = self.env.initial(self.model_net)
             else:
                 env_out = self.env.initial()
@@ -253,6 +275,10 @@ class SelfPlayWorker:
                 actor_state = None
             elif self.policy == PO_NSTEP:
                 actor_out = self.po_nstep(self.env, self.model_net)
+                action = actor_out.action
+                actor_state = None
+            elif self.policy == PO_MCTS:
+                actor_out = self.po_mcts(env_out)
                 action = actor_out.action
                 actor_state = None
 
@@ -300,26 +326,39 @@ class SelfPlayWorker:
                                     env_out, actor_state, greedy=self.greedy_policy
                                 )
                             if self.time:
-                                self.timing.time("actor_net")
+                                self.timing.time("actor_net")                            
+                        elif self.policy == PO_MODEL:
+                            # policy directly from the model
+                            actor_out = self.po_model(env_out, self.model_net)
+                        elif self.policy == PO_NSTEP:
+                            actor_out = self.po_nstep(self.env, self.model_net)
+                        elif self.policy == PO_MCTS:
+                            actor_out = self.po_mcts(env_out)
+
+                        if self.model_wrap:
                             if not self.flags.disable_model:
+
+                                if self.flags.random_im_action:
+                                    im_action = torch.randint(low=0, high=self.env.num_actions, size=(1, self.num_p_actors), device=self.device)
+                                    reset_action = torch.zeros_like(actor_out.reset_action)
+                                else:
+                                    im_action = actor_out.im_action
+                                    reset_action = actor_out.reset_action
+
                                 action = [
                                     actor_out.action,
-                                    actor_out.im_action,
-                                    actor_out.reset_action,
+                                    im_action,
+                                    reset_action,
                                 ]
                                 action = torch.cat(
                                     [a.unsqueeze(-1) for a in action], dim=-1
                                 )
                             else:
-                                action = actor_out.action.unsqueeze(-1)
-                        elif self.policy == PO_MODEL:
-                            # policy directly from the model
-                            actor_out = self.po_model(env_out, self.model_net)
+                                action = actor_out.action.unsqueeze(-1)                        
+                        else:
                             action = actor_out.action
-                        elif self.policy == PO_NSTEP:
-                            actor_out = self.po_nstep(self.env, self.model_net)
-                            action = actor_out.action
-                        if self.policy == PO_NET and self.model_wrap:
+
+                        if self.model_wrap:
                             if self.flags.float16 and self.device == torch.device(
                                 "cuda"
                             ):
@@ -340,7 +379,7 @@ class SelfPlayWorker:
                         if self.time:
                             self.timing.time("finish actor buffer")
                         if train_model and (
-                            self.policy != PO_NET or env_out.cur_t[:, 0] == 0
+                            self.policy not in [PO_NET, PO_MCTS] or env_out.cur_t[:, 0] == 0
                         ):
                             baseline = None
                             if self.policy == PO_NET:
@@ -354,6 +393,9 @@ class SelfPlayWorker:
                                         ** ((self.flags.rec_t - 1) / self.flags.rec_t)
                                     )
                             self.write_send_model_buffer(env_out, actor_out, baseline)
+                            if self.policy == PO_MCTS:
+                                self.send_record_buffer(env_out)
+
                         if self.time:
                             self.timing.time("write send model buffer")
                         if test_eps_n > 0:
@@ -439,11 +481,15 @@ class SelfPlayWorker:
                     if self.time:
                         self.timing.time("signal control")
 
-                if self.flags.merge_play_actor:
+                if learner_actor_start and self.flags.merge_play_actor and hasattr(self, "actor_local_buffer"):
                     data = (self.actor_local_buffer, initial_actor_state)
+                    fin = False
                     self.actor_net.train(True)
-                    self.actor_learner.consume_data(data)
+                    fin = self.actor_learner.consume_data(data)
                     self.actor_net.train(False)
+                    if fin: 
+                        self._logger.info(f"Finish training; self-play thread terminating.")
+                        break
 
                 if self.flags.merge_play_model:
                     torch.cuda.empty_cache()
@@ -672,6 +718,18 @@ class SelfPlayWorker:
                 return True, all_returns
 
         return False, None
+    
+    def send_record_buffer(self, env_out):
+        for x in self.record.keys():
+            entry = getattr(env_out, x)[0]
+            if len(entry.shape) == 2: entry = entry[:,0]
+            self.record[x][self.record_t] = entry
+        self.record_t += 1
+        if self.record_t >= self.record_len:
+            send_b = {k:v.detach().cpu().numpy() for k, v in self.record.items()}
+            if hasattr(self, "real_step_ptr"): self.real_step = ray.get(self.real_step_ptr) 
+            self.real_step_ptr = self.record_buffer.insert.remote(**send_b, actor_id=self.actor_id.detach().cpu().numpy())
+            self.record_t = 0
 
     def po_model(self, env_out, model_net):
         model_net_out = model_net(
@@ -741,3 +799,80 @@ class SelfPlayWorker:
             prob = F.softmax(policy_logits, dim=1)
             action = torch.multinomial(prob, num_samples=1)
         return policy_logits, action, q_ret
+    
+    def po_mcts(self, env_out):
+        model_out = env_out.model_out
+        model_out =  util.decode_model_out(
+            env_out.model_out, self.env.num_actions, self.flags.model_enc_type
+            )
+        if self.real_step < self.flags.total_steps * 0.5:
+            temp = 1
+        elif self.real_step < self.flags.total_steps * 0.75:
+            temp = 0.5
+        else:
+            temp = 0.25
+        root_ns = torch.clone(model_out["root_ns"]) * self.flags.rec_t
+        n_temp = root_ns ** (1 / temp) + 1e-7
+        real_p = n_temp / torch.sum(n_temp, dim=-1, keepdim=True)
+        action = torch.multinomial(real_p, num_samples=1)[:, 0]
+        # imagainary action
+        im_action = self.ucb(model_out, env_out.cur_t[0,0].item(), self.flags.rec_t)
+        # reset action
+        cur_ns = torch.clone(model_out["cur_ns"])
+        cur_ns[model_out["reset"] == 1] = model_out["root_ns"][
+            model_out["reset"] == 1
+        ]
+        reset_action = (torch.sum(cur_ns, dim=-1) <= 0).long()
+        actor_out = util.construct_tuple(
+            ActorOut, 
+            action=action.unsqueeze(0), 
+            policy_logits=real_p.unsqueeze(0), # with mcts, we use logit to hold prob.
+            im_action=im_action.unsqueeze(0), 
+            reset_action=reset_action.unsqueeze(0)
+        )
+        return actor_out
+
+    def ucb(self, model_stat, cur_t, K, dir_alpha=0.25):
+        reset_m = model_stat["reset"] == 1
+        cur_q = torch.clone(model_stat["cur_qs_mean"])
+        if self.flags.flex_q:
+            new_q_min = torch.min(cur_q, dim=1)[0]
+            new_q_max = torch.max(cur_q, dim=1)[0]
+            if self.q_min is None or cur_t == 0:                
+                self.q_min = new_q_min
+                self.q_max = new_q_max
+            else:
+                self.q_min = torch.minimum(self.q_min, new_q_min)
+                self.q_max = torch.maximum(self.q_max, new_q_max)                
+        cur_q[reset_m] = model_stat["root_qs_mean"][reset_m]
+        if self.flags.flex_q:
+            new_q_min = torch.min(cur_q, dim=1)[0]
+            new_q_max = torch.max(cur_q, dim=1)[0]
+            self.q_min = torch.minimum(self.q_min, new_q_min)
+            self.q_max = torch.maximum(self.q_max, new_q_max)
+            q_min = self.q_min.unsqueeze(-1)
+            q_max = self.q_max.unsqueeze(-1)
+        else:            
+            q_min, q_max = -1.2, 7
+        qsa = (cur_q - q_min) / (q_max - q_min + 1e-8)
+        cur_logits = torch.clone(model_stat["cur_logits"])
+        cur_logits[reset_m] = model_stat["root_logits"][reset_m]
+        psa = torch.nn.functional.softmax(cur_logits, dim=-1)
+        if cur_t == 0: 
+            self.dir_noise = self.dir_dist.sample((self.num_p_actors,))
+            psa = psa * 0.75 + self.dir_noise * 0.25
+        else:
+            psa[reset_m] = psa[reset_m] * 0.75 + self.dir_noise[reset_m] * 0.25
+        cur_ns = torch.clone(model_stat["cur_ns"])
+        cur_ns[reset_m] = model_stat["root_ns"][reset_m]
+        nsa = cur_ns * K
+        c_1 = 1.25
+        c_2 = 19652
+        sum_nsa = torch.sum(nsa, dim=-1, keepdim=True)
+        l = qsa + psa * (torch.sqrt(sum_nsa)) / (1 + nsa) * (
+            c_1 + torch.log((sum_nsa + c_2 + 1) / c_2)
+        )
+        sel_action = torch.argmax(l, dim=-1)
+        return sel_action
+        
+

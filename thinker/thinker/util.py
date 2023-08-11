@@ -1,4 +1,5 @@
-__version__ = "1.0"
+__version__ = "1.01"
+__project__ = "Thinker"
 
 import collections
 import time
@@ -14,12 +15,12 @@ import re
 
 
 def get_parser():
-    parser = argparse.ArgumentParser(description=f"Thinker v{__version__}")
+    parser = argparse.ArgumentParser(description=f"{__project__} v{__version__}")
 
     parser.add_argument("--xpid", default=None, help="Experiment id (default: None).")
     parser.add_argument(
         "--savedir",
-        default="../logs/thinker",
+        default="../logs/%s" % __project__,
         help="Root dir where experiment data will be saved.",
     )
 
@@ -155,6 +156,11 @@ def get_parser():
         "--load_checkpoint", default="", help="Load checkpoint directory."
     )
     parser.add_argument(
+        "--preload",
+        default="",
+        help="File location of the preload actor & model network (override preload_actor & preload_model).",
+    )      
+    parser.add_argument(
         "--preload_actor",
         default="",
         help="File location of the preload actor network.",
@@ -170,7 +176,7 @@ def get_parser():
         "--policy_type",
         default=0,
         type=int,
-        help="Policy used for self-play worker; 0 for actor net, 1 for model policy, 2 for 1-step greedy",
+        help="Policy used for self-play worker; 0 for actor net, 1 for model policy, 2 for 1-step greedy, 3 for MCTS",
     )
     parser.add_argument(
         "--disable_train_actor",
@@ -659,6 +665,16 @@ def get_parser():
         type=int,
         help="Model update frequency for model learner.",
     )
+    parser.add_argument(
+        "--random_im_action",
+        action="store_true",
+        help="Ablation analysis by using random imaginary and reset action.",
+    )    
+    parser.add_argument(
+        "--flex_q",
+        action="store_true",
+        help="Allow flexible estimation of q min and q max when using mcts as policy.",
+    )        
     return parser
 
 
@@ -718,9 +734,23 @@ def process_flags(flags, override=True):
         if not flags.tran_lstm_no_attn:
             print("Automatically disabling attention module (no memory).")
 
+    if flags.preload:
+        flags.preload_actor = flags.preload
+        flags.preload_model = flags.preload
+    
+    if flags.random_im_action:
+        if flags.im_cost > 0:
+            flags.im_cost = 0.0
+            print("Automatically setting im_cost = 0 (random imaginary action).")
+
+    if flags.policy_type == 3:
+        print("Automatically disable train_actor with MCTS policy.")
+        flags.train_actor = False
+
     if "Sokoban" in flags.env and flags.frame_copy:
         print("Disabling frame copy for non-atari games")
         flags.frame_copy = False
+
 
     assert not (
         not flags.perfect_model and not flags.duel_net and flags.actor_see_type == 0
@@ -735,8 +765,10 @@ def process_flags(flags, override=True):
                 path = os.readlink(path)
             setattr(flags, f, path)
 
-    if flags.load_checkpoint and override:
+    if flags.load_checkpoint and override:        
         check_point_path = os.path.join(flags.load_checkpoint, "ckp_actor.tar")
+        if not os.path.exists(check_point_path):
+            check_point_path = os.path.join(flags.load_checkpoint, "ckp_model.tar")
         train_checkpoint = torch.load(check_point_path, torch.device("cpu"))
         flags_ = train_checkpoint["flags"]
         for k, v in flags_.items():
@@ -746,11 +778,13 @@ def process_flags(flags, override=True):
                 "ray_mem",
                 "ray_gpu",
                 "ray_cpu",
+                "merge_play_actor",
+                "merge_play_model",
             ]:
                 setattr(flags, k, v)
 
     if flags.xpid is None:
-        flags.xpid = "thinker-%s" % time.strftime("%Y%m%d-%H%M%S")
+        flags.xpid = "%s-%s" % (__project__, time.strftime("%Y%m%d-%H%M%S"))
 
     flags.__version__ = __version__
     return flags
@@ -762,6 +796,8 @@ def tuple_map(x, f):
     else:
         return type(x)(*(f(y) if y is not None else None for y in x))
 
+def dict_map(x, f):
+    return {k:f(v) for (k, v) in x.items()}
 
 def safe_view(x, dims):
     if x is None:
@@ -948,7 +984,7 @@ class Wandb:
         if m:
             tags.append(m[0])
         self.wandb.init(
-            project="thinker",
+            project=__project__,
             config=flags,
             entity=os.getenv("WANDB_USER", ""),
             reinit=True,

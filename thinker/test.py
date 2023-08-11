@@ -123,8 +123,8 @@ if __name__ == "__main__":
     flags.num_p_actors = 50
     flags.train_actor = False
     flags.train_model = False
-    flags.preload_actor = os.path.join(flags.load_checkpoint, "ckp_actor.tar")
-    flags.preload_model = os.path.join(flags.load_checkpoint, "ckp_model.tar")
+    flags.preload_actor = flags.load_checkpoint
+    flags.preload_model = flags.load_checkpoint
 
     num_gpus_available = torch.cuda.device_count()
     if not flags.full:

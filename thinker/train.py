@@ -3,11 +3,11 @@ import traceback
 import sys
 import ray
 import torch
-from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL
+from thinker.self_play import SelfPlayWorker, PO_NET, PO_MODEL, PO_MCTS
 from thinker.learn_actor import ActorLearner
 from thinker.learn_model import ModelLearner
 from thinker.log import LogWorker
-from thinker.buffer import ActorBuffer, ModelBuffer, GeneralBuffer
+from thinker.buffer import ActorBuffer, ModelBuffer, GeneralBuffer, RecordBuffer
 import thinker.util as util
 
 if __name__ == "__main__":
@@ -55,6 +55,10 @@ if __name__ == "__main__":
                 flags.gpu_learn_model = 0
                 flags.gpu_num_actors = [2, 2, 2, 2][gpu_n]
                 flags.gpu_self_play = [0.25, 0.5, 1, 1][gpu_n]
+            if not flags.train_actor:
+                flags.gpu_learn_actor = 0
+                flags.gpu_num_actors = [2, 2, 2, 3][gpu_n]
+                flags.gpu_self_play = [0.25, 0.5, 1, 1][gpu_n]
 
     if flags.merge_play_model:
         flags.cpu_num_actors = 0
@@ -98,12 +102,15 @@ if __name__ == "__main__":
         if not flags.merge_play_model
         else None,
         "test": None,
+        "record": RecordBuffer.options(num_cpus=1).remote(flags) if flags.policy_type == PO_MCTS else None,
     }
 
     if flags.policy_type == PO_NET:
         policy_str = "actor network"
     elif flags.policy_type == PO_MODEL:
         policy_str = "base model network"
+    elif flags.policy_type == PO_MCTS:
+        policy_str = "MCTS"        
     else:
         raise Exception("policy not supported")
 

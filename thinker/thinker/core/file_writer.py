@@ -163,12 +163,6 @@ class FileWriter:
             self._logger.warning(
                 "Path to log file already exists. " "New data will be appended."
             )
-            # Override default fieldnames.
-            with open(self.paths["fields"], "r") as csvfile:
-                reader = csv.reader(csvfile)
-                lines = list(reader)
-                if len(lines) > 0:
-                    self.fieldnames = lines[-1]
             # Override default tick: use the last tick from the logs file plus 1.
             with open(self.paths["logs"], "r") as csvfile:
                 reader = csv.reader(csvfile)
@@ -176,9 +170,11 @@ class FileWriter:
                 # Need at least two lines in order to read the last tick:
                 # the first is the csv header and the second is the first line
                 # of data.
+                self.fieldnames = lines[0]
                 if len(lines) > 1:
                     self._tick = int(lines[-2][0]) + 1
-
+            if "# _tick" in self.fieldnames:
+                self.fieldnames = [x if x != "# _tick" else "_tick" for x in self.fieldnames]
         self._fieldfile = open(self.paths["fields"], "a")
         self._fieldwriter = csv.writer(self._fieldfile)
         self._logfile = open(self.paths["logs"], "a")
@@ -201,7 +197,7 @@ class FileWriter:
             self._logger.info("Updated log fields: %s", self.fieldnames)
 
         if to_log["_tick"] == 0:
-            self._logfile.write("# %s\n" % ",".join(self.fieldnames))
+            self._logfile.write("%s\n" % ",".join(self.fieldnames))
 
         if verbose:
             self._logger.info(

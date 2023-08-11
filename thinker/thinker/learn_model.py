@@ -14,9 +14,12 @@ import thinker.util as util
 import gc
 
 
-def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None):
+def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None, prob=False):
     k, b, *_ = logits.shape
-    target_policy = F.softmax(target_logits, dim=-1)
+    if not prob:
+        target_policy = F.softmax(target_logits, dim=-1)
+    else:
+        target_policy = target_logits 
     loss = torch.nn.CrossEntropyLoss(reduction="none")(
         input=torch.flatten(logits, 0, 1), target=torch.flatten(target_policy, 0, 1)
     )
@@ -158,7 +161,10 @@ class SModelLearner:
         self.sps_buffer_n = 0
         self.ckp_start_time = int(time.strftime("%M")) // 10
         self.n = 0
-        # self.data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
+
+        if self.flags.load_checkpoint and self.flags.policy_type==3: 
+            buffers["record"].set_real_step.remote(self.real_step)
+        self.data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
 
     def learn_data(self):
         try:
@@ -582,7 +588,11 @@ class SModelLearner:
 
         # compute logit loss
         logits_loss = compute_cross_entropy_loss(
-            logits, target["logits"].detach(), is_weights, mask=done_mask[:-1]
+            logits, 
+            target["logits"].detach(), 
+            is_weights, 
+            mask=done_mask[:-1], 
+            prob=self.flags.policy_type==3  # if mcts, the logit actually holds probability
         )
 
         # compute sup loss
