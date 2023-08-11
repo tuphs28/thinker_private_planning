@@ -1,5 +1,5 @@
 __version__ = "1.01"
-__project__ = "Thinker"
+__project__ = "thinker"
 
 import collections
 import time
