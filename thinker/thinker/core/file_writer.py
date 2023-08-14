@@ -177,7 +177,7 @@ class FileWriter:
                 if len(lines) > 1:
                     self._tick = int(lines[-2][0]) + 1
             
-        self._fieldwriter = csv.writer(self._fieldfile)
+        self._fieldfile = open(self.paths["fields"], "a")
         self._fieldwriter = csv.writer(self._fieldfile)
         self._logfile = open(self.paths["logs"], "a")
         self._logwriter = csv.DictWriter(self._logfile, fieldnames=self.fieldnames)
