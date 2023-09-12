@@ -7,6 +7,7 @@ from torch.nn import functional as F
 import gym
 from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
 from thinker.cenv import cVecModelWrapper, cVecFullModelWrapper
+from thinker.cenv_simple import cVecSimModelWrapper
 from thinker import util
 
 EnvOut = namedtuple(
@@ -60,7 +61,13 @@ def Environment(
     )
     num_actions = env.action_space[0].n
     if model_wrap:
-        wrapper = cVecModelWrapper if flags.perfect_model else cVecFullModelWrapper
+        if flags.perfect_model:
+            wrapper = cVecModelWrapper
+        else:
+            if flags.sim_aug:
+                wrapper = cVecSimModelWrapper
+            else:
+                wrapper = cVecFullModelWrapper
         env = PostVecModelWrapper(
             wrapper(env, env_n, flags, device=device, time=time, debug=debug),
             env_n,

@@ -333,6 +333,11 @@ def get_parser():
     parser.add_argument(
         "--drc", action="store_true", help="DRC baseline; only for disable_model"
     )
+    parser.add_argument(
+        "--actor_sim",
+        action="store_true",
+        help="Whether to use MLP for simple representation",
+    )
 
     # Critic architecture settings
     parser.add_argument(
@@ -578,6 +583,12 @@ def get_parser():
         type=int,
         help="0 for L2 loss on frame; 1 for feature loss on frame.",
     )
+    parser.add_argument(
+        "--model_logit_type",
+        default=0,
+        type=int,
+        help="Learning target for model's policy; 0 for agent's logit, 1 for agent's action.",
+    )
 
     # Model wrapper settings
     parser.add_argument(
@@ -612,6 +623,12 @@ def get_parser():
         default=0,
         type=int,
         help="0: no masking; 1: mask all auxillary node stat; 2: mask all auxillary node stat + v and pi.",
+    )
+    parser.add_argument(
+        "--sim_aug", action="store_true", help="Whether to use simple augmentation."
+    )
+    parser.add_argument(
+        "--sim_mode", default=0, type=int, help="Mode for simple augmentation."
     )
 
     # Optimizer settings.
@@ -746,6 +763,12 @@ def process_flags(flags, override=True):
     if flags.policy_type == 3:
         print("Automatically disable train_actor with MCTS policy.")
         flags.train_actor = False
+
+    if flags.sim_aug:
+        print("Automatically setting im_cost = 0 (simple augmentation).")
+        flags.im_cost = 0.0
+        print("Automatically disable tree carry (simple augmentation).")
+        flags.tree_carry = False
 
     if "Sokoban" in flags.env and flags.frame_copy:
         print("Disabling frame copy for non-atari games")

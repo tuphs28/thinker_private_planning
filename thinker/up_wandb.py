@@ -2,6 +2,7 @@ import os
 import re
 import argparse
 import thinker.util as util
+import time
 
 def parse_line(header, line):
     if header is None or line is None: return None
@@ -73,7 +74,9 @@ if __name__ == "__main__":
     print("Uploading data with size %d for %s..." % (len(stats), flags_.xpid))
     print(f"Example of data uploaded {stats[-1]}")
 
-    wlogger = util.Wandb(flags_)
-    for stat in stats:
+    wlogger = util.Wandb(flags_)    
+    for n, stat in enumerate(stats):        
         wlogger.wandb.log(stat, step=stat['real_step'])
+        time.sleep(0.1)
+        if n % 50 == 0: print("Uploading step: %d" % stat['real_step'])
     wlogger.wandb.finish(exit_code=0)

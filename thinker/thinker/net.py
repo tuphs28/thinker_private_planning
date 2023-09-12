@@ -353,6 +353,7 @@ class ActorNetBase(BaseNet):
         self.disable_model = flags.disable_model
         self.disable_mem = flags.disable_mem
         self.disable_rnn = flags.disable_rnn
+        self.sim = flags.actor_sim
         self.flags = flags
 
         # encoder for state or encoding output
@@ -401,14 +402,24 @@ class ActorNetBase(BaseNet):
                 )
                 last_out_size += self.tran_dim
             else:
-                # self.core = mlp(input_size=self.obs_shape[0], layer_sizes=[400, 400, 400], output_size=100, norm=False)
-                self.core = MLPWithSkipConnections(
-                    input_size=self.obs_shape[0],
-                    layer_sizes=[200, 200, 200],
-                    output_size=100,
-                    norm=False,
-                    skip_connection=True,
-                )
+                if not self.sim:
+                    self.core = MLPWithSkipConnections(
+                        input_size=self.obs_shape[0],
+                        layer_sizes=[200, 200, 200],
+                        output_size=100,
+                        norm=False,
+                        skip_connection=True,
+                    )
+                else:
+                    self.core_entry = mlp(self.obs_shape[2], [64], 64, norm=False)
+                    self.core_row = mlp(self.obs_shape[1]*64, [64], 64, norm=False)
+                    self.core = MLPWithSkipConnections(
+                        input_size=self.obs_shape[0] * 64,
+                        layer_sizes=[200, 200],
+                        output_size=100,
+                        norm=False,
+                        skip_connection=True,
+                    )
                 last_out_size += 100
 
         self.policy = nn.Linear(last_out_size, self.num_actions)
@@ -532,6 +543,11 @@ class ActorNetBase(BaseNet):
                 final_out.append(model_stat)
             else:
                 model_stat = torch.flatten(obs.model_out, 0, 1)
+                if self.sim:
+                    model_stat = self.core_entry(model_stat)
+                    model_stat = torch.flatten(model_stat, start_dim=2)
+                    model_stat = self.core_row(model_stat)
+                    model_stat = torch.flatten(model_stat, start_dim=1)
                 model_stat = self.core(model_stat)
                 final_out.append(model_stat)
 

@@ -14,12 +14,12 @@ import thinker.util as util
 import gc
 
 
-def compute_cross_entropy_loss(logits, target_logits, is_weights, mask=None, prob=False):
+def compute_cross_entropy_loss(logits, target_logit, target_action, is_weights, mask=None):
     k, b, *_ = logits.shape
-    if not prob:
-        target_policy = F.softmax(target_logits, dim=-1)
+    if target_logit is not None:
+        target_policy = F.softmax(target_logit, dim=-1)
     else:
-        target_policy = target_logits 
+        target_policy = target_action 
     loss = torch.nn.CrossEntropyLoss(reduction="none")(
         input=torch.flatten(logits, 0, 1), target=torch.flatten(target_policy, 0, 1)
     )
@@ -587,12 +587,24 @@ class SModelLearner:
         vs_loss = torch.sum(vs_loss)
 
         # compute logit loss
+        if self.flags.model_logit_type == 0:
+            if self.flags.policy_type != 3:
+                target_logit = target["logits"].detach()
+                target_action = None
+            else:
+                target_logit = None # if mcts, the logit actually holds probability
+                target_action = target["logits"].detach()
+        else:            
+            target_logit = None
+            target_action = F.one_hot(
+                target["actions"], self.model_net.pred_net.num_actions).detach().float()
+
         logits_loss = compute_cross_entropy_loss(
             logits, 
-            target["logits"].detach(), 
+            target_logit, 
+            target_action,
             is_weights, 
             mask=done_mask[:-1], 
-            prob=self.flags.policy_type==3  # if mcts, the logit actually holds probability
         )
 
         # compute sup loss
@@ -674,6 +686,9 @@ class SModelLearner:
         target_logits = train_model_out.policy_logits[
             1 : k + 1
         ]  # true logits l_0, l_1, ..., l_k-1
+        target_actions = train_model_out.action[
+            1 : k + 1
+        ]  # true actions l_0, l_1, ..., l_k-1
         target_vs = train_model_out.baseline[
             k : k + k
         ]  # baseline ranges from v_k, v_k+1, ... v_2k
@@ -707,6 +722,7 @@ class SModelLearner:
                 if t < k:
                     target_rewards[t, true_done[t]] = 0.0
                     target_logits[t, true_done[t]] = target_logits[t - 1, true_done[t]]
+                    target_actions[t, true_done[t]] = target_actions[t - 1, true_done[t]]
                     target_vs[t, true_done[t]] = 0.0
             if self.flags.model_done_loss_cost > 0.0:
                 done_mask = (~torch.logical_or(trun_done, true_done)).float()
@@ -726,6 +742,7 @@ class SModelLearner:
             "xs": target_xs[1 : k + 1],
             "rewards": target_rewards,
             "logits": target_logits,
+            "actions": target_actions,
             "vs": target_vs,
             "dones": target_done,
             "trun_done": trun_done,
