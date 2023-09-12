@@ -1,4 +1,4 @@
-__version__ = "1.01"
+__version__ = "1.02"
 __project__ = "thinker"
 
 import collections
@@ -12,7 +12,6 @@ from matplotlib import pyplot as plt
 import numpy as np
 import torch
 import re
-
 
 def get_parser():
     parser = argparse.ArgumentParser(description=f"{__project__} v{__version__}")
