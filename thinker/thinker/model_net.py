@@ -566,18 +566,6 @@ class SRNet(nn.Module):
         state = {"sr_h": h}
         if len(hs) > 1:
             xs = self.encoder.decode(hs[1:], flatten=True)
-            if self.img_diff_type >= 1:                
-                base_x = (x[:,  -self.copy_n:] if self.frame_stack_n > 1 else x)
-                if self.img_diff_type in [1, 2]:
-                    cum_xs = xs.cumsum(dim=0)                
-                    if self.img_diff_type == 1:
-                        xs = cum_xs + base_x.unsqueeze(0)
-                        base_x = xs[-1]
-                    elif self.img_diff_type == 2:
-                        xs = (cum_xs + base_x.unsqueeze(0) - xs).detach() + xs
-                        base_x = xs[-1].detach()
-                elif self.img_diff_type == 3:
-                    xs = base_x + xs
 
             if self.frame_stack_n > 1:
                 stacked_x = x
@@ -591,12 +579,7 @@ class SRNet(nn.Module):
         else:
             xs = None            
             if self.frame_stack_n > 1:
-                state["last_x"] = x[:, self.copy_n:]
-            if self.img_diff_type >= 1:
-                base_x = (x[:,  -self.copy_n:] if self.frame_stack_n > 1 else x)        
-
-        if self.img_diff_type >= 1:
-            state["base_x"] = base_x
+                state["last_x"] = x[:, self.copy_n:]     
 
         outs = []
         for t in range(1, k + 1):
@@ -623,11 +606,6 @@ class SRNet(nn.Module):
             action = F.one_hot(action, self.num_actions)
         h = self.RNN(h=state["sr_h"], actions=action)
         x = self.encoder.decode(h, flatten=False)
-        if self.img_diff_type >= 1:  
-            base_x = state["base_x"]
-            if self.img_diff_type == 2:
-                base_x = base_x.detach()
-            x = x + base_x
         if self.frame_stack_n > 1:
             x = torch.concat([state["last_x"], x], dim=1)
 
@@ -635,13 +613,6 @@ class SRNet(nn.Module):
         state = {"sr_h": h}
         if self.frame_stack_n > 1:
             state["last_x"] = x[:, self.copy_n:]        
-
-        if self.img_diff_type == 1:  
-            state["base_x"] = x
-        elif self.img_diff_type == 2:  
-            state["base_x"] = x.detach()
-        elif self.img_diff_type == 3:  
-            state["base_x"] = base_x
         
         return SRNetOut(
             rs=util.safe_unsqueeze(out.rs, 0),
