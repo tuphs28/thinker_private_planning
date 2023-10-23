@@ -286,10 +286,6 @@ cdef class cModelWrapper():
     cdef int[:] step_status
     cdef int[:] total_step  
 
-    cdef float mask_tree_rep_p
-    cdef bool[:] mask_tree_rep
-    cdef int mask_type
-
     def __init__(self, env, env_n, flags, model_net, device=None, time=False):        
            
         if flags.test_rec_t > 0:
@@ -368,15 +364,7 @@ cdef class cModelWrapper():
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool_)
         self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool_)
         self.total_step = np.zeros(self.env_n, dtype=np.intc)
-        self.step_status = np.zeros(self.env_n, dtype=np.intc)
-
-        self.mask_tree_rep_p = flags.mask_tree_rep_p
-        self.mask_type = flags.mask_type
-        if self.mask_tree_rep_p > 0.:
-            self.mask_tree_rep = np.zeros(self.env_n, dtype=np.bool_)
-            self.mask_tree_rep[:] = np.logical_not(np.random.uniform(self.env_n) > 
-                self.mask_tree_rep_p)
-        
+        self.step_status = np.zeros(self.env_n, dtype=np.intc)       
         
     def reset(self, model_net):
         """reset the environment; should only be called in the initial"""
@@ -520,8 +508,6 @@ cdef class cModelWrapper():
                 pass_action.push_back(re_action[i])                
                 pass_inds_step.push_back(i)
                 self.status[i] = 1            
-                if self.mask_type == 0 and self.mask_tree_rep_p > 0:
-                    self.mask_tree_rep[i] = not (np.random.uniform() > self.mask_tree_rep_p)
         if self.time: self.timings.time("misc_1")
 
         # one step of env
@@ -536,8 +522,6 @@ cdef class cModelWrapper():
             if done[i]:
                 pass_inds_reset.push_back(j)                
                 pass_inds_reset_.push_back(i) # index within pass_inds_step
-                if self.mask_type == 1 and self.mask_tree_rep_p > 0:
-                    self.mask_tree_rep[j] = not (np.random.uniform() > self.mask_tree_rep_p)
 
         # reset
         if pass_inds_reset.size() > 0:
@@ -783,7 +767,6 @@ cdef class cModelWrapper():
         idx2 = self.num_actions*10+7
         result = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         for i in range(self.env_n):
-            if self.mask_tree_rep_p > 0 and self.mask_tree_rep[i]: continue
             result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, mask_type=self.stat_mask_type)
             result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, mask_type=self.stat_mask_type)    
             # reset
