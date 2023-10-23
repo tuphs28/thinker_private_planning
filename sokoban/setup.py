@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-import os
+import os, sys
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 import zipfile, numpy
