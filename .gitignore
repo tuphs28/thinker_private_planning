@@ -21,4 +21,4 @@ thinker/wandb/
 thinker/thinker/cenv.cp39-win_amd64.pyd
 thinker/thinker.egg-info
 thinker/thinker/cenv.cpp
-thinker/notebook
+#thinker/notebook
