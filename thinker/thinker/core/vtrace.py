@@ -39,20 +39,7 @@ import torch
 import torch.nn.functional as F
 
 
-VTraceFromLogitsReturns = collections.namedtuple(
-    "VTraceFromLogitsReturns",
-    [
-        "vs",
-        "pg_advantages",
-        "log_rhos",
-        "behavior_action_log_probs",
-        "target_action_log_probs",
-        "norm_stat",
-    ],
-)
-
 VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages norm_stat")
-
 
 def action_log_probs(policy_logits, actions):
     return -F.nll_loss(
@@ -67,7 +54,7 @@ def adv_l2(target_x, x):
 
 
 @torch.no_grad()
-def from_importance_weights(
+def compute_v_trace(
     log_rhos,
     discounts,
     rewards,
@@ -76,7 +63,7 @@ def from_importance_weights(
     rv_tran,
     enc_type,
     bootstrap_value,
-    flags,
+    return_norm_type,
     clip_rho_threshold=1.0,
     clip_pg_rho_threshold=1.0,
     lamb=1.0,
@@ -118,52 +105,33 @@ def from_importance_weights(
         else:
             clipped_pg_rhos = rhos
         target_values = rewards + discounts * vs_t_plus_1
-        if flags.return_norm_type == -1:
+        if return_norm_type == -1:
             norm_stat = None
         else:
-            if flags.return_norm_type == 0:
+            if return_norm_type == 0:
                 norm_v = target_values
-            elif flags.return_norm_type == 1:
+            elif return_norm_type == 1:
                 norm_v = clipped_pg_rhos * (target_values - values)
-
-            if flags.return_norm_buffer_n <= 0:
-                if not flags.return_norm_use_std:
-                    new_lq = torch.quantile(norm_v, 0.05).detach()
-                    new_uq = torch.quantile(norm_v, 0.95).detach()
-                else:
-                    new_lq = 0
-                    new_uq = torch.sqrt(torch.mean(torch.square(norm_v)))
-                if norm_stat is None:
-                    norm_stat = (new_lq, new_uq)
-                else:
-                    norm_stat = (
-                        norm_stat[0] * 0.99 + new_lq * (1 - 0.99),
-                        norm_stat[1] * 0.99 + new_uq * (1 - 0.99),
-                    )
-                norm_factor = torch.clamp(
-                    norm_stat[1] - norm_stat[0], min=flags.return_norm_b
-                )
-                norm_stat = norm_stat + (norm_factor,)
+            
+            if norm_stat is None:
+                buffer = FifoBuffer(100000, device=target_values.device)
             else:
-                if norm_stat is None:
-                    buffer = FifoBuffer(100000, device=target_values.device)
-                else:
-                    buffer = norm_stat[-1]
-                buffer.push(norm_v)
-                lq = buffer.get_percentile(0.05)
-                uq = buffer.get_percentile(0.95)
-                norm_stat = (
-                    lq,
-                    uq,
-                )
-                norm_factor = torch.clamp(
-                    norm_stat[1] - norm_stat[0], min=flags.return_norm_b
-                )
-                norm_stat = norm_stat + (norm_factor, buffer)
+                buffer = norm_stat[-1]
+            buffer.push(norm_v)
+            lq = buffer.get_percentile(0.05)
+            uq = buffer.get_percentile(0.95)
+            norm_stat = (
+                lq,
+                uq,
+            )
+            norm_factor = torch.clamp(
+                norm_stat[1] - norm_stat[0], min=0.001
+            )
+            norm_stat = norm_stat + (norm_factor, buffer)
 
-        if enc_type in [0, 4] or not flags.return_norm_type == -1:
+        if enc_type in [0, 4] or not return_norm_type == -1:
             pg_advantages = clipped_pg_rhos * adv_l2(target_values, values)
-            if not flags.return_norm_type == -1:
+            if not return_norm_type == -1:
                 # pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
                 pg_advantages = pg_advantages / norm_factor
         elif enc_type == 1:
@@ -179,7 +147,9 @@ def from_importance_weights(
             raise Exception("Unknown reward type: ", rv_tran)
 
         # Make sure no gradients backpropagated through the returned values.
-        return VTraceReturns(vs=vs, pg_advantages=pg_advantages, norm_stat=norm_stat)
+        return VTraceReturns(vs=vs, 
+                             pg_advantages=pg_advantages, 
+                             norm_stat=norm_stat)
 
 
 class FifoBuffer:

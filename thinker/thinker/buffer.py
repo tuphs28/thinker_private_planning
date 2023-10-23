@@ -116,31 +116,25 @@ class ActorBuffer:
         self.finish = True
 
 
-@ray.remote
-class ModelBuffer:
+class SModelBuffer:
     def __init__(self, flags):
         self.alpha = flags.priority_alpha
-
-        self.t = flags.model_unroll_length
-        self.k = flags.model_k_step_return
-
+        self.t = flags.buffer_traj_len
+        self.k = flags.model_unroll_len
         self.max_buffer_n = flags.model_buffer_n // self.t + 1  # maximum buffer length
         self.batch_size = flags.model_batch_size  # batch size in returned sample
         self.wram_up_n = (
-            flags.model_warm_up_n if not flags.load_checkpoint else flags.model_buffer_n
+            flags.model_warm_up_n if not flags.ckp else flags.model_buffer_n
         )  # number of total transition before returning samples
 
         self.buffer = []
 
         self.priorities = None
         self.next_inds = None
-        self.cur_inds = [
-            None for _ in range(flags.gpu_num_actors + flags.cpu_num_actors)
-        ]
+        self.cur_inds = {}
 
         self.base_ind = 0
         self.abs_tran_n = 0
-        self.preload_n = 0
         self.clean_m = 0
 
         self.finish = False
@@ -162,7 +156,7 @@ class ModelBuffer:
             self.priorities = np.concatenate([self.priorities, max_priorities])
 
         # to record a table for chaining entry
-        if self.cur_inds[rank] is not None:
+        if rank in self.cur_inds.keys():
             last_ind = self.cur_inds[rank] - self.base_ind
             mask = last_ind >= 0
             self.next_inds[last_ind[mask]] = (
@@ -170,10 +164,7 @@ class ModelBuffer:
             )[mask]
 
         if self.next_inds is None:
-            self.next_inds = np.full(
-                (n),
-                fill_value=np.nan,
-            )
+            self.next_inds = np.full((n), fill_value=np.nan,)
         else:
             self.next_inds = np.concatenate(
                 [self.next_inds, np.full((n), fill_value=np.nan)]
@@ -217,15 +208,17 @@ class ModelBuffer:
 
         base_ind_pri = self.base_ind * self.t
         abs_flat_inds = flat_inds + base_ind_pri
-        return data, weights, abs_flat_inds, self.abs_tran_n - self.preload_n
+        return data, weights, abs_flat_inds, self.abs_tran_n
 
     def set_finish(self):
         self.finish = True
 
-    def get_processed_n(self):
-        if self.finish:
-            return "FINISH"
-        return self.abs_tran_n - self.preload_n
+    def get_status(self):
+        return {"processed_n": self.abs_tran_n,
+                "warm_up_n": self.wram_up_n,
+                "running": self.abs_tran_n >= self.wram_up_n,
+                "finish": self.finish,
+                 }
 
     def update_priority(self, abs_flat_inds, priorities):
         """Update priority in the buffer; both input
@@ -275,14 +268,6 @@ class ModelBuffer:
             self.priorities = self.priorities[excess_n * self.t :]
             self.base_ind += excess_n
 
-    def check_preload(self):
-        return (len(self.buffer) >= self.max_buffer_n, len(self.buffer) * self.t)
-
-    def set_preload(self):
-        self.preload_n = self.abs_tran_n
-        return True
-
-
 @ray.remote
 class GeneralBuffer(object):
     def __init__(self):
@@ -307,6 +292,17 @@ class GeneralBuffer(object):
 
     def get_data(self, name):
         return self.data[name] if name in self.data else None
+    
+    def get_and_increment(self, name):
+        if name in self.data:
+            self.data[name] += 1            
+        else:
+            self.data[name] = 0
+        return self.data[name]
+
+@ray.remote
+class ModelBuffer(SModelBuffer):
+    pass
 
 @ray.remote
 class RecordBuffer(object):
@@ -318,7 +314,7 @@ class RecordBuffer(object):
             xpid=flags.xpid,
             xp_args=flags.__dict__,
             rootdir=flags.savedir,
-            overwrite=not self.flags.load_checkpoint,
+            overwrite=not self.flags.ckp,
         )
         self.real_step = 0
         max_actor_id = (
@@ -327,7 +323,7 @@ class RecordBuffer(object):
         )
         self.last_returns = RetBuffer(max_actor_id, mean_n=400)
         self._logger = util.logger()
-        self.preload = flags.load_checkpoint
+        self.preload = flags.ckp
         self.preload_n = flags.model_buffer_n
         self.proc_n = 0
 
