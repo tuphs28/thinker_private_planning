@@ -223,7 +223,9 @@ class SelfPlayWorker:
     
     def env_step(self, env_out, actor_state):
         actor_out, actor_state = self.actor_net(
-                            env_out, actor_state, greedy=False
+                            env_out = env_out, 
+                            core_state = actor_state, 
+                            greedy = False,
                         )
         state, reward, done, info = self.env.step(
                 primary_action=actor_out.action[0], 

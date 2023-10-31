@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint, checkpoint_sequential
+from torch.cuda.amp import autocast
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM
 from thinker.model_net import BaseNet, RVTran, FrameEncoder, MLPWithSkipConnections
@@ -246,9 +247,7 @@ class ActorNetBase(BaseNet):
         if flags.see_real_state:
             self.real_states_shape = obs_space["real_states"].shape[1:]  
             self.register_buffer("norm_low", torch.tensor(obs_space["real_states"].low[0,]))
-            self.register_buffer("norm_high", torch.tensor(obs_space["real_states"].high[0,]))
-
-        self.xss = flags.xss_cost > 0. and self.see_x            
+            self.register_buffer("norm_high", torch.tensor(obs_space["real_states"].high[0,]))     
 
         if not self.disable_thinker:
             self.num_actions = action_space[0][0].n
@@ -267,6 +266,7 @@ class ActorNetBase(BaseNet):
         self.critic_zero_init = flags.critic_zero_init        
 
         self.sep_im_head = flags.sep_im_head
+        self.float16 = flags.float16
         self.flags = flags        
 
         # encoder for state or encoding output
@@ -305,12 +305,6 @@ class ActorNetBase(BaseNet):
                     disable_mem=flags.disable_mem,
                 )
                 x_out_size = flags.tran_dim
-
-            if self.xss:
-                self.x_im_policy = nn.Linear(x_out_size, self.num_actions)
-                self.x_policy = nn.Linear(x_out_size, self.num_actions)
-                self.x_reset = nn.Linear(x_out_size, 2)
-                self.x_baseline = nn.Linear(x_out_size, 1)
             
             last_out_size += x_out_size
 
@@ -371,9 +365,6 @@ class ActorNetBase(BaseNet):
         if self.critic_zero_init:
             nn.init.constant_(self.baseline.weight, 0.0)
             nn.init.constant_(self.baseline.bias, 0.0)
-            if self.xss:
-                nn.init.constant_(self.x_baseline.weight, 0.0)
-                nn.init.constant_(self.x_baseline.bias, 0.0)
 
         self.initial_state(batch_size=1) # initialize self.state_idx
 
@@ -471,7 +462,10 @@ class ActorNetBase(BaseNet):
 
         if self.see_x:
             xs = torch.flatten(env_out.xs, 0, 1)
-            encoded_x = self.x_encoder_pre(xs)
+            with autocast(enabled=self.float16):                
+                encoded_x = self.x_encoder_pre(xs)
+            if self.float16: encoded_x = encoded_x.float()
+                
             if self.x_rnn:
                 core_state_ = core_state[self.state_idx['x'][0]:self.state_idx['x'][1]]
                 aux_info = util.mask_tree_rep(tree_rep, self.num_actions)
@@ -479,6 +473,7 @@ class ActorNetBase(BaseNet):
                 encoded_x, core_state_ = self.x_encoder_rnn(
                     encoded_x, done, core_state_)
                 new_core_state[self.state_idx['x'][0]:self.state_idx['x'][1]] = core_state_
+            
             final_out.append(encoded_x)
 
         if self.see_real_state:
@@ -486,7 +481,9 @@ class ActorNetBase(BaseNet):
             assert real_states.dtype == torch.uint8
             encoded_real_state = (real_states.float() - self.norm_low) / \
                     (self.norm_high -  self.norm_low)
-            encoded_real_state = self.real_state_encoder(encoded_real_state)
+            with autocast(enabled=self.float16):      
+                encoded_real_state = self.real_state_encoder(encoded_real_state)
+            if self.float16: encoded_real_state = encoded_real_state.float()
             final_out.append(encoded_real_state)
 
         final_out = torch.concat(final_out, dim=-1)        
@@ -593,35 +590,6 @@ class ActorNetBase(BaseNet):
 
         misc = {}
 
-        if self.xss:
-            x_pri_logits = self.x_policy(encoded_x)                
-            if self.sep_im_head:
-                x_im_logits = self.x_im_policy(encoded_x)    
-                im_mask = env_out.step_status <= 1 # imagainary action will be taken next
-                im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1)
-                x_pri_logits = torch.where(im_mask, x_im_logits, x_pri_logits)
-            x_reset_logits = self.x_reset(encoded_x)
-            x_baseline = self.x_baseline(encoded_x)[:, 0]
-
-            pri_prob = F.softmax(pri_logits.detach().view(T*B, self.num_actions), dim=-1)
-            xss_pri_logits_loss = torch.nn.CrossEntropyLoss(reduction='none')(
-                    input=x_pri_logits, target=pri_prob
-                )
-            reset_prob = F.softmax(reset_logits.detach().view(T*B, 2), dim=-1)
-            xss_reset_logits_loss = torch.nn.CrossEntropyLoss(reduction='none')(
-                    input=x_reset_logits, target=reset_prob
-                )
-            baseline_ = baseline[:, :, 0].detach().view(T * B)
-            xss_baseline_loss = torch.square(x_baseline - baseline_)
-            xss_loss = xss_pri_logits_loss + xss_reset_logits_loss + 0.5 * xss_baseline_loss
-            misc["xss_loss"] = xss_loss
-            if extra_info:
-                misc["debug_xss"] = {
-                    "pri_logits": (x_pri_logits.view(T, B, self.num_actions).detach(), pri_logits.detach()),
-                    "reset_logits": (x_reset_logits.view(T, B, 2).detach(), reset_logits.detach()),
-                    "baselines": (x_baseline.view(T, B).detach(), baseline[:, :, 0].detach())
-                }
-
         actor_out = ActorOut(
             pri=pri,
             reset=reset,
@@ -643,9 +611,9 @@ class ActorNetBase(BaseNet):
     
     def sample(self, logits, greedy, dim=-1):
         if not greedy:
-            return torch.multinomial(
-                F.softmax(logits, dim=dim), num_samples=1
-            )
+            gumbel_noise = torch.empty_like(logits).uniform_().clamp(1e-10, 1).log().neg_().clamp(1e-10, 1).log().neg_()
+            sampled_action = (logits + gumbel_noise).argmax(dim=dim)
+            return sampled_action.detach()
         else:
             return torch.argmax(logits, dim=dim)
 

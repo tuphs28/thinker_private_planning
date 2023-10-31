@@ -58,6 +58,7 @@ savedir: 'logs' # base log directory
 # misc
 profile: false # whether to output all the time statistics of the run
 parallel: false # whether to use a parallel ray actor for training the model
+float16: false # whether to use mixed precision
 base_seed: 1 # base seed for the gym environment
 # ray resources
 ray_mem: -1 # default initialized ray memory

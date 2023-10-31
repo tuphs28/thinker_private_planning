@@ -7,6 +7,7 @@ import traceback
 import ray
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler
 
 from thinker.core.vtrace import compute_v_trace
 from thinker.core.file_writer import FileWriter
@@ -150,11 +151,14 @@ class SActorLearner:
         self.sps_buffer_n = 0
         self.sps_start_time, self.sps_start_step = self.start_time, self.step
         self.ckp_start_time = int(time.strftime("%M")) // 10
-
         self.disable_thinker = flags.wrapper_type == 1
+    
+        if self.flags.float16:
+            self.scaler = GradScaler(init_scale=2**8)
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
+        data_ptr = self.actor_buffer.read.remote()                    
         try:
             while self.real_step < self.flags.total_steps:
                 if timing is not None:
@@ -162,8 +166,9 @@ class SActorLearner:
                 # get data remotely
            
                 while True:
-                    data_ptr = self.actor_buffer.read.remote()
                     data = ray.get(data_ptr)
+                    ray.internal.free(data_ptr)
+                    data_ptr = self.actor_buffer.read.remote()                    
                     if data is not None:
                         break
                     time.sleep(0.001)
@@ -182,9 +187,9 @@ class SActorLearner:
                     timing.time("convert_data")
                 data = (train_actor_out, initial_actor_state)
                 # start consume data
-                self.consume_data(data)
+                self.consume_data(data, timing=timing)
                 del train_actor_out, initial_actor_state, data
-                ray.internal.free(data_ptr)
+                
                 self.actor_param_buffer.set_data.remote(
                     "actor_net", self.actor_net.get_weights()
                 )
@@ -215,11 +220,16 @@ class SActorLearner:
 
         # gradient descent on loss
         self.optimizer.zero_grad()
-        total_loss.backward()
+        if self.flags.float16:
+            self.scaler.scale(total_loss).backward()
+        else:
+            total_loss.backward()
         if timing is not None:
             timing.time("compute gradient")
 
         optimize_params = self.optimizer.param_groups[0]["params"]
+        if self.flags.float16:
+            self.scaler.unscale_(self.optimizer)
         if self.flags.actor_grad_norm_clipping > 0:
             total_norm = torch.nn.utils.clip_grad_norm_(
                 optimize_params, self.flags.actor_grad_norm_clipping
@@ -230,7 +240,11 @@ class SActorLearner:
         if timing is not None:
             timing.time("compute norm")
 
-        self.optimizer.step()
+        if self.flags.float16:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
         if timing is not None:
             timing.time("grad descent")
 
@@ -291,8 +305,8 @@ class SActorLearner:
             self._logger.info(print_str)
             self.start_time = self.timer()
             self.queue_n = 0
-            if self.time:
-                print(self.timing.summary())
+            if timing is not None:
+                print(timing.summary())
 
         if int(time.strftime("%M")) // 10 != self.ckp_start_time:
             self.save_checkpoint()
@@ -317,6 +331,7 @@ class SActorLearner:
             clamp_action = train_actor_out.pri[1:]
         else:
             clamp_action = (train_actor_out.pri[1:], train_actor_out.reset[1:])
+        
         new_actor_out, _ = self.actor_net(
             train_actor_out, 
             initial_actor_state,
@@ -423,11 +438,6 @@ class SActorLearner:
         reg_loss = torch.sum(new_actor_out.reg_loss)
         losses["reg_loss"] = reg_loss
         total_loss += self.flags.reg_cost * reg_loss
-
-        if self.flags.xss_cost > 0.:
-            xss_loss = torch.sum(new_actor_out.misc["xss_loss"])
-            losses["xss_loss"] = xss_loss
-            total_loss += self.flags.xss_cost * xss_loss
 
         losses["total_loss"] = total_loss
         return losses, train_actor_out

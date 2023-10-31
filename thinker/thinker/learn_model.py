@@ -6,6 +6,7 @@ import traceback
 import ray
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler, autocast
 from thinker.core.file_writer import FileWriter
 from thinker.model_net import ModelNet
 import thinker.util as util
@@ -67,12 +68,14 @@ class SModelLearner:
             self.scheduler_m = torch.optim.lr_scheduler.LambdaLR(
                 self.optimizer_m, lr_lambda
             )
+            self.scaler_m = GradScaler(init_scale=2**3) if self.flags.float16 else None
         self.optimizer_p = torch.optim.Adam(
             self.model_net.vp_net.parameters(), lr=flags.model_learning_rate
         )
         self.scheduler_p = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer_p, lr_lambda
         )
+        self.scaler_p = GradScaler(init_scale=2**3) if self.flags.float16 else None
 
         self.ckp_path = os.path.join(flags.ckpdir, "ckp_model.tar")
         if flags.ckp: self.load_checkpoint(self.ckp_path)
@@ -90,6 +93,8 @@ class SModelLearner:
         if self.flags.dual_net:
             util.optimizer_to(self.optimizer_m, self.device)
         util.optimizer_to(self.optimizer_p, self.device)
+
+        
         
         self.timing = util.Timings() if self.time else None
         self.perfect_model = flags.wrapper_type == 2
@@ -137,14 +142,17 @@ class SModelLearner:
 
     def learn_data(self):
         try:
+            beta = self.compute_beta()       
+            data_ptr = self.model_buffer.read.remote(beta)
+
             while self.real_step < self.flags.total_steps:
                 if self.time: self.timing.reset()
-                beta = self.compute_beta()
-
+                beta = self.compute_beta()   
                 # get data remotely
-                while True:
-                    data_ptr = self.model_buffer.read.remote(beta)
+                while True:                    
                     data = ray.get(data_ptr)
+                    ray.internal.free(data_ptr)
+                    data_ptr = self.model_buffer.read.remote(beta)                    
                     self.init_psteps(data)
                     if data is not None: break
                     time.sleep(0.01)
@@ -159,8 +167,7 @@ class SModelLearner:
 
                 # start consume data
                 self.consume_data(data)
-                del data
-                ray.internal.free(data_ptr)
+                del data                
                 gc.collect()
 
                 # update shared buffer's weights
@@ -246,13 +253,14 @@ class SModelLearner:
 
         if self.flags.dual_net:
             # compute losses for model_net
-            losses_m, pred_xs = self.compute_losses_m(
-                train_model_out, target, is_weights
-            )
+            with autocast(enabled=self.flags.float16):
+                losses_m, pred_xs = self.compute_losses_m(
+                    train_model_out, target, is_weights
+                )
             if self.timing is not None:
                 self.timing.time("compute_losses_m")
             total_norm_m = self.gradient_step(
-                losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m
+                losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m, self.scaler_m
             )
             if self.timing is not None:
                 self.timing.time("gradient_step_m")
@@ -260,14 +268,14 @@ class SModelLearner:
             losses_m = {}
             total_norm_m = torch.zeros(1, device=self.device)
             pred_xs = None
-
-        losses_p, priorities = self.compute_losses_p(
-            train_model_out, target, is_weights, pred_xs
-        )
+        with autocast(enabled=self.flags.float16):
+            losses_p, priorities = self.compute_losses_p(
+                train_model_out, target, is_weights, pred_xs
+            )
         if self.timing is not None:
             self.timing.time("compute_losses_p")
         total_norm_p = self.gradient_step(
-            losses_p["total_loss_p"], self.optimizer_p, self.scheduler_p
+            losses_p["total_loss_p"], self.optimizer_p, self.scheduler_p, self.scaler_p
         )
         if self.timing is not None:
             self.timing.time("gradient_step_p")
@@ -608,10 +616,17 @@ class SModelLearner:
             "done_mask": done_mask,
         }
 
-    def gradient_step(self, loss, optimizer, scheduler):
+    def gradient_step(self, loss, optimizer, scheduler, scaler=None):
         # gradient descent on loss
         optimizer.zero_grad()
-        loss.backward()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+                
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        
         optimize_params = optimizer.param_groups[0]["params"]
         if self.flags.model_grad_norm_clipping > 0:
             total_norm = torch.nn.utils.clip_grad_norm_(
@@ -619,10 +634,15 @@ class SModelLearner:
             )
         else:
             total_norm = util.compute_grad_norm(optimize_params)
+        
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
 
-        optimizer.step()
         scheduler.last_epoch = (
-            self.real_step - 1
+            max(self.real_step - 1, 0)
         )  # scheduler does not support setting epoch directly
         scheduler.step()
         optimizer.zero_grad(set_to_none=True)

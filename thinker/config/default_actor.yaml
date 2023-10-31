@@ -25,7 +25,6 @@ baseline_cost: 0.5 # cost for computing baseline
 entropy_cost: 0.001 # entropy cost for real actions
 im_entropy_cost: 0.0001 # entropy cost for imaginary actions
 reg_cost: 0.001 # regularization cost
-xss_cost: 0. # self-supervised loss for the real state branch
 # actor setting
 see_real_state: false # whether to see root real state
 see_tree_rep: true # whether to see tree representation
@@ -57,13 +56,14 @@ policy_vis_length: 20 # length of the video visualization
 # misc
 profile: false # whether to output all the time statistics of the run
 parallel_actor: true # whether to use a parallel ray actor for training the actor
+float16: false # whether to use mixed precision
 # ray resources
 auto_res: true # whether to auto allocate gpu
 ray_mem: -1 # default initialized ray memory
 ray_gpu: -1 # number of initial gpu (set to -1 for auto detect)
 ray_cpu: -1 # number of initial cpu (set to -1 for auto detect)
 self_play_n: 1 # number of self-play ray actors (will be set automatically if auto_res is enabled)
-env_n: 16 # number of parallel environment for each self-play ray actors
+env_n: 64 # number of parallel environment for each self-play ray actors
 gpu_self_play: 0.25 # gpu for each self-play ray actor (will be set automatically if auto_res is enabled)
 gpu_learn_actor: 0.25 # gpu for the actor-learning ray actor (will be set automatically if auto_res is enabled)
 gpu_learn: 0.5 # gpu for the model-learning ray actor (will be set automatically if auto_res is enabled)
