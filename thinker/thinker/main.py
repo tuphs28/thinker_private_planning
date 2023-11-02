@@ -248,7 +248,7 @@ class Env(gym.Wrapper):
     
     def _empty_local_buffer(self):
         pre_shape = (
-            self.flags.buffer_traj_len + 2 * self.flags.model_unroll_len,
+            self.flags.buffer_traj_len + 2 * self.flags.model_unroll_len + 1,
             self.env_n,
         )
         return TrainModelOut(
@@ -303,7 +303,7 @@ class Env(gym.Wrapper):
                 1 - n, t - cap_t, state, reward, done, info, action, action_prob
             )
 
-        if t >= cap_t + 2 * k - 2:
+        if t >= cap_t + 2 * k:
             # finish writing a buffer, send it
             send_model_local_buffer = util.tuple_map(
                 self.model_local_buffer[n], lambda x: x.cpu().numpy()

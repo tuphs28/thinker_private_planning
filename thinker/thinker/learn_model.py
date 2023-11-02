@@ -560,7 +560,7 @@ class SModelLearner:
             1 : k + 1
         ]  # true actions l_0, l_1, ..., l_k-1
         target_vs = train_model_out.baseline[
-            k : k + k
+            k + 1: k + 1 + k
         ]  # baseline ranges from v_k, v_k+1, ... v_2k
         for t in range(k, 0, -1):
             target_vs = (
@@ -571,7 +571,7 @@ class SModelLearner:
             )
             t_done = train_model_out.truncated_done[t : k + t]
             if torch.any(t_done):
-                target_vs[t_done] = train_model_out.baseline[t - 1 : k + t - 1][t_done]
+                target_vs[t_done] = train_model_out.baseline[t : k + t][t_done]
 
         # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss
         # we set all target r_j+1, v_j, a_j to 0, 0, and last a_{j+1}

@@ -140,7 +140,7 @@ class SModelBuffer:
         self.finish = False
 
     def write(self, data, rank):
-        # data is a named tuple with elements of size (t+2*k-1, n, ...)
+        # data is a named tuple with elements of size (t+2*k+1, n, ...)
         n = data[0].shape[1]
 
         for m in range(n):
@@ -200,7 +200,7 @@ class SModelBuffer:
             for i in range(self.batch_size):
                 elems.append(
                     self.buffer[inds[0][i]][d][
-                        inds[1][i] : inds[1][i] + 2 * self.k, np.newaxis
+                        inds[1][i] : inds[1][i] + 2 * self.k + 1, np.newaxis
                     ]
                 )
             data.append(np.concatenate(elems, axis=1))
