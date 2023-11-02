@@ -73,7 +73,8 @@ class ThreeDEncoder(nn.Module):
             conv_out_h = (conv_out_h - 1) // 2 + 1
             conv_out_w = (conv_out_w - 1) // 2 + 1
 
-        for num_ch in [64, 64, 32]:
+        num_chs = [16, 32, 32] if downpool else [64, 64, 32]
+        for num_ch in num_chs:
             feats_convs = []
             feats_convs.append(
                 nn.Conv2d(
