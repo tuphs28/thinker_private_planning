@@ -180,12 +180,12 @@ class ConvAttnLSTMCell(nn.Module):
         attn_mask = new_attn_mask
         attn_mask[:, :, -1] = self.attn_mask_b
         self.attn_mask = attn_mask
-        attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
-        attn_output_weights = attn_output_weights + pos_b.unsqueeze(1)
-        attn_output_weights = torch.softmax(attn_output_weights, dim=-1)
-        self.attn_output_weights = attn_output_weights
+        attn_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
+        attn_weights = attn_weights + pos_b.unsqueeze(1)
+        attn_weights = torch.softmax(attn_weights, dim=-1)
+        self.attn_weights = attn_weights
 
-        attn_output = torch.bmm(attn_output_weights, v)
+        attn_output = torch.bmm(attn_weights, v)
         attn_output = attn_output.transpose(0, 1).view(b, self.embed_dim, h, w)
 
         if self.linear:

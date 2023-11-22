@@ -36,6 +36,7 @@ rec_t: 20 # stage length
 test_rec_t: -1 # stage length for testing; non-positive for being the same as rec_t
 max_depth: 5 # maximum search depth before forceful reset
 tree_carry: true # whether to carry the tree across stages
+reset_mode: 0 # 0 for conventional thinker; 1 for no expansion if reset - return the root node as the current node
 return_h: true # whether to return model's hidden state
 return_x: false # whether to return the model's predicted state
 return_double: false # whether to return both root node and current node's h / raw_s

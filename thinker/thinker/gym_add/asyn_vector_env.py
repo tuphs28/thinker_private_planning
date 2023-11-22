@@ -7,6 +7,7 @@ from copy import deepcopy
 from thinker.gym_add.vector_env import VectorEnv
 
 from gym import logger
+import logging
 
 # from gym.vector.vector_env import VectorEnv
 from gym.error import (
@@ -238,7 +239,7 @@ class AsyncVectorEnv(VectorEnv):
 
         if not self.shared_memory:
             self.observations = concatenate(
-                results, self.observations, self.single_observation_space
+                self.single_observation_space, results, self.observations
             )
         if self.inds is None:
             ret_observations = (
@@ -391,7 +392,9 @@ class AsyncVectorEnv(VectorEnv):
         if not self.shared_memory:
             if self.inds is None:
                 self.observations = concatenate(
-                    observations_list, self.observations, self.single_observation_space
+                    self.single_observation_space,
+                    observations_list,
+                    self.observations,
                 )
                 ret_observations = (
                     deepcopy(self.observations) if self.copy else self.observations
@@ -523,6 +526,9 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
     parent_pipe.close()
     try:
         while True:
+            if pipe.closed:
+                logging.error(f"Worker {index}: Pipe is closed unexpectedly")
+                break
             command, data = pipe.recv()
             if command == "reset":
                 observation = env.reset()
@@ -552,7 +558,11 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
                     "be one of {`reset`, `step`, `seed`, `close`, "
                     "`_check_observation_space`}.".format(command)
                 )
-    except (KeyboardInterrupt, Exception):
+            
+    except EOFError:
+        logging.error(f"Worker {index}: Pipe closed unexpectedly (EOFError)")
+    except Exception as e:
+        logging.error(f"Worker {index}: Unexpected error - {e}")
         error_queue.put((index,) + sys.exc_info()[:2])
         pipe.send((None, False))
     finally:
@@ -566,6 +576,9 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
     parent_pipe.close()
     try:
         while True:
+            if pipe.closed:
+                logging.error(f"Worker {index}: Pipe is closed unexpectedly")
+                break
             command, data = pipe.recv()
             if command == "reset":
                 observation = env.reset()
@@ -601,7 +614,10 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                     "be one of {`reset`, `step`, `seed`, `close`, "
                     "`_check_observation_space`}.".format(command)
                 )
-    except (KeyboardInterrupt, Exception):
+    except EOFError:
+        logging.error(f"Worker {index}: Pipe closed unexpectedly (EOFError)")
+    except Exception as e:
+        logging.error(f"Worker {index}: Unexpected error - {e}")
         error_queue.put((index,) + sys.exc_info()[:2])
         pipe.send((None, False))
     finally:

@@ -1,4 +1,4 @@
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __project__ = "thinker"
 
 import collections
@@ -41,8 +41,10 @@ def process_flags_actor(flags):
         flags.see_tree_rep = False
     flags.return_h = flags.see_h
     flags.return_x = flags.see_x
-    if flags.wrapper_type != 0:
+    if flags.wrapper_type == 1:
         flags.im_cost = 0.
+        flags.cur_cost = 0.
+    if flags.wrapper_type == 2:
         flags.cur_cost = 0.
     return flags
 
@@ -414,56 +416,66 @@ def compute_grad_norm(parameters, norm_type=2.0):
     )
     return total_norm
 
-def decode_tree_reps(tree_reps, num_actions, enc_type=0):
-    idx1 = num_actions * 5 + 5
-    idx2 = num_actions * 10 + 7
-    d = dec if enc_type != 0 else lambda x: x
+def slice_tree_reps(num_actions, rec_t):
+    idx1 = num_actions * 5 + 6
+    idx2 = num_actions * 10 + 9
+    idx3 = num_actions * 10 + 11 + rec_t 
+    d = {
+        "root_a": slice(0, num_actions), # action at root node
+        "root_r": slice(num_actions, num_actions + 1), # reward at root node (should be zero)
+        "root_d": slice(num_actions + 1, num_actions + 2), # reward at root node (should be zero)
+        "root_v": slice(num_actions + 2, num_actions + 3), # value at root node
+        "root_logits": slice(num_actions + 3, 2 * num_actions + 3), # policy logit at root node
+        "root_qs_mean": slice(2 * num_actions + 3, 3 * num_actions + 3), # child mean rollout return at root node
+        "root_qs_max": slice(3 * num_actions + 3, 4 * num_actions + 3), # child max rollout return at root node
+        "root_ns": slice(4 * num_actions + 3, 5 * num_actions + 3), # visit count at root node
+        "root_trail_r": slice(5 * num_actions + 3, 5 * num_actions + 4), # trailing sum of reward till the current node
+        "root_trail_q": slice(5 * num_actions + 4, 5 * num_actions + 5), # trailing rollout return till the current node
+        "root_max_v": slice(5 * num_actions + 5, 5 * num_actions + 6), # maximum roolout return at the root node        
+        "cur_a": slice(idx1, idx1 + num_actions), # action at current node; the belows are similar as above
+        "cur_r": slice(idx1 + num_actions, idx1 + num_actions + 1),
+        "cur_d": slice(idx1 + num_actions + 1, idx1 + num_actions + 2),
+        "cur_v": slice(idx1 + num_actions + 2, idx1 + num_actions + 3),
+        "cur_logits": slice(idx1 + num_actions + 3, idx1 + 2 * num_actions + 3),
+        "cur_qs_mean": slice(idx1 + 2 * num_actions + 3, idx1 + 3 * num_actions + 3),
+        "cur_qs_max": slice(idx1 + 3 * num_actions + 3, idx1 + 4 * num_actions + 3),
+        "cur_ns": slice(idx1 + 4 * num_actions + 3, idx2),
+        "reset": slice(idx2, idx2 + 1), # whether reset is triggered
+        "k": slice(idx2 + 1, idx2 + rec_t + 1), # step within current stage
+        "derec": slice(idx2 + rec_t + 1, idx2 + rec_t + 2), # accumulated discount
+        "action_seq": slice(idx3, None), # action seqeuence
+        }
+    return d
+
+def decode_tree_reps(tree_reps, num_actions, rec_t, enc_type=0):
+    nd = [
+            "root_r", "root_v", "root_qs_mean", "root_qs_max", 
+            "root_trail_r", "root_trail_q", "root_max_v", 
+            "cur_r", "cur_v", "cur_qs_mean", "cur_qs_max"
+        ]
+    def dec(x, key):        
+        if enc_type != 0 and key in nd:
+            return dec(x)
+        else:
+            return x
+
     if len(tree_reps.shape) == 3:
         tree_reps = tree_reps[0]
-    return {
-        "root_action": tree_reps[:, :num_actions], # action at root node
-        "root_r": d(tree_reps[:, [num_actions]]), # reward at root node (should be zero)
-        "root_v": d(tree_reps[:, [num_actions + 1]]), # value at root node
-        "root_logits": tree_reps[:, num_actions + 2 : 2 * num_actions + 2], # policy logit at root node
-        "root_qs_mean": d(tree_reps[:, 2 * num_actions + 2 : 3 * num_actions + 2]), # child mean rollout return at root node
-        "root_qs_max": d(tree_reps[:, 3 * num_actions + 2 : 4 * num_actions + 2]), # child max rollout return at root node
-        "root_ns": tree_reps[:, 4 * num_actions + 2 : 5 * num_actions + 2], # visit count at root node
-        "root_trail_r": d(tree_reps[:, [5 * num_actions + 2]]), # trailing sum of reward till the current node
-        "root_trail_q": d(tree_reps[:, [5 * num_actions + 3]]), # trailing rollout return till the current node
-        "root_max_v": d(tree_reps[:, [5 * num_actions + 4]]), # maximum roolout return at the root node
-        "cur_action": tree_reps[:, idx1 : idx1 + num_actions], # all the below are the same as above, except applied to the current node
-        "cur_r": d(tree_reps[:, [idx1 + num_actions]]),
-        "cur_v": d(tree_reps[:, [idx1 + num_actions + 1]]),
-        "cur_logits": tree_reps[
-            :, idx1 + num_actions + 2 : idx1 + 2 * num_actions + 2
-        ],
-        "cur_qs_mean": d(
-            tree_reps[:, idx1 + 2 * num_actions + 2 : idx1 + 3 * num_actions + 2]
-        ),
-        "cur_qs_max": d(
-            tree_reps[:, idx1 + 3 * num_actions + 2 : idx1 + 4 * num_actions + 2]
-        ),
-        "cur_ns": tree_reps[
-            :, idx1 + 4 * num_actions + 2 : idx1 + 5 * num_actions + 2
-        ],
-        "reset": tree_reps[:, idx2], # whether reset is triggered
-        "time": tree_reps[:, idx2 + 1 : -1], # step within current stage
-        "derec": tree_reps[:, [-1]], # accumulated discount
-        "raw": tree_reps, # the raw tree representation
-    }
 
-def mask_tree_rep(tree_reps, num_actions):
-    idx1 = num_actions * 5 + 5
-    idx2 = num_actions * 10 + 7
+    d = slice_tree_reps(num_actions, rec_t)
+    return {k: dec(tree_reps[:, v], k) for k, v in d.items()}
+
+def mask_tree_rep(tree_reps, num_actions, rec_t):
+    d = slice_tree_reps(num_actions, rec_t)  
     N, C = tree_reps.shape
-    rec_t = (C - 1) - (idx2 + 1)
-    tree_reps_m = torch.zeros(N, 2*num_actions+3+rec_t, device=tree_reps.device)
-    tree_reps_m[:, :num_actions] = tree_reps[:, :num_actions] # root_action
-    tree_reps_m[:, num_actions:2*num_actions] = tree_reps[:, idx1 : idx1 + num_actions] # cur_action
-    tree_reps_m[:, 2*num_actions] = tree_reps[:, idx2] # reset_action
-    tree_reps_m[:, 2*num_actions+1] = tree_reps[:, idx1 + num_actions] # imagainary reward
-    tree_reps_m[:, 2*num_actions+2] = tree_reps[:, -1] # deprec
-    tree_reps_m[:, 2*num_actions+3:] = tree_reps[:, idx2 + 1 : -1] # time    
+    act_seq_len = C - (num_actions * 10 + 11 + rec_t)
+    tree_reps_m = torch.zeros(N, 4+rec_t+act_seq_len, device=tree_reps.device)
+    tree_reps_m[:, [0]] = tree_reps[:, d["reset"]]
+    tree_reps_m[:, [1]] = tree_reps[:, d["cur_r"]] # imagainary reward
+    tree_reps_m[:, [2]] = tree_reps[:, d["cur_d"]] # imagainary done
+    tree_reps_m[:, [3]] = tree_reps[:, d["derec"]] # deprec
+    tree_reps_m[:, 4:4+rec_t] = tree_reps[:, d["k"]] # time
+    tree_reps_m[:, 4+rec_t:] = tree_reps[:, d["action_seq"]]
     return tree_reps_m
 
 def plot_raw_state(x, ax=None, title=None, savepath=None):

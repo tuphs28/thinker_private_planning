@@ -2,11 +2,11 @@ from collections import namedtuple
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint, checkpoint_sequential
 from torch.cuda.amp import autocast
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM
-from thinker.model_net import BaseNet, RVTran, FrameEncoder, MLPWithSkipConnections
+from thinker.core.module import MLP
+from thinker.model_net import BaseNet, RVTran
 
 ActorOut = namedtuple(
     "ActorOut",
@@ -32,22 +32,54 @@ def compute_action_log_prob(logits, actions):
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h, w))
 
+class ShallowThreeDEncoder(nn.Module):
+    # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
+    def __init__(self, 
+                 input_shape, 
+                 out_size=256):
+        super(ShallowThreeDEncoder, self).__init__()
+        self.input_shape = input_shape
+        self.out_size = out_size
+
+        c, h, w = self.input_shape
+        compute_hw = lambda h, w, k, s: ((h - k) // s + 1,  (h - k) // s + 1)
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
+        h, w = compute_hw(h, w, 8, 4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        h, w = compute_hw(h, w, 4, 2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        h, w = compute_hw(h, w, 3, 1)
+        fc_in_size = h * w * 64
+        # Fully connected layer.
+        self.fc = nn.Linear(fc_in_size, out_size)
+
+    def forward(self, x):
+        """encode the state or model's encoding inside the actor network
+        args:
+            x: input tensor of shape (B, C, H, W); can be state or model's encoding
+        return:
+            output: output tensor of shape (B, self.out_size)"""
+
+        assert x.dtype in [torch.float, torch.float16]
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = torch.flatten(x, start_dim=1)
+        x = self.fc(x)
+        return x
+
 class ThreeDEncoder(nn.Module):
     # processor for 3d inputs; can be applied to model's hidden state or predicted real state
     def __init__(self, 
                  input_shape, 
-                 num_actions, 
-                 downpool=False,   
-                 norm_range=None,    
+                 downpool=False,     
                  out_size=256,
                  see_double=False):
         super(ThreeDEncoder, self).__init__()
         if see_double:
             input_shape = (input_shape[0] // 2,) + tuple(input_shape[1:])
         self.input_shape = input_shape
-        self.num_actions = num_actions
         self.downpool = downpool
-        self.norm_range = norm_range
         self.out_size = out_size
         self.see_double = see_double        
 
@@ -163,6 +195,7 @@ class RNNEncoder(nn.Module):
                  tran_t, # int; number of inner recurrent step
                  tran_layer_n, # int; number of layers
                  tran_mem_n, # int; size of memory for the attn modules
+                 tran_head_n, # int; number of head for attention module
                  tran_lstm_no_attn, # boolean; whether to use attention module; if true, becomes vanilla LSTM
                  tran_attn_b, # float; atention bias for current position
                  disable_mem, # boolean; whther to disable memory                 
@@ -182,7 +215,7 @@ class RNNEncoder(nn.Module):
                 hidden_dim=tran_dim,
                 kernel_size=1,
                 num_layers=tran_layer_n,
-                num_heads=8,
+                num_heads=tran_head_n,
                 mem_n=tran_mem_n,
                 attn=not tran_lstm_no_attn,
                 attn_mask_b=tran_attn_b,
@@ -267,8 +300,12 @@ class ActorNetBase(BaseNet):
         self.critic_zero_init = flags.critic_zero_init        
 
         self.sep_im_head = flags.sep_im_head
+        self.last_layer_n = flags.last_layer_n
+
         self.float16 = flags.float16
         self.flags = flags        
+
+        aux_info_size = flags.max_depth * self.num_actions + 4 + flags.rec_t
 
         # encoder for state or encoding output
         last_out_size = self.num_actions + self.num_rewards
@@ -277,8 +314,7 @@ class ActorNetBase(BaseNet):
 
         if self.see_h:
             self.h_encoder = ThreeDEncoder(
-                input_shape=self.hs_shape, 
-                num_actions=self.num_actions,                                 
+                input_shape=self.hs_shape,                                 
                 see_double=self.see_double
             )
             last_out_size += self.h_encoder.out_size
@@ -286,7 +322,6 @@ class ActorNetBase(BaseNet):
         if self.see_x:
             self.x_encoder_pre =  ThreeDEncoder(
                 input_shape=self.xs_shape, 
-                num_actions=self.num_actions, 
                 downpool=True,
                 see_double=self.see_double
             )
@@ -294,13 +329,14 @@ class ActorNetBase(BaseNet):
 
             if self.x_rnn:
                 x_rnn_in_size = x_out_size
-                x_rnn_in_size += 2 * self.num_actions + flags.rec_t + 3
+                x_rnn_in_size += aux_info_size
                 self.x_encoder_rnn = RNNEncoder(
                     in_size=x_rnn_in_size,
                     tran_dim=flags.tran_dim,
                     tran_t=flags.tran_t,
                     tran_layer_n=flags.tran_layer_n,
                     tran_mem_n=flags.tran_mem_n,
+                    tran_head_n=flags.tran_head_n,
                     tran_lstm_no_attn=flags.tran_lstm_no_attn,
                     tran_attn_b=flags.tran_attn_b,
                     disable_mem=flags.disable_mem,
@@ -326,13 +362,14 @@ class ActorNetBase(BaseNet):
                     tran_t=flags.tran_t,
                     tran_layer_n=flags.tran_layer_n,
                     tran_mem_n=flags.tran_mem_n,
+                    tran_head_n=flags.tran_head_n,
                     tran_lstm_no_attn=flags.tran_lstm_no_attn,
                     tran_attn_b=flags.tran_attn_b,
                     disable_mem=flags.disable_mem,
                 )
                 last_out_size += self.tran_dim
             else:
-                self.tree_rep_encoder = MLPWithSkipConnections(
+                self.tree_rep_encoder = MLP(
                     input_size=self.tree_reps_shape[0],
                     layer_sizes=[200, 200, 200],
                     output_size=100,
@@ -340,6 +377,16 @@ class ActorNetBase(BaseNet):
                     skip_connection=True,
                 )
                 last_out_size += 100        
+
+        if self.last_layer_n > 0:
+            self.final_mlp =  MLP(
+                input_size=last_out_size,
+                layer_sizes=[200]*self.last_layer_n,
+                output_size=100,
+                norm=False,
+                skip_connection=True,
+            )
+            last_out_size = 100
 
         self.policy = nn.Linear(last_out_size, self.num_actions)
 
@@ -377,14 +424,14 @@ class ActorNetBase(BaseNet):
         if self.x_rnn:
             core_state = self.x_encoder_rnn.initial_state(batch_size, device=device)
             initial_state = initial_state + core_state
-            self.state_idx["x"] = (idx, idx+len(core_state))
+            self.state_idx["x"] = slice(idx, idx+len(core_state))
             idx += len(core_state)
         
         if self.tree_rep_rnn:
-            xss_state = self.tree_rep_encoder.initial_state(batch_size, device=device)
-            initial_state = initial_state + xss_state
-            self.state_idx["tree_rep"] = (idx, idx+len(xss_state))
-            idx += len(xss_state)
+            core_state = self.tree_rep_encoder.initial_state(batch_size, device=device)
+            initial_state = initial_state + core_state
+            self.state_idx["tree_rep"] = slice(idx, idx+len(core_state))
+            idx += len(core_state)
 
         self.state_len = idx
         return initial_state
@@ -395,7 +442,7 @@ class ActorNetBase(BaseNet):
                 clamp_action=None, 
                 compute_loss=False,
                 greedy=False,
-                extra_info=False,
+                dbg_mode=0,
                 ):
         """one-step forward for the actor;
         args:
@@ -447,14 +494,13 @@ class ActorNetBase(BaseNet):
         if self.see_tree_rep:            
             tree_rep = torch.flatten(env_out.tree_reps, 0, 1)
             if self.tree_rep_rnn:
-                core_state_ = core_state[self.state_idx['tree_rep'][0]:self.state_idx['tree_rep'][1]]
+                core_state_ = core_state[self.state_idx['tree_rep']]
                 encoded_tree_rep, core_state_ = self.tree_rep_encoder(
                     tree_rep, done, core_state_)
-                new_core_state[self.state_idx['tree_rep'][0]:self.state_idx['tree_rep'][1]] = core_state_
-                final_out.append(encoded_tree_rep)
+                new_core_state[self.state_idx['tree_rep']] = core_state_
             else:
                 encoded_tree_rep = self.tree_rep_encoder(tree_rep)
-                final_out.append(encoded_tree_rep)
+            final_out.append(encoded_tree_rep)
         
         if self.see_h:
             hs = torch.flatten(env_out.hs, 0, 1)
@@ -468,12 +514,12 @@ class ActorNetBase(BaseNet):
             if self.float16: encoded_x = encoded_x.float()
                 
             if self.x_rnn:
-                core_state_ = core_state[self.state_idx['x'][0]:self.state_idx['x'][1]]
-                aux_info = util.mask_tree_rep(tree_rep, self.num_actions)
+                core_state_ = core_state[self.state_idx['x']]
+                aux_info = util.mask_tree_rep(tree_rep, self.num_actions, self.flags.rec_t)
                 encoded_x = torch.concat([encoded_x, aux_info], dim=1)
                 encoded_x, core_state_ = self.x_encoder_rnn(
                     encoded_x, done, core_state_)
-                new_core_state[self.state_idx['x'][0]:self.state_idx['x'][1]] = core_state_
+                new_core_state[self.state_idx['x']] = core_state_
             
             final_out.append(encoded_x)
 
@@ -487,7 +533,10 @@ class ActorNetBase(BaseNet):
             if self.float16: encoded_real_state = encoded_real_state.float()
             final_out.append(encoded_real_state)
 
-        final_out = torch.concat(final_out, dim=-1)        
+        final_out = torch.concat(final_out, dim=-1)   
+
+        if self.last_layer_n > 0:
+            final_out = self.final_mlp(final_out)     
 
         # compute logits
         pri_logits = self.policy(final_out)    
@@ -589,7 +638,13 @@ class ActorNetBase(BaseNet):
         else:
             reg_loss = None
 
-        misc = {}
+        if dbg_mode == 1:
+            misc = {
+                "pri_logits": pri_logits,
+                "reset_logits": reset_logits,
+            }
+        else:
+            misc = {}
 
         actor_out = ActorOut(
             pri=pri,
@@ -605,10 +660,7 @@ class ActorNetBase(BaseNet):
         )
         core_state = tuple(new_core_state)
 
-        if not extra_info:
-            return actor_out, core_state
-        else:
-            return actor_out, core_state, (pri_logits, reset_logits)
+        return actor_out, core_state
     
     def sample(self, logits, greedy, dim=-1):
         if not greedy:
@@ -617,33 +669,6 @@ class ActorNetBase(BaseNet):
             return sampled_action.detach()
         else:
             return torch.argmax(logits, dim=dim)
-
-    def rnn(self, rnn, rnn_out_fc, x, done, core_state):
-        T, B = done.shape
-        if self.tran_layer_n >= 1:
-            core_input = x.view(*((T, B) + x.shape[1:]))
-            core_output_list = []
-            notdone = ~(done.bool())
-            core_input = core_input.unsqueeze(-1).unsqueeze(-1)
-            for n, (input, nd) in enumerate(
-                zip(core_input.unbind(), notdone.unbind())
-            ):
-                if self.disable_mem:
-                    core_state = tuple(torch.zeros_like(s) for s in core_state)
-                for t in range(self.tran_t):
-                    if t > 0:
-                        nd = torch.ones_like(nd)
-                    nd = nd.view(-1)
-                    output, core_state = rnn(
-                        input, core_state, nd, nd
-                    )  # output shape: 1, B, core_output_size
-                    # output, core_state = checkpoint(self.core, input, core_state, nd, nd)
-                core_output_list.append(output)
-            core_output = torch.cat(core_output_list)
-            core_output = torch.flatten(core_output, 0, 1)
-            d = torch.flatten(core_output, start_dim=1)        
-        d = rnn_out_fc(d)
-        return d, core_state
 
 class DRCNet(BaseNet):
     # Deprecated, not yet updated

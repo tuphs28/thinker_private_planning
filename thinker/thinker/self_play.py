@@ -363,20 +363,18 @@ def init_env_out(state, flags):
         
 
 def create_env_out(action, state, reward, done, info, flags):
-    if flags.wrapper_type == 0:    
-        aug_reward = [reward]
-        aug_epsoide_return = [info['episode_return']]
-        if flags.im_cost > 0:
-            aug_reward.append(info["im_reward"])
-            aug_epsoide_return.append(info["im_episode_return"])
-        if flags.cur_cost > 0:
-            aug_reward.append(info["cur_reward"])
-            aug_epsoide_return.append(info["cur_episode_return"])
-        aug_reward = torch.stack(aug_reward, dim=-1)
-        aug_epsoide_return = torch.stack(aug_epsoide_return, dim=-1)
-    else:
-        aug_reward = torch.unsqueeze(reward, -1)
-        aug_epsoide_return = torch.unsqueeze(info['episode_return'], -1)
+    
+    aug_reward = [reward]
+    aug_epsoide_return = [info['episode_return']]
+    if flags.im_cost > 0:
+        aug_reward.append(info["im_reward"])
+        aug_epsoide_return.append(info["im_episode_return"])
+    if flags.cur_cost > 0:
+        aug_reward.append(info["cur_reward"])
+        aug_epsoide_return.append(info["cur_episode_return"])
+    aug_reward = torch.stack(aug_reward, dim=-1)
+    aug_epsoide_return = torch.stack(aug_epsoide_return, dim=-1)
+    
     out = {"reward": aug_reward, 
             "episode_return": aug_epsoide_return,
             "done": done,

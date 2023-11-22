@@ -313,7 +313,6 @@ def visualize(
     savedir,
     xpid,
     outdir,
-    model_path="",
     plot=False,
     saveimg=True,
     savevideo=True,
@@ -390,7 +389,7 @@ def visualize(
 
     root_state = env_out.real_states
     tree_reps = util.decode_tree_reps(
-        env_out.tree_reps, num_actions, flags.model_enc_type
+        env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type
     )
     end_gym_env_outs, end_titles = [], []
     ini_max_q = tree_reps["root_max_v"][0].item()
@@ -412,20 +411,20 @@ def visualize(
 
     while len(returns) < max_eps_n:
         step += 1
-        actor_out, actor_state, logits = actor_net(env_out, actor_state, extra_info=True)
+        actor_out, actor_state = actor_net(env_out, actor_state, dbg_mode=1)        
         action = actor_out.action
 
         if env_out.step_status == 0:
             agent_v = actor_out.baseline[0, 0, 0]
 
         # additional stat record
-        im_dict["pri_logits"].append(logits[0][:,0])
-        im_dict["reset_logits"].append(logits[1][:,0])
+        im_dict["pri_logits"].append(actor_out.misc["pri_logits"][:,0])
+        im_dict["reset_logits"].append(actor_out.misc["reset_logits"][:,0])
         im_dict["pri"].append(actor_out.pri[:,0])
         im_dict["reset"].append(actor_out.reset[:,0])
         
         tree_reps_ = util.decode_tree_reps(
-            env_out.tree_reps, num_actions, flags.model_enc_type
+            env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type
         )
         model_logits.append(tree_reps_["cur_logits"])
         
@@ -503,7 +502,7 @@ def visualize(
                 ax=axs[3],
             )
             model_policy_logits = tree_reps_["root_logits"][0]
-            agent_policy_logits = logits[0][0, 0]
+            agent_policy_logits = actor_out.misc["pri_logits"][0, 0]
             action = torch.nn.functional.one_hot(
                 actor_out.pri[0, 0], env.num_actions
             )

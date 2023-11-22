@@ -37,6 +37,7 @@ x_rnn: false # whether to use rnn in processing x, model's predicted state
 tran_t: 1 # internal transition step for rnn
 tran_mem_n: 40 # memory slot size for the attention module in lstm-attn
 tran_layer_n: 3 # number of layers of lstm-attn
+tran_head_n: 8 # number of head for each attention layer
 tran_lstm_no_attn: false # whether to disable the attention module in lstm-attn
 tran_attn_b: 5 # initial bias for attending to the current step
 tran_dim: 128 # hidden dimension of lstm-attn
@@ -44,6 +45,7 @@ disable_mem: false # whether to erasing rnn's hidden state on each step
 critic_zero_init: true # whether to zero initialize the critic outputs
 critic_enc_type: 0 # reward / value encoding type for the critic; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
 sep_im_head: true # whether to use seperate head for computing imaginary logit
+last_layer_n: 0 # number of hidden layer after concat different branch
 # checkpoint
 xpid: '' # name of the run, automatically set if not given
 ckp: false # whether to load checkpoint; if set to true, will load checkpoint from savedir/xpid
