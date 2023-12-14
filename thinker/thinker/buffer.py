@@ -121,6 +121,7 @@ class SModelBuffer:
         self.alpha = flags.priority_alpha
         self.t = flags.buffer_traj_len
         self.k = flags.model_unroll_len
+        self.ret_n = flags.model_return_n
         self.max_buffer_n = flags.model_buffer_n // self.t + 1  # maximum buffer length
         self.batch_size = flags.model_batch_size  # batch size in returned sample
         self.wram_up_n = (
@@ -143,7 +144,7 @@ class SModelBuffer:
         self.finish = False
 
     def write(self, data):
-        # data is a named tuple with elements of size (pf+t+2*k+1, b, ...)
+        # data is a named tuple with elements of size (pf+t+k+ret_n+1, b, ...)
         b = data[0].shape[1]
 
         p_shape = self.t * b
@@ -196,7 +197,7 @@ class SModelBuffer:
             for i in range(self.batch_size):
                 elems.append(
                     self.buffer[ind_0[i]][d][
-                        st_pd + ind_2[i] : self.pf + ind_2[i] + 2 * self.k + 1, [ind_1[i]]
+                        st_pd + ind_2[i] : self.pf + ind_2[i] + self.k + self.ret_n + 1, [ind_1[i]]
                     ]
                 )
             data[field] = np.concatenate(elems, axis=1)
@@ -248,7 +249,7 @@ class SModelBuffer:
 def stack_frame(frame, frame_stack_n, done):
     T, B, C, H, W = frame.shape[0] - frame_stack_n + 1, frame.shape[1], frame.shape[2], frame.shape[3], frame.shape[4]
     assert done.shape[0] == T
-    y = np.zeros((T, B, C * frame_stack_n, H, W))
+    y = np.zeros((T, B, C * frame_stack_n, H, W), dtype=frame.dtype)
     for s in range(frame_stack_n):
         y[:, :, s*C:(s+1)*C, :, :] = frame[s:T+s]
         y[:, :, s*C:(s+1)*C, :, :][done] = frame[frame_stack_n - 1: T + frame_stack_n - 1][done]

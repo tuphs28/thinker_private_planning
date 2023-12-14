@@ -548,7 +548,8 @@ class SModelLearner:
 
     def prepare_data(self, train_model_out):
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
-        target_xs = train_model_out.real_state.float() / 255.0
+        ret_n = self.flags.model_return_n
+        target_xs = self.model_net.normalize(train_model_out.real_state)
         target_rewards = train_model_out.reward[
             1 : k + 1
         ]  # true reward r_1, r_2, ..., r_k
@@ -559,9 +560,9 @@ class SModelLearner:
             1 : k + 1
         ]  # true actions l_0, l_1, ..., l_k-1
         target_vs = train_model_out.baseline[
-            k + 1: k + 1 + k
+            ret_n + 1: ret_n + 1 + k
         ]  # baseline ranges from v_k, v_k+1, ... v_2k
-        for t in range(k, 0, -1):
+        for t in range(ret_n, 0, -1):
             target_vs = (
                 target_vs
                 * self.flags.discounting

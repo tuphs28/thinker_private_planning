@@ -11,7 +11,8 @@ total_steps: 50000000 # total number of raw steps to train
 priority_alpha: 0.6 # alpha in prioritized sampling from the buffer
 priority_beta: 0.4 # beta in prioritized sampling from the buffer
 buffer_traj_len: 200 # length of trajectory stored in the replay buffer
-model_unroll_len: 5 # model unroll length and also the n in n-step return when training model
+model_unroll_len: 5 # model unroll length when training model
+model_return_n: 5 # n-step return when training model
 model_warm_up_n: 200000 # number of augmented step before model starts to be trained
 model_buffer_n: 200000 # capacity of replay buffer in number of augmented step 
 # cost setting in training
