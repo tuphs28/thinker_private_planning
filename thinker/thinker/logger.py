@@ -15,12 +15,15 @@ def gen_video_wandb(video_stats):
 
     # Generate video; only works for rgb channels
     imgs = []
-    hw = video_stats["real_imgs"][0].shape[1]
+    c, h, w = video_stats["real_imgs"][0].shape
 
     for i in range(len(video_stats["real_imgs"])):
-        img = np.zeros(shape=(3, hw, hw * 2), dtype=np.uint8)
+        img = np.zeros(shape=(3, h, w * 2), dtype=np.uint8)
         real_img = np.copy(video_stats["real_imgs"][i])
         im_img = np.copy(video_stats["im_imgs"][i])
+        if c == 1:
+            real_img = np.repeat(real_img, 3, axis=0)
+            im_img = np.repeat(im_img, 3, axis=0)
 
         if video_stats["status"][i] == 1:
             im_img[0, :, :] = 255 * 0.3 + im_img[0, :, :] * 0.7
@@ -28,8 +31,8 @@ def gen_video_wandb(video_stats):
         elif video_stats["status"][i] == 0:
             im_img[2, :, :] = 255 * 0.3 + im_img[2, :, :] * 0.7
 
-        img[:, :, :hw] = real_img
-        img[:, :, hw:] = im_img
+        img[:, :, :w] = real_img
+        img[:, :, w:] = im_img
         imgs.append(img)
 
     enlarge_fcator = 3
@@ -256,7 +259,10 @@ class SLogWorker:
 
         video_stats = {"real_imgs": [], "im_imgs": [], "status": []}
         start_record = False
-        copy_n = 3
+        if self.flags.grayscale and "Sokoban" not in self.flags.name:
+            copy_n = 1
+        else:
+            copy_n = 3
 
         while step < max_steps:
             step += 1

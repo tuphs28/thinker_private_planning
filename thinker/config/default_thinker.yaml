@@ -10,7 +10,7 @@ total_steps: 50000000 # total number of raw steps to train
 # replay buffer setting
 priority_alpha: 0.6 # alpha in prioritized sampling from the buffer
 priority_beta: 0.4 # beta in prioritized sampling from the buffer
-buffer_traj_len: 50 # length of trajectory stored in the replay buffer
+buffer_traj_len: 200 # length of trajectory stored in the replay buffer
 model_unroll_len: 5 # model unroll length and also the n in n-step return when training model
 model_warm_up_n: 200000 # number of augmented step before model starts to be trained
 model_buffer_n: 200000 # capacity of replay buffer in number of augmented step 
@@ -40,6 +40,7 @@ reset_mode: 0 # 0 for conventional thinker; 1 for no expansion if reset - return
 return_h: true # whether to return model's hidden state
 return_x: false # whether to return the model's predicted state
 return_double: false # whether to return both root node and current node's h / raw_s
+grayscale: false # whether to apply grayscale for atari
 # reward-related
 discounting: 0.99 # discount rate of the raw MDP
 reward_clip: -1 # reward clipping; if positve, the reward is clipped within the absolute value of this values; set to negative number for no clipping

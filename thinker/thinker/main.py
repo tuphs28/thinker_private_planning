@@ -97,7 +97,7 @@ class Env(gym.Wrapper):
 
         if env_fn is None:
             if name == "Sokoban-v0": import gym_sokoban
-            env_fn = lambda: PreWrapper(gym.make(name),  name=name,)            
+            env_fn = lambda: PreWrapper(gym.make(name), name=name, grayscale=self.flags.grayscale)         
 
         # initialize a single env to collect env information
         env = env_fn()
@@ -147,6 +147,12 @@ class Env(gym.Wrapper):
                         flags=self.flags, model_net=self.model_net, device=self.device)
                     self.model_buffer = SModelBuffer(flags=self.flags)
             if self.train_model: self.require_prob = self.flags.require_prob
+            
+            if self.frame_stack_n > 1 and self.train_model:
+                if self.parallel: 
+                    self.model_buffer.set_frame_stack_n.remote(self.frame_stack_n)
+                else:
+                    self.model_buffer.set_frame_stack_n(self.frame_stack_n)
         else:
             self.model_net = None            
             
@@ -248,12 +254,17 @@ class Env(gym.Wrapper):
     
     def _empty_local_buffer(self):
         pre_shape = (
-            self.flags.buffer_traj_len + 2 * self.flags.model_unroll_len + 1,
+            self.frame_stack_n - 1 + self.flags.buffer_traj_len + 2 * self.flags.model_unroll_len + 1,
             self.env_n,
         )
+        if self.frame_stack_n <= 1:
+            real_state_shape = self.real_state_shape
+        else:
+            self.copy_n = self.real_state_shape[0] // self.frame_stack_n
+            real_state_shape = (self.copy_n,) + self.real_state_shape[1:]
         return TrainModelOut(
             real_state=torch.zeros(
-                pre_shape + self.real_state_shape,
+                pre_shape + real_state_shape,
                 dtype=torch.uint8,
                 device=self.device,
             ),
@@ -277,7 +288,10 @@ class Env(gym.Wrapper):
         if action_prob is not None and not torch.is_tensor(action_prob):
             action_prob = torch.tensor(action_prob, device=self.device)
 
-        self.model_local_buffer[n].real_state[t] = state["real_states"]
+        if self.frame_stack_n <= 1:
+            self.model_local_buffer[n].real_state[t] = state["real_states"]
+        else:            
+            self.model_local_buffer[n].real_state[t] = state["real_states"][:, -self.copy_n:]
         self.model_local_buffer[n].action[t] = action
         if self.flags.require_prob:
             self.model_local_buffer[n].action_prob[t] = action_prob        
@@ -289,32 +303,33 @@ class Env(gym.Wrapper):
     def _write_send_model_buffer(
         self, state, reward, done, info, action, action_prob
     ):
-        n, t, cap_t, k = (
+        n, t, cap_t, k, pf = (
             self.model_n,
             self.model_t,
             self.flags.buffer_traj_len,
             self.flags.model_unroll_len,
+            self.frame_stack_n - 1
         )
         self._write_single_model_buffer(n, t, state, reward, done, info, action, action_prob)
 
-        if t >= cap_t:
+        if t >= pf + cap_t:
             # write the beginning of another buffer
             self._write_single_model_buffer(
-                1 - n, t - cap_t, state, reward, done, info, action, action_prob
+                1 - n, t - cap_t - pf, state, reward, done, info, action, action_prob
             )
 
-        if t >= cap_t + 2 * k:
+        if t >= pf + cap_t + 2 * k:
             # finish writing a buffer, send it
             send_model_local_buffer = util.tuple_map(
                 self.model_local_buffer[n], lambda x: x.cpu().numpy()
             )
             if self.parallel:
-                self.model_buffer.write.remote(ray.put(send_model_local_buffer), self.rank)
+                self.model_buffer.write.remote(ray.put(send_model_local_buffer))
             else:
-                self.model_buffer.write(send_model_local_buffer, self.rank)
+                self.model_buffer.write(send_model_local_buffer)
             self.model_local_buffer[n] = self._empty_local_buffer()
             self.model_n = 1 - n
-            self.model_t = t - cap_t + 1
+            self.model_t = t - cap_t - pf + 1
         else:
             self.model_t += 1
 

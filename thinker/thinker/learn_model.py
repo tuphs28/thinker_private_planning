@@ -539,8 +539,7 @@ class SModelLearner:
 
         # compute priorities
         if self.flags.priority_alpha > 0.0:
-            priorities = torch.absolute(vs - target["vs"])
-            priorities[1:] = torch.nan
+            priorities = torch.absolute(vs[0] - target["vs"][0])
             priorities = priorities.detach().cpu().numpy()
         else:
             priorities = None

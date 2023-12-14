@@ -128,25 +128,25 @@ class SModelBuffer:
         )  # number of total transition before returning samples
 
         self.buffer = []
-
-        self.priorities = None
-        self.next_inds = None
-        self.cur_inds = {}
+        
+        self.abs_processed_traj = 0 # number of absolute processed trajectory so far
+        self.rel_processed_traj = 0 # number of relative processed trajectory so far
+        self.priorities = None # has shape (rel_processed_traj * t,)
+        self.buffer_ind = None 
+        # has shape (rel_processed_traj, rel_processed_traj) which corresponds
+        # to the two indexes of the processed trajectory in self.buffer
 
         self.base_ind = 0
-        self.abs_tran_n = 0
         self.clean_m = 0
 
+        self.pf = 0 # frame_stack_n - 1
         self.finish = False
 
-    def write(self, data, rank):
-        # data is a named tuple with elements of size (t+2*k+1, n, ...)
-        n = data[0].shape[1]
+    def write(self, data):
+        # data is a named tuple with elements of size (pf+t+2*k+1, b, ...)
+        b = data[0].shape[1]
 
-        for m in range(n):
-            self.buffer.append(util.tuple_map(data, lambda x: x[:, m]))
-
-        p_shape = self.t * n
+        p_shape = self.t * b
         if self.priorities is None:
             self.priorities = np.ones((p_shape), dtype=float)
         else:
@@ -155,118 +155,104 @@ class SModelBuffer:
             )
             self.priorities = np.concatenate([self.priorities, max_priorities])
 
-        # to record a table for chaining entry
-        if rank in self.cur_inds.keys():
-            last_ind = self.cur_inds[rank] - self.base_ind
-            mask = last_ind >= 0
-            self.next_inds[last_ind[mask]] = (
-                len(self.next_inds) + self.base_ind + np.arange(n)
-            )[mask]
-
-        if self.next_inds is None:
-            self.next_inds = np.full((n), fill_value=np.nan,)
+        new_buffer_ind = np.hstack((np.full((b, 1), len(self.buffer)), np.arange(b)[:, None]))
+        if self.buffer_ind is None:
+            self.buffer_ind = new_buffer_ind
         else:
-            self.next_inds = np.concatenate(
-                [self.next_inds, np.full((n), fill_value=np.nan)]
-            )
-        self.cur_inds[rank] = len(self.next_inds) + self.base_ind - n + np.arange(n)
-        self.abs_tran_n += self.t * n
+            self.buffer_ind = np.concatenate([self.buffer_ind, new_buffer_ind])
+        
+        self.buffer.append(data)
+        self.abs_processed_traj += b
+        self.rel_processed_traj += b
 
         # clean periordically
         self.clean()
 
     def read(self, beta):
-        if self.priorities is None or self.abs_tran_n < self.wram_up_n:
+        if self.priorities is None or self.abs_processed_traj * self.t < self.wram_up_n:
             return None
         if self.finish:
             return "FINISH"
         return self.prepare(beta)
 
     def prepare(self, beta):
-        buffer_n = len(self.buffer)
-        tran_n = len(self.priorities)
+        tran_n = len(self.priorities) # should be rel_processed_traj * t
         probs = self.priorities**self.alpha
         probs /= probs.sum()
-        flat_inds = custom_choice(tran_n, self.batch_size, p=probs, replace=False)
+        flat_ind = custom_choice(tran_n, self.batch_size, p=probs, replace=False)
+        ind = np.unravel_index(flat_ind, (self.rel_processed_traj, self.t))
+        # we need to futher unravel the inds[0] manually
+        b_ind = self.buffer_ind[ind[0]]
+        ind_0, ind_1 = b_ind[:, 0], b_ind[:, 1]
+        ind_2 = ind[1]
 
-        inds = np.unravel_index(flat_inds, (buffer_n, self.t))
-
-        weights = (tran_n * probs[flat_inds]) ** (-beta)
+        weights = (tran_n * probs[flat_ind]) ** (-beta)
         weights /= weights.max()
 
-        data = []
-        for d in range(len(self.buffer[0])):
+        data = {}
+        for d, field in enumerate(self.buffer[0]._fields):
             elems = []
+            st_pd = 0 if field == "real_state" else self.pf # we need also get the previous frame_stack_n - 1 states
             for i in range(self.batch_size):
                 elems.append(
-                    self.buffer[inds[0][i]][d][
-                        inds[1][i] : inds[1][i] + 2 * self.k + 1, np.newaxis
+                    self.buffer[ind_0[i]][d][
+                        st_pd + ind_2[i] : self.pf + ind_2[i] + 2 * self.k + 1, [ind_1[i]]
                     ]
                 )
-            data.append(np.concatenate(elems, axis=1))
-        data = type(self.buffer[0])(*data)
+            data[field] = np.concatenate(elems, axis=1)
+
+        if self.pf > 0:
+            done = np.logical_or(data["done"], data["truncated_done"])
+            data["real_state"] = stack_frame(data["real_state"], self.pf + 1, done)            
+        
+        data = type(self.buffer[0])(**data)
 
         base_ind_pri = self.base_ind * self.t
-        abs_flat_inds = flat_inds + base_ind_pri
-        return data, weights, abs_flat_inds, self.abs_tran_n
+        abs_flat_inds = flat_ind + base_ind_pri
+        return data, weights, abs_flat_inds, self.abs_processed_traj * self.t
 
     def set_finish(self):
         self.finish = True
 
     def get_status(self):
-        return {"processed_n": self.abs_tran_n,
+        return {"processed_n": self.abs_processed_traj * self.t,
                 "warm_up_n": self.wram_up_n,
-                "running": self.abs_tran_n >= self.wram_up_n,
+                "running": self.abs_processed_traj * self.t >= self.wram_up_n,
                 "finish": self.finish,
                  }
 
+    def set_frame_stack_n(self, x):
+        self.pf = x - 1
+
     def update_priority(self, abs_flat_inds, priorities):
         """Update priority in the buffer; both input
-        are np array of shape (update_size,)"""
+        are np array of shape (model_batch_size,)"""
         base_ind_pri = self.base_ind * self.t
-
-        # abs_flat_inds is an array of shape (model_batch_size,)
-        # priorities is an array of shape (model_batch_size, k)
-        priorities = priorities.transpose()
-
-        flat_inds = abs_flat_inds - base_ind_pri  # get the relative index
-        mask = flat_inds >= 0
+        flat_inds = abs_flat_inds - base_ind_pri  # get the relative index        
+        mask = flat_inds >= 0        
         flat_inds = flat_inds[mask]
-        priorities = priorities[mask]
-
-        flat_inds = flat_inds[:, np.newaxis] + np.arange(
-            self.k
-        )  # flat_inds now stores uncarried indexes
-        flat_inds_block = flat_inds // self.t  # block index of flat_inds
-        carry_mask = ~(flat_inds_block[:, [0]] == flat_inds_block).reshape(-1)
-        # if first index block is not the same as the later index block, we need to carry it
-
-        flat_inds = flat_inds.reshape(-1)
-        flat_inds_block = flat_inds_block.reshape(-1)
-        carry_inds_block = (
-            self.next_inds[flat_inds_block[carry_mask] - 1] - self.base_ind
-        )  # the correct index block
-
-        flat_inds = flat_inds.astype(float)
-        flat_inds[carry_mask] = (
-            flat_inds[carry_mask]
-            + (-flat_inds_block[carry_mask] + carry_inds_block) * self.t
-        )
-
-        priorities = priorities.reshape(-1)
-        mask = ~np.isnan(flat_inds) & ~np.isnan(priorities)
-        flat_inds = flat_inds[mask].astype(int)
         priorities = priorities[mask]
         self.priorities[flat_inds] = priorities
 
-    def clean(self):
-        buffer_n = len(self.buffer)
-        if buffer_n > self.max_buffer_n:
-            excess_n = buffer_n - self.max_buffer_n
+    def clean(self):        
+        if self.rel_processed_traj > self.max_buffer_n:
+            excess_n = self.buffer_ind[self.rel_processed_traj - self.max_buffer_n, 0] + 1
+            excess_m = np.sum(self.buffer_ind[:, 0] <= excess_n - 1)
             del self.buffer[:excess_n]
-            self.next_inds = self.next_inds[excess_n:]
-            self.priorities = self.priorities[excess_n * self.t :]
-            self.base_ind += excess_n
+            self.buffer_ind = self.buffer_ind[excess_m:]
+            self.priorities = self.priorities[excess_m * self.t :]            
+            self.buffer_ind[:, 0] = self.buffer_ind[:, 0] - excess_n
+            self.rel_processed_traj -= excess_m
+            self.base_ind += excess_m
+
+def stack_frame(frame, frame_stack_n, done):
+    T, B, C, H, W = frame.shape[0] - frame_stack_n + 1, frame.shape[1], frame.shape[2], frame.shape[3], frame.shape[4]
+    assert done.shape[0] == T
+    y = np.zeros((T, B, C * frame_stack_n, H, W))
+    for s in range(frame_stack_n):
+        y[:, :, s*C:(s+1)*C, :, :] = frame[s:T+s]
+        y[:, :, s*C:(s+1)*C, :, :][done] = frame[frame_stack_n - 1: T + frame_stack_n - 1][done]
+    return y
 
 @ray.remote
 class GeneralBuffer(object):
