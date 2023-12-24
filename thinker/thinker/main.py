@@ -233,7 +233,7 @@ class Env(gym.Wrapper):
                 )
                 self._logger.info("Loaded model net from %s" % path)
             
-            if self.train_model and self.parallel:
+            if self.has_model and self.parallel:
                 self.param_buffer.set_data.remote(
                     "model_net", self.model_net.get_weights()
                 )
