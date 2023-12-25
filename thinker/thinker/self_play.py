@@ -218,7 +218,6 @@ class SelfPlayWorker:
         except Exception as e:
             self._logger.error(f"Exception detected in self_play: {e}")
             self._logger.error(traceback.format_exc())
-        finally:
             return False
     
     def env_step(self, env_out, actor_state):
