@@ -16,7 +16,7 @@ _fields = ("tree_reps", "real_states", "xs", "hs")
 _fields += ("reward", "episode_return", "episode_step")
 _fields += ("done", "real_done", "truncated_done")
 _fields += ("max_rollout_depth", "step_status")
-_fields += ("last_pri", "last_reset")
+_fields += ("last_pri", "last_reset", "cur_gate")
 EnvOut = namedtuple("EnvOut", _fields)
 _fields = tuple(ActorOut._fields) + tuple(EnvOut._fields) + ("id",)
 
@@ -213,6 +213,7 @@ class SelfPlayWorker:
                 if fin: 
                     self._logger.info("Terminating self-play thread %d" % self.rank)
                     self.env.close()                    
+                    self._logger.info("Terminated self-play thread %d" % self.rank)
                     return True
 
         except Exception as e:
@@ -229,7 +230,7 @@ class SelfPlayWorker:
         state, reward, done, info = self.env.step(
                 primary_action=actor_out.action[0], 
                 reset_action=actor_out.action[1], 
-                action_prob=actor_out.action_prob)
+                action_prob=actor_out.action_prob[-1])
         env_out = self.create_env_out(actor_out.action, state, reward, done, info)
         return actor_out, actor_state, env_out, info
 

@@ -80,12 +80,7 @@ class Env(gym.Wrapper):
             self.rank = ray.get(self.param_buffer.get_and_increment.remote("rank"))
         else:
             self.rank = 0
-
         self.counter = 0
-        self.status = 0 # 0 for model being warmed up; 
-                        # 1 for refilling model after loading checkpoint
-                        # 2 for model learner running
-                        # 3 for model learner finished training
 
         self._logger.info(
             "Initializing env %d with device %s"

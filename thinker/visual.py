@@ -389,7 +389,7 @@ def visualize(
 
     root_state = env_out.real_states
     tree_reps = util.decode_tree_reps(
-        env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type
+        env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type, flags.model_enc_type
     )
     end_gym_env_outs, end_titles = [], []
     ini_max_q = tree_reps["root_max_v"][0].item()
@@ -424,7 +424,7 @@ def visualize(
         im_dict["reset"].append(actor_out.reset[:,0])
         
         tree_reps_ = util.decode_tree_reps(
-            env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type
+            env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type, flags.model_enc_type
         )
         model_logits.append(tree_reps_["cur_logits"])
         
@@ -432,7 +432,7 @@ def visualize(
         env_out = create_env_out(action, state, reward, done, info, flags)
 
         tree_reps = util.decode_tree_reps(
-            env_out.tree_reps, num_actions, flags.model_enc_type
+            env_out.tree_reps, num_actions, flags.model_enc_type, flags.model_enc_type
         )
         if (
             len(im_dict["reset"]) > 0

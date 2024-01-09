@@ -72,14 +72,16 @@ class ThreeDEncoder(nn.Module):
     # processor for 3d inputs; can be applied to model's hidden state or predicted real state
     def __init__(self, 
                  input_shape, 
-                 downpool=False,     
+                 downpool=False, 
+                 firstpool=False,    
                  out_size=256,
                  see_double=False):
         super(ThreeDEncoder, self).__init__()
         if see_double:
             input_shape = (input_shape[0] // 2,) + tuple(input_shape[1:])
-        self.input_shape = input_shape
+        self.input_shape = input_shape        
         self.downpool = downpool
+        self.firstpool = firstpool
         self.out_size = out_size
         self.see_double = see_double        
 
@@ -93,7 +95,7 @@ class ThreeDEncoder(nn.Module):
         self.resnet2 = []
         self.convs = []
 
-        if downpool:
+        if firstpool:
             self.down_pool_conv = nn.Conv2d(
                     in_channels=in_channels,
                     out_channels=16,
@@ -173,7 +175,7 @@ class ThreeDEncoder(nn.Module):
         return:
             output: output tensor of shape (B, self.out_size)"""
         assert x.dtype in [torch.float, torch.float16]
-        if self.downpool:
+        if self.firstpool:
             x = self.down_pool_conv(x)
         for i, fconv in enumerate(self.feat_convs):
             x = fconv(x)
@@ -289,7 +291,7 @@ class ActorNetBase(BaseNet):
             self.num_actions = action_space[0].n
 
         self.tran_dim = flags.tran_dim 
-        self.tree_rep_rnn = flags.tree_rep_rnn
+        self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep 
         self.x_rnn = flags.x_rnn and flags.see_x  
 
         self.num_rewards = 1
@@ -323,6 +325,7 @@ class ActorNetBase(BaseNet):
             self.x_encoder_pre =  ThreeDEncoder(
                 input_shape=self.xs_shape, 
                 downpool=True,
+                firstpool=flags.x_enc_first_pool,
                 see_double=self.see_double
             )
             x_out_size = self.x_encoder_pre.out_size
@@ -350,6 +353,7 @@ class ActorNetBase(BaseNet):
                 input_shape=self.xs_shape, 
                 num_actions=self.num_actions, 
                 downpool=True,
+                firstpool=flags.x_enc_first_pool,
                 see_double=self.see_double
             )
             last_out_size += self.real_state_encoder.out_size
@@ -404,11 +408,11 @@ class ActorNetBase(BaseNet):
                 )
         elif self.enc_type == 1:
             self.baseline = nn.Linear(last_out_size, self.num_rewards)
-            self.rv_tran = RVTran(enc_type=self.enc_type)
-        elif self.enc_type in [2, 3]:
+            self.rv_tran = RVTran(enc_type=self.enc_type, enc_f_type=flags.critic_enc_f_type)
+        elif self.enc_type in [2, 3]:                        
+            self.rv_tran = RVTran(enc_type=self.enc_type, enc_f_type=flags.critic_enc_f_type)
             self.out_n = self.rv_tran.encoded_n
-            self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)
-            self.rv_tran = RVTran(enc_type=self.enc_type)
+            self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)            
 
         if self.critic_zero_init:
             nn.init.constant_(self.baseline.weight, 0.0)
@@ -488,7 +492,9 @@ class ActorNetBase(BaseNet):
             last_reset = F.one_hot(last_reset, 2)
             final_out.append(last_reset)
 
-        last_reward = torch.clamp(torch.flatten(env_out.reward, 0, 1), -1, +1)
+        reward = env_out.reward
+        reward[torch.isnan(reward)] = 0.
+        last_reward = torch.clamp(torch.flatten(reward, 0, 1), -1, +1)
         final_out.append(last_reward)
 
         if self.see_tree_rep:            
@@ -597,7 +603,7 @@ class ActorNetBase(BaseNet):
             action = (pri[-1], reset[-1])
         else:
             action = pri[-1]            
-        action_prob = F.softmax(pri_logits[-1], dim=-1)        
+        action_prob = F.softmax(pri_logits, dim=-1)        
 
         # compute baseline
         if self.enc_type == 0:
@@ -638,13 +644,10 @@ class ActorNetBase(BaseNet):
         else:
             reg_loss = None
 
-        if dbg_mode == 1:
-            misc = {
-                "pri_logits": pri_logits,
-                "reset_logits": reset_logits,
-            }
-        else:
-            misc = {}
+        misc = {
+            "pri_logits": pri_logits,
+            "reset_logits": reset_logits,
+        }
 
         actor_out = ActorOut(
             pri=pri,

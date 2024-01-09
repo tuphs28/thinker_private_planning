@@ -37,7 +37,7 @@ import collections
 
 import torch
 import torch.nn.functional as F
-
+import math 
 
 VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages norm_stat")
 
@@ -59,9 +59,6 @@ def compute_v_trace(
     discounts,
     rewards,
     values,
-    values_enc,
-    rv_tran,
-    enc_type,
     bootstrap_value,
     return_norm_type,
     clip_rho_threshold=1.0,
@@ -125,26 +122,14 @@ def compute_v_trace(
                 uq,
             )
             norm_factor = torch.clamp(
-                norm_stat[1] - norm_stat[0], min=0.001
+                norm_stat[1] - norm_stat[0], min=1
             )
             norm_stat = norm_stat + (norm_factor, buffer)
 
-        if enc_type in [0, 4] or not return_norm_type == -1:
-            pg_advantages = clipped_pg_rhos * adv_l2(target_values, values)
-            if not return_norm_type == -1:
-                # pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
-                pg_advantages = pg_advantages / norm_factor
-        elif enc_type == 1:
-            pg_advantages = clipped_pg_rhos * adv_l2(
-                rv_tran.encode(target_values), values_enc
-            )
-        elif enc_type in [2, 3]:
-            pg_advantages = clipped_pg_rhos * adv_l2(
-                rv_tran.encode(target_values),
-                rv_tran.encode_s(rv_tran.decode(values_enc)),
-            )
-        else:
-            raise Exception("Unknown reward type: ", rv_tran)
+        pg_advantages = clipped_pg_rhos * adv_l2(target_values, values)
+        if not return_norm_type == -1:
+            # pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
+            pg_advantages = pg_advantages / norm_factor
 
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, 
@@ -162,8 +147,7 @@ class FifoBuffer:
         self.num_elements = 0
 
     def push(self, data):
-        t, b = data.shape
-        num_entries = t * b
+        num_entries = math.prod(data.shape)
         assert num_entries <= self.size, "Data too large for buffer"
 
         start_index = self.current_index

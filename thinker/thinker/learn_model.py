@@ -23,7 +23,7 @@ def compute_cross_entropy_loss(logits, target_policy, is_weights, mask=None):
     loss = torch.sum(loss, dim=0)
     loss = is_weights * loss
     return torch.sum(loss)
-
+   
 class SModelLearner:
     def __init__(self, ray_obj, model_param, flags, model_net=None, device=None):
         self.flags = flags
@@ -319,10 +319,9 @@ class SModelLearner:
             print_stats = [
                 "total_loss_m",
                 "total_loss_p",
-                "vs_loss",
-                "logits_loss",
-                "rs_loss",
                 "img_loss",
+                "sup_loss",
+                "noise_loss",
                 "done_loss",
                 "reg_loss",
             ]
@@ -342,7 +341,7 @@ class SModelLearner:
                 "model/total_norm_m": total_norm_m.item(),
                 "model/total_norm_p": total_norm_p.item(),
             }
-            for k in print_stats:
+            for k in losses.keys():
                 stats["model/" + k] = (
                     losses[k].item() / self.numel_per_step
                     if k in losses and losses[k] is not None
@@ -392,9 +391,10 @@ class SModelLearner:
     def compute_losses_m(self, train_model_out, target, is_weights):
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
         out = self.model_net.sr_net.forward(
-            x=train_model_out.real_state[0].float() / 255.0,
+            x=self.model_net.normalize(train_model_out.real_state[0]),
             actions=train_model_out.action[: k + 1],
             one_hot=False,
+            future_xs=self.model_net.normalize(train_model_out.real_state[1:k+1])
         )
         rs_loss = self.compute_rs_loss(
             target,
@@ -423,14 +423,43 @@ class SModelLearner:
         img_loss = img_loss * is_weights
         img_loss = torch.sum(img_loss)
 
+        if self.flags.model_sup_loss_cost > 0.:
+            sup_loss = self.model_net.sr_net.supervise_loss(
+                hs=out.hs[1:], 
+                xs=self.model_net.normalize(train_model_out.real_state[1 : k + 1]),
+                actions=train_model_out.action[1 : k + 1], 
+                is_weights=is_weights, 
+                mask=target["done_mask"][1:], 
+                one_hot=False,
+                )
+            sup_loss = torch.sum(sup_loss)
+        else:
+            sup_loss = None
+
+        if out.noise_loss is not None:
+            noise_loss = out.noise_loss
+            noise_loss = noise_loss * target["done_mask"][1:]
+            noise_loss = torch.sum(noise_loss, dim=0)
+            noise_loss = noise_loss * is_weights
+            noise_loss = torch.sum(noise_loss)
+        else:
+            noise_loss = None
+
         total_loss = self.flags.model_rs_loss_cost * rs_loss
         total_loss = total_loss + self.flags.model_img_loss_cost * img_loss
         if self.flags.model_done_loss_cost > 0.0:
             total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
+        if self.flags.model_sup_loss_cost > 0.:
+            total_loss = total_loss + self.flags.model_sup_loss_cost * sup_loss
+        if self.flags.model_noise_loss_cost > 0.:
+            total_loss = total_loss + self.flags.model_noise_loss_cost * noise_loss
+
         return {
             "rs_loss": rs_loss,
             "done_loss": done_loss,
             "img_loss": img_loss,
+            "sup_loss": sup_loss,
+            "noise_loss": noise_loss,
             "total_loss_m": total_loss,
         }, out.xs.detach()
 
@@ -476,15 +505,11 @@ class SModelLearner:
             done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
 
         # compute vs loss
-        if self.flags.model_enc_type == 0:
-            vs_loss = (vs[:k] - target["vs"].detach()) ** 2
-        else:
-            target_vs_enc_v = self.model_net.vp_net.rv_tran.encode(target["vs"])
-            vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
-                input=torch.flatten(v_enc_logits[:k], 0, 1),
-                target=torch.flatten(target_vs_enc_v.detach(), 0, 1),
-            )
-            vs_loss = vs_loss.view(k, b)
+        vs_loss = self.model_net.compute_vs_loss(
+            vs=vs, 
+            v_enc_logits=v_enc_logits, 
+            target_vs=target["vs"],
+        )
         vs_loss = vs_loss * done_mask[:-1]
         vs_loss = torch.sum(vs_loss, dim=0)
         vs_loss = vs_loss * is_weights
@@ -559,9 +584,21 @@ class SModelLearner:
         target_actions = train_model_out.action[
             1 : k + 1
         ]  # true actions l_0, l_1, ..., l_k-1
-        target_vs = train_model_out.baseline[
-            ret_n + 1: ret_n + 1 + k
-        ]  # baseline ranges from v_k, v_k+1, ... v_2k
+        if self.flags.model_self_bootstrap:
+            with torch.no_grad():
+                self.model_net.train(False)
+                out = self.model_net.forward(
+                    x=target_xs[ret_n: ret_n + k].view((k * b,) + target_xs.shape[2:]),
+                    actions=train_model_out.action[ret_n: ret_n + k].view(1, k * b),
+                    one_hot=False,
+                    normalize=False,
+                )
+                target_vs = out.vs.view(k, b)
+                self.model_net.train(True)
+        else:
+            target_vs = train_model_out.baseline[
+                ret_n + 1: ret_n + 1 + k
+            ]  # baseline ranges from v_k, v_k+1, ... v_2k
         for t in range(ret_n, 0, -1):
             target_vs = (
                 target_vs

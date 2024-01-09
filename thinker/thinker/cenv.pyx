@@ -9,7 +9,7 @@ import cython
 from libcpp cimport bool
 from libcpp.vector cimport vector
 from cpython.ref cimport PyObject, Py_INCREF, Py_DECREF
-from libc.math cimport sqrt
+from libc.math cimport sqrt, log
 from libc.stdlib cimport malloc, free
 
 # util function
@@ -159,14 +159,20 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector
         node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int mask_type):
+cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type):
     cdef float[:] result = np.zeros((pnode[0].num_actions*5+6) if detailed else (pnode[0].num_actions*5+3), dtype=np.float32) 
     cdef int i
 
     pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
     if mask_type == 3: return result
     result[pnode[0].action] = 1. # action
-    f = lambda x:x if enc_type == 0 else enc
+    if enc_type == 0:
+        f = lambda x : x  
+    else:
+        if enc_f_type == 0:
+            f = enc_0
+        elif enc_f_type == 1:
+            f = enc_1
     result[pnode[0].num_actions] = f(pnode[0].r) # reward
     result[pnode[0].num_actions+1] = <float>pnode[0].done # done
     if not mask_type in [2]:         
@@ -206,8 +212,11 @@ cdef node_del(Node* pnode, int except_idx):
         Py_DECREF(<object>pnode[0].encoded)
     free(pnode)
 
-cdef float enc(float x):
+cdef float enc_0(float x):
     return sign(x)*(sqrt(abs(x)+1)-1)+(0.001)*x
+
+cdef float enc_1(float x):
+    return sign(x)*log(abs(x)+1)
 
 cdef float sign(float x):
     if x > 0.: return 1.
@@ -235,6 +244,7 @@ cdef class cWrapper():
     cdef int reset_mode
 
     cdef int enc_type
+    cdef int enc_f_type
     cdef bool pred_done
     cdef int num_actions
     cdef int obs_n    
@@ -248,8 +258,13 @@ cdef class cWrapper():
     cdef bool cur_enable
     cdef float cur_reward_cost
     cdef float cur_v_cost
+    cdef float cur_pi_cost
     cdef float cur_enc_cost
-    cdef bool cur_done_gate    
+    cdef float cur_x_cost
+    cdef float cur_sup_cost
+    cdef bool cur_done_gate
+    cdef int cur_done_elapse
+    cdef bool model_img_type
     
     cdef int stat_mask_type
     cdef bool time 
@@ -285,12 +300,14 @@ cdef class cWrapper():
     cdef float[:] full_reward
     cdef float[:] full_im_reward
     cdef float[:] full_cur_reward
+    cdef bool[:] full_cur_gate
     cdef bool[:] full_done
     cdef bool[:] full_im_done
     cdef bool[:] full_real_done
     cdef bool[:] full_truncated_done
     cdef int[:] step_status
     cdef int[:] total_step  
+    cdef int[:] step_from_done  
 
     def __init__(self, env, env_n, flags, model_net, device=None, time=False):        
            
@@ -306,6 +323,7 @@ cdef class cWrapper():
         self.reset_mode = flags.reset_mode
 
         self.enc_type = flags.model_enc_type
+        self.enc_f_type = flags.model_enc_f_type
         self.pred_done = flags.model_done_loss_cost > 0.        
         self.num_actions = env.action_space[0].n
         self.obs_n = 11 + self.num_actions * (10 + self.max_depth) + self.rep_rec_t
@@ -318,10 +336,16 @@ cdef class cWrapper():
 
         self.im_enable = flags.im_enable
         self.cur_enable = flags.cur_enable
-        self.cur_reward_cost = flags.cur_reward_cost
-        self.cur_v_cost = flags.cur_v_cost
-        self.cur_enc_cost = flags.cur_enc_cost
-        self.cur_done_gate = flags.cur_done_gate
+        if self.cur_enable:
+            self.cur_reward_cost = flags.cur_reward_cost
+            self.cur_v_cost = flags.cur_v_cost
+            self.cur_pi_cost = flags.cur_pi_cost
+            self.cur_enc_cost = flags.cur_enc_cost        
+            self.cur_x_cost = flags.cur_x_cost        
+            self.cur_sup_cost = flags.cur_sup_cost        
+            self.cur_done_gate = flags.cur_done_gate
+            self.cur_done_elapse = flags.cur_done_elapse
+        self.model_img_type = flags.model_img_type
 
         self.stat_mask_type = flags.stat_mask_type
         self.time = time        
@@ -367,12 +391,14 @@ cdef class cWrapper():
         self.full_reward = np.zeros(self.env_n, dtype=np.float32)
         self.full_im_reward = np.zeros(self.env_n, dtype=np.float32)
         self.full_cur_reward = np.zeros(self.env_n, dtype=np.float32)
+        self.full_cur_gate = np.zeros(self.env_n, dtype=np.bool_)
         self.full_done = np.zeros(self.env_n, dtype=np.bool_)
         self.full_im_done = np.zeros(self.env_n, dtype=np.bool_)
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool_)
         self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool_)
         self.total_step = np.zeros(self.env_n, dtype=np.intc)
         self.step_status = np.zeros(self.env_n, dtype=np.intc)  
+        self.step_from_done = np.zeros(self.env_n, dtype=np.intc)  
     
     cdef float[:, :] compute_tree_reps(self, int[:]& reset, int[:]& status):
         cdef int i, j
@@ -384,8 +410,8 @@ cdef class cWrapper():
         idx3 = self.num_actions*10+11+self.rep_rec_t        
         result = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, mask_type=self.stat_mask_type)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, mask_type=self.stat_mask_type)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type)    
             # reset
             if reset is None or status[i] == 1:
                 result[i, idx2] = 1.
@@ -658,7 +684,7 @@ cdef class cModelWrapper(cWrapper):
                 model_net_out_1 = model_net(obs_py, 
                         pass_action_py, 
                         one_hot=False,
-                        ret_xs=self.return_x,
+                        ret_xs=True,
                         ret_zs=self.cur_enable,
                         ret_hs=self.return_h)  
                 if self.cur_enable:
@@ -666,30 +692,71 @@ cdef class cModelWrapper(cWrapper):
                         for msd in pass_re_model_states[0].keys()})
                     pred_model_net_out_1 = model_net.forward_single(
                         state=pass_re_model_states,
-                        action=torch.tensor(pass_action, dtype=long, device=self.device),  
+                        action=pass_action_py[0],  
                         one_hot=False,  
-                        ret_xs=False,
+                        ret_xs=True,
                         ret_zs=True,
                         ret_hs=False,
+                        future_x=model_net.normalize(obs_py),
                     )                                       
-                    cur_reward = 0.
+                    cur_reward = torch.zeros(self.env_n, dtype=torch.float, device=self.device)
                     done_mask = torch.tensor(done, dtype=torch.float, device=self.device)
                     if self.cur_v_cost > 0.:
-                        pred_model_net_out_1.vs[pred_model_net_out_1.dones] = 0.
-                        cur_reward += self.cur_v_cost * torch.square(model_net_out_1.vs[-1] * (1-done_mask) - pred_model_net_out_1.vs[-1])
+                        target_vs = model_net_out_1.vs * (1-done_mask).unsqueeze(0)
+                        v_loss = model_net.compute_vs_loss(
+                            vs = pred_model_net_out_1.vs,
+                            v_enc_logits = pred_model_net_out_1.v_enc_logits,
+                            target_vs = target_vs
+                        )
+                        cur_reward += self.cur_v_cost * v_loss[0]
                     if self.cur_reward_cost > 0.:
                         pred_model_net_out_1.rs[pred_model_net_out_1.dones] = 0.
                         cur_reward += self.cur_reward_cost * torch.square(torch.tensor(reward, device=self.device) * (1-done_mask) - pred_model_net_out_1.rs[-1])
+                    if self.cur_pi_cost > 0.:
+                        target_log_probs = torch.nn.functional.log_softmax(model_net_out_1.logits[-1], dim=-1)
+                        log_probs = torch.nn.functional.log_softmax(pred_model_net_out_1.logits[-1], dim=-1)
+                        pi_loss = torch.sum(torch.nn.functional.kl_div(log_probs, target_log_probs, reduction='none', log_target=True), dim=-1)
+                        cur_reward += self.cur_pi_cost * pi_loss
+
+                    pred_done = pred_model_net_out_1.dones[-1].float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+                    true_done = done_mask.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
                     if self.cur_enc_cost > 0.:
-                        flat_dim = tuple(range(1, len(model_net_out_1.zs[-1].shape)))     
-                        done_mask_ = done_mask
-                        for _ in range(len(model_net_out_1.zs.shape)-2): done_mask_ = done_mask_.unsqueeze(-1)
-                        pred_model_net_out_1.zs[pred_model_net_out_1.dones] = 0.     
-                        cur_reward += self.cur_enc_cost * torch.mean(torch.square(model_net_out_1.zs[-1] * (1-done_mask_) - pred_model_net_out_1.zs[-1]), dim=flat_dim)
+                        pred_z, true_z = pred_model_net_out_1.zs[-1], model_net_out_1.zs[-1]       
+                        pred_z = pred_z * (1 - pred_done)
+                        true_z = true_z * (1 - true_done)                        
+                        flat_dim = tuple(range(1, len(true_z.shape)))     
+                        cur_reward += self.cur_enc_cost * torch.mean(torch.square(true_z - pred_z), dim=flat_dim)
+
+                    if self.cur_x_cost > 0.:
+                        pred_x, true_x = pred_model_net_out_1.xs[-1], model_net_out_1.xs[-1]       
+                        pred_x = pred_x * (1 - pred_done)
+                        true_x = true_x * (1 - true_done)                        
+                        flat_dim = tuple(range(1, len(true_x.shape)))     
+                        cur_reward += self.cur_x_cost * torch.mean(torch.square(true_x - pred_x), dim=flat_dim)
+
+                    if self.cur_sup_cost > 0.:  
+                        # add SimSiam loss
+                        h = pred_model_net_out_1.state["sr_h"]
+                        sup_loss = model_net.sr_net.supervise_loss(
+                            hs=h.unsqueeze(0), 
+                            xs=model_net_out_1.xs,
+                            actions=pass_action_py,
+                            is_weights=None, 
+                            mask=None, 
+                            one_hot=False,
+                        )
+                        cur_reward += self.cur_sup_cost * sup_loss[0]
+
                     if self.cur_done_gate:
-                        done_mask = torch.tensor(done, dtype=torch.bool, device=self.device)
-                        cur_reward[torch.logical_or(done_mask, pred_model_net_out_1.dones[-1])] = 0.
-                    cur_reward = cur_reward.float().cpu().numpy()                    
+                        true_done = torch.tensor(done, dtype=torch.bool, device=self.device)
+                        pred_done = pred_model_net_out_1.dones[-1]
+                        cur_gate = torch.logical_or(true_done, pred_done)
+                        if self.cur_done_elapse > 0:
+                            step_from_done = torch.tensor(self.step_from_done, device=self.device)
+                            cur_gate = torch.logical_or(cur_gate, step_from_done < self.cur_done_elapse)
+                        cur_reward[cur_gate] = 0.
+                    cur_reward = cur_reward.float().cpu().numpy()   
                     
             vs_1 = model_net_out_1.vs[-1].float().cpu().numpy()
             logits_1 = model_net_out_1.logits[-1].float().cpu().numpy()
@@ -725,8 +792,8 @@ cdef class cModelWrapper(cWrapper):
                 new_root = (not self.tree_carry or 
                     not node_expanded(self.root_nodes[i][0].ppchildren[0][re_action[i]], -1) or done[j])
                 encoded = {"real_states": obs_py[j], 
-                           "xs": model_net_out_1.xs[-1, j] if model_net_out_1.xs is not None else None,
-                           "hs": model_net_out_1.hs[-1, j] if model_net_out_1.hs is not None else None,
+                           "xs": model_net_out_1.xs[-1, j] if self.return_x else None,
+                           "hs": model_net_out_1.hs[-1, j] if self.return_h else None,
                            "model_states": dict({sk:sv[[j]] for sk, sv in model_net_out_1.state.items()})
                           }         
                 if new_root:
@@ -768,8 +835,8 @@ cdef class cModelWrapper(cWrapper):
             elif self.status[i] == 4:
                 # need expand
                 encoded = {"real_states": None, 
-                           "xs": model_net_out_4.xs[-1, l] if model_net_out_4.xs is not None else None,
-                           "hs": model_net_out_4.hs[-1, l] if model_net_out_4.hs is not None else None,
+                           "xs": model_net_out_4.xs[-1, l] if self.return_x else None,
+                           "hs": model_net_out_4.hs[-1, l] if self.return_h else None,
                            "model_states": dict({sk:sv[[l]] for sk, sv in model_net_out_4.state.items()})
                            }
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
@@ -823,8 +890,10 @@ cdef class cModelWrapper(cWrapper):
             if self.cur_enable:
                 if self.status[i] == 1: 
                     self.full_cur_reward[i] = cur_reward[j]
+                    self.full_cur_gate[i] = cur_gate[j]
                 else:                    
                     self.full_cur_reward[i] = 0
+                    self.full_cur_gate[i] = False
             if self.status[i] == 1:
                 j += 1
         if self.time: self.timings.time("compute_reward")        
@@ -837,6 +906,10 @@ cdef class cModelWrapper(cWrapper):
                 self.full_real_done[i] = real_done[j]
                 self.full_truncated_done[i] = truncated_done[j]
                 self.full_im_done[i] = False
+                if done[j]:
+                    self.step_from_done[i] = 0
+                else:
+                    self.step_from_done[i] += 1
             else:
                 self.full_done[i] = False
                 self.full_real_done[i] = False
@@ -870,7 +943,8 @@ cdef class cModelWrapper(cWrapper):
         if self.im_enable:
             info["im_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)
         if self.cur_enable:
-            info["cur_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)
+            info["cur_reward"] = torch.tensor(self.full_cur_reward, dtype=torch.float, device=self.device)
+            info["cur_gate"] = torch.tensor(self.full_cur_gate, dtype=torch.bool, device=self.device)
         if self.time: self.timings.time("end")
 
         return (states, 
@@ -1216,8 +1290,6 @@ cdef class cPerfectWrapper(cWrapper):
                 }
         if self.im_enable:
             info["im_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)
-        if self.cur_enable:
-            info["cur_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)
         if self.time: self.timings.time("end")
  
         return (states, 

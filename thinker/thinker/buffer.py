@@ -179,7 +179,7 @@ class SModelBuffer:
     def prepare(self, beta):
         tran_n = len(self.priorities) # should be rel_processed_traj * t
         probs = self.priorities**self.alpha
-        probs /= probs.sum()
+        probs /= max(probs.sum(), 1e-8)
         flat_ind = custom_choice(tran_n, self.batch_size, p=probs, replace=False)
         ind = np.unravel_index(flat_ind, (self.rel_processed_traj, self.t))
         # we need to futher unravel the inds[0] manually
@@ -405,7 +405,7 @@ class RetBuffer:
                 self.return_buffer_n >= self.return_buffer.shape[1]
             )
 
-    def insert_raw(self, episode_returns, ind, actor_id, done):
+    def insert_raw(self, episode_returns, ind, actor_id, done):        
         episode_returns = episode_returns[done][:, ind]
         episode_returns = tuple(episode_returns.detach().cpu().numpy())
         done_ids = actor_id.broadcast_to(done.shape)[done]

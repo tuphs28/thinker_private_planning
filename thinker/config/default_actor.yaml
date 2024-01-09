@@ -16,6 +16,7 @@ actor_use_rms: false # whether to use rms (default: adam) as optimizer
 actor_grad_norm_clipping: 1200 # gradient clipping norm; non-positive for no clipping
 actor_adam_eps: 0.00000001 # eps for Adam optimizer
 return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
+cur_return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
 # cost setting
 im_cost: 1. # cost for imaginary rewards
 im_cost_anneal: true # whether to anneal the imaginary cost to 0
@@ -34,6 +35,7 @@ see_x: false # whether to see the model's predicted state
 drc: false # whether to use the drc baseline
 tree_rep_rnn: true # whether to use rnn in processing tree representation
 x_rnn: false # whether to use rnn in processing x, model's predicted state
+x_enc_first_pool: true # whether to reduce frame encoder size by first applying a 3x3 conv with 2 sride
 tran_t: 1 # internal transition step for rnn
 tran_mem_n: 40 # memory slot size for the attention module in lstm-attn
 tran_layer_n: 3 # number of layers of lstm-attn
@@ -44,8 +46,21 @@ tran_dim: 128 # hidden dimension of lstm-attn
 disable_mem: false # whether to erasing rnn's hidden state on each step
 critic_zero_init: true # whether to zero initialize the critic outputs
 critic_enc_type: 0 # reward / value encoding type for the critic; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
+critic_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 for MuZero-like encoding, 1 for Dreamer-like encoding
 sep_im_head: true # whether to use seperate head for computing imaginary logit
 last_layer_n: 0 # number of hidden layer after concat different branch
+# curiosity-related
+cur_reward_adj: -1 # multipler to curisoity reward. only enabled when larger than 0
+cur_norm_type: 0 # 0 for moving average and mean + std; 1 for fifo buffer and percentile
+cur_reward_mq: 0.50 # normalize cur reward by subtracting this percetile of the fifo buffer
+cur_reward_uq: 0.95 # normalize cur reward by dividing it by (cur_reward_uq - cur_reward_lq)
+cur_reward_lq: 0.05 # normalize cur reward by dividing it by (cur_reward_uq - cur_reward_lq)
+cur_reward_bn: 200000 # buffer size for cur reward fifo buffer
+cur_reward_norm: true # whether to normalize cur reward by running average
+cur_reward_pri: true # whether to use prioritized cur reward (i.e. relu(r - mean_r) instead of r)
+cur_reward_min: 0. # minimum normalized curisoity rewards; over -100 for no clamping
+cur_reward_max: 1000. # maximum normalized curisoity rewards; over 100 for no clamping
+cur_ema: 0.999 # decaying rate of mean and second moment
 # checkpoint
 xpid: '' # name of the run, automatically set if not given
 ckp: false # whether to load checkpoint; if set to true, will load checkpoint from savedir/xpid

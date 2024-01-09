@@ -114,7 +114,8 @@ class PostWrapper(gym.Wrapper):
 
         for prefix in ["im", "cur"]:
             if prefix+"_reward" in info:
-                self.episode_return[prefix] += info[prefix+"_reward"]
+                nan_mask = ~torch.isnan(info[prefix+"_reward"])
+                self.episode_return[prefix][nan_mask] += info[prefix+"_reward"][nan_mask]
                 info[prefix + "_episode_return"] = self.episode_return[prefix].clone()
                 self.episode_return[prefix][real_done] = 0.
                 if prefix == "im":
@@ -343,7 +344,9 @@ class EpisodicLifeEnv(gym.Wrapper):
         """
         gym.Wrapper.__init__(self, env)
         self.lives = 0
-        self.was_real_done = True
+        self.was_real_done = False
+        self.was_done = False
+        self.init = False
 
     def step(self, action):
         obs, reward, done, info = self.env.step(action)
@@ -358,6 +361,7 @@ class EpisodicLifeEnv(gym.Wrapper):
             # the environment advertises done.
             done = True
         self.lives = lives
+        self.was_done = done
         return obs, reward, done, info
 
     def reset(self, **kwargs):
@@ -365,12 +369,15 @@ class EpisodicLifeEnv(gym.Wrapper):
         This way all states are still reachable even though lives are episodic,
         and the learner need not know about any of this behind-the-scenes.
         """
-        if self.was_real_done:
+        if self.was_real_done or not self.was_done:
             obs = self.env.reset(**kwargs)
+            if not self.was_done and self.init:
+                print("Warning: Resetting when episode is not done.")
         else:
             # no-op step to advance from terminal/lost life state
             obs, _, _, _ = self.env.step(0)
         self.lives = self.env.unwrapped.ale.lives()
+        self.init = True
         return obs
 
     def clone_state(self):

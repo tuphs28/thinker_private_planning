@@ -1,4 +1,4 @@
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __project__ = "thinker"
 
 import collections
@@ -286,16 +286,22 @@ def construct_tuple(x, **kwargs):
 def get_git_revision_hash():
     return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
 
-def enc(x):
-    return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + (0.001) * x
+def enc(x, f_type=0):
+    if f_type == 0:
+        return np.sign(x) * (np.sqrt(np.abs(x) + 1) - 1) + (0.001) * x
+    else:
+        return np.sign(x) * np.log(np.abs(x) + 1)
 
-def dec(x):
-    return np.sign(x) * (
-        np.square(
-            (np.sqrt(1 + 4 * 0.001 * (torch.abs(x) + 1 + 0.001)) - 1) / (2 * 0.001)
+def dec(x, f_type=0):
+    if f_type == 0:
+        return np.sign(x) * (
+            np.square(
+                (np.sqrt(1 + 4 * 0.001 * (np.abs(x) + 1 + 0.001)) - 1) / (2 * 0.001)
+            )
+            - 1
         )
-        - 1
-    )
+    else:
+        return np.sign(x) * (np.exp(np.abs(x)) - 1)
 
 def optimizer_to(optim, device):
     for param in optim.state.values():
@@ -447,15 +453,15 @@ def slice_tree_reps(num_actions, rec_t):
         }
     return d
 
-def decode_tree_reps(tree_reps, num_actions, rec_t, enc_type=0):
+def decode_tree_reps(tree_reps, num_actions, rec_t, enc_type=0, f_type=0):
     nd = [
             "root_r", "root_v", "root_qs_mean", "root_qs_max", 
             "root_trail_r", "root_trail_q", "root_max_v", 
             "cur_r", "cur_v", "cur_qs_mean", "cur_qs_max"
         ]
-    def dec(x, key):        
+    def dec_k(x, key):        
         if enc_type != 0 and key in nd:
-            return dec(x)
+            return dec(x, f_type)
         else:
             return x
 
@@ -463,7 +469,7 @@ def decode_tree_reps(tree_reps, num_actions, rec_t, enc_type=0):
         tree_reps = tree_reps[0]
 
     d = slice_tree_reps(num_actions, rec_t)
-    return {k: dec(tree_reps[:, v], k) for k, v in d.items()}
+    return {k: dec_k(tree_reps[:, v], k) for k, v in d.items()}
 
 def mask_tree_rep(tree_reps, num_actions, rec_t):
     d = slice_tree_reps(num_actions, rec_t)  

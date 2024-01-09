@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler
 
-from thinker.core.vtrace import compute_v_trace
+from thinker.core.vtrace import compute_v_trace, FifoBuffer
 from thinker.core.file_writer import FileWriter
 from thinker.actor_net import ActorNet
 import thinker.util as util
@@ -18,15 +18,12 @@ from thinker.buffer import RetBuffer
 def compute_baseline_loss(
     baseline,
     target_baseline,
-    norm_stat=None,
     mask=None,
 ):
     target_baseline = target_baseline.detach()
     loss = (target_baseline - baseline)**2
     if mask is not None:
         loss = loss * mask
-    if norm_stat is not None:
-        loss = loss / norm_stat[2]
     return torch.sum(loss)
 
 def compute_baseline_enc_loss(
@@ -40,13 +37,13 @@ def compute_baseline_enc_loss(
     if enc_type == 1:
         baseline_enc = baseline_enc
         target_baseline_enc = rv_tran.encode(target_baseline)
-        loss = (target_baseline_enc - baseline_enc)**2
+        loss = (target_baseline_enc.detach() - baseline_enc)**2
     elif enc_type in [2, 3]:
         target_baseline_enc = rv_tran.encode(target_baseline)
         loss = (
             torch.nn.CrossEntropyLoss(reduction="none")(
                 input=torch.flatten(baseline_enc, 0, 1),
-                target=torch.flatten(target_baseline_enc, 0, 1),
+                target=torch.flatten(target_baseline_enc, 0, 1).detach(),
             )            
         )
         loss = loss.view(baseline_enc.shape[:2])
@@ -109,9 +106,7 @@ class SActorLearner:
             self.flags.total_steps * self.flags.rec_t,
         ) / (self.flags.total_steps * self.flags.rec_t)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
-
-        self.ckp_path = os.path.join(flags.ckpdir, "ckp_actor.tar")
-        if flags.ckp: self.load_checkpoint(self.ckp_path)
+        
 
         # other init. variables for consume_data
         max_actor_id = (
@@ -123,12 +118,22 @@ class SActorLearner:
         if self.flags.cur_cost > 0.:
             self.ret_buffers.append(RetBuffer(max_actor_id, mean_n=400))      
         self.im_discounting = self.flags.discounting ** (1 / self.flags.rec_t)
-        self.num_rewards = 1
-        self.num_rewards += int(flags.im_cost > 0.0)
-        self.num_rewards += int(flags.cur_cost > 0.0)
+
+        self.rewards_ls = ["re"]
+        if flags.im_cost > 0.0:
+            self.rewards_ls += ["im"]
+        if flags.cur_cost > 0.0:
+            self.rewards_ls += ["cur"]
+        self.num_rewards = len(self.rewards_ls)
+
         self.norm_stats = [None,] * self.num_rewards
         self.anneal_c = 1
         self.n = 0
+
+        self.crnorm = None
+
+        self.ckp_path = os.path.join(flags.ckpdir, "ckp_actor.tar")
+        if flags.ckp: self.load_checkpoint(self.ckp_path)
 
         # initialize file logs
         self.plogger = FileWriter(
@@ -155,6 +160,8 @@ class SActorLearner:
     
         if self.flags.float16:
             self.scaler = GradScaler(init_scale=2**8)
+
+        self.root_logits_slice = util.slice_tree_reps(self.actor_net.num_actions, flags.rec_t)["root_logits"]
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
@@ -296,9 +303,12 @@ class SActorLearner:
             for k in print_stats:
                 print_str += " %s %.2f" % (k.replace("actor/", ""), stats[k])
             if self.flags.return_norm_type != -1:
-                print_str += " norm_diff (%.4f/%.4f/%.4f)" % (
+                print_str += " norm_diff %.4f/%.4f" % (
                     stats["actor/norm_diff"],
                     stats.get("actor/im_norm_diff", 0.),
+                )
+            if self.flags.cur_return_norm_type != -1:
+                print_str += " cur_norm_diff %.4f" % (
                     stats.get("actor/cur_norm_diff", 0.),
                 )
 
@@ -341,7 +351,6 @@ class SActorLearner:
 
         # Take final value function slice for bootstrapping.
         bootstrap_value = new_actor_out.baseline[-1]
-
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         train_actor_out = util.tuple_map(train_actor_out, lambda x: x[1:])
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
@@ -360,19 +369,24 @@ class SActorLearner:
             masks.append(None)
         
         log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
+        if not self.flags.parallel_actor:
+            log_rhos = torch.zeros_like(log_rhos)
         for i in range(self.num_rewards):
+            prefix = self.rewards_ls[i]
+            prefix_rewards = rewards[:, :, i]
+            if prefix == "cur":
+                return_norm_type=self.flags.cur_return_norm_type 
+                cur_gate = train_actor_out.cur_gate
+                prefix_rewards, self.crnorm = cur_reward_norm(prefix_rewards, self.crnorm, cur_gate, self.flags)      
+            else:    
+                return_norm_type=self.flags.return_norm_type 
             v_trace = compute_v_trace(
                 log_rhos=log_rhos,
                 discounts=discounts[i],
-                rewards=rewards[:, :, i],
+                rewards=prefix_rewards,
                 values=new_actor_out.baseline[:, :, i],
-                values_enc=new_actor_out.baseline_enc[:, :, i]
-                if new_actor_out.baseline_enc is not None
-                else None,
-                rv_tran=self.actor_net.rv_tran,
-                enc_type=self.flags.critic_enc_type,
                 bootstrap_value=bootstrap_value[:, i],
-                return_norm_type=self.flags.return_norm_type,
+                return_norm_type=return_norm_type,
                 norm_stat=self.norm_stats[i], 
             )
             self.norm_stats[i] = v_trace.norm_stat
@@ -386,7 +400,6 @@ class SActorLearner:
                 baseline_loss = compute_baseline_loss(
                     baseline=new_actor_out.baseline[:, :, i],
                     target_baseline=v_trace.vs,
-                    norm_stat=self.norm_stats[i],
                     mask=masks[i]
                 )
             else:
@@ -448,7 +461,7 @@ class SActorLearner:
         T, B, *_ = train_actor_out.episode_return.shape
 
         # extract episode_returns
-        if torch.any(train_actor_out.real_done):
+        if torch.any(train_actor_out.real_done):            
             episode_returns = train_actor_out.episode_return[train_actor_out.real_done][
                 :, 0
             ]
@@ -465,18 +478,17 @@ class SActorLearner:
         self.ret_buffers[0].insert(episode_returns, done_ids)
         stats = {"rmean_episode_return": self.ret_buffers[0].get_mean()}
 
-        n = 0
         for prefix in ["im", "cur"]:            
             if prefix == "im":
                 done = train_actor_out.step_status == 2
             elif prefix == "cur":
-                done == train_actor_out.real_done
+                done = train_actor_out.real_done
             
-            if getattr(self.flags, "%s_cost" % prefix) > 0.0:
-                n += 1
+            if prefix in self.rewards_ls:            
+                n = self.rewards_ls.index(prefix)
                 self.ret_buffers[n].insert_raw(
                     train_actor_out.episode_return,
-                    ind=1,
+                    ind=n,
                     actor_id=actor_id,
                     done=done,
                 )
@@ -517,16 +529,24 @@ class SActorLearner:
                     stats["actor/"+k] = v.item()
 
         if self.flags.return_norm_type != -1:
+            n = self.rewards_ls.index("re")
             stats["actor/norm_diff"] = (
-                self.norm_stats[0][1] - self.norm_stats[0][0]
+                self.norm_stats[n][1] - self.norm_stats[n][0]
+                ).item()            
+            stats["norm_rmean_episode_return"] = (stats["rmean_episode_return"] / self.norm_stats[n][2]).item()
+            if "im" in self.rewards_ls:
+                n = self.rewards_ls.index("im")
+                stats["actor/im_norm_diff"] = (
+                    self.norm_stats[n][1] - self.norm_stats[n][0]
                 ).item()
-            n = 0
-            for prefix in ["im", "cur"]:
-                if getattr(self.flags, "%s_cost" % prefix) > 0.:
-                    n += 1
-                    stats["actor/%s_norm_diff" % prefix] = (
-                        self.norm_stats[n][1] - self.norm_stats[n][0]
-                    ).item()
+                stats["norm_rmean_im_episode_return"] = (stats["rmean_im_episode_return"] / self.norm_stats[n][2]).item()
+        if self.flags.cur_return_norm_type != -1:
+            if "cur" in self.rewards_ls:
+                n = self.rewards_ls.index("cur")
+                stats["actor/cur_norm_diff"] = (
+                    self.norm_stats[n][1] - self.norm_stats[n][0]
+                ).item()
+                stats["norm_rmean_cur_episode_return"] = (stats["rmean_cur_episode_return"] / self.norm_stats[n][2]).item()
         return stats
 
     def save_checkpoint(self):
@@ -536,9 +556,11 @@ class SActorLearner:
                 "real_step": self.real_step,
                 "tot_eps": self.tot_eps,
                 "ret_buffers": self.ret_buffers,
+                "norm_stats": self.norm_stats,
+                "crnorm": self.crnorm, 
                 "actor_net_optimizer_state_dict": self.optimizer.state_dict(),
                 "actor_net_scheduler_state_dict": self.scheduler.state_dict(),
-                "actor_net_state_dict": self.actor_net.state_dict(),
+                "actor_net_state_dict": self.actor_net.state_dict(),                
                 "flags": vars(self.flags),
             }      
         try:
@@ -553,6 +575,8 @@ class SActorLearner:
         self.real_step = train_checkpoint["real_step"]
         self.tot_eps = train_checkpoint["tot_eps"]
         self.ret_buffers = train_checkpoint["ret_buffers"]
+        self.norm_stats = train_checkpoint["norm_stats"]
+        self.crnorm = train_checkpoint["crnorm"]
         self.optimizer.load_state_dict(
             train_checkpoint["actor_net_optimizer_state_dict"]
         )
@@ -581,3 +605,46 @@ class SActorLearner:
 @ray.remote
 class ActorLearner(SActorLearner):
     pass
+
+def cur_reward_norm(r, crnorm, cur_gate, flags):
+    r = r.clone()
+    nan_mask = ~torch.isnan(r)      
+    if torch.any(cur_gate):                  
+        m_r = r[cur_gate]
+        if flags.cur_reward_adj > 0:
+            m_r = m_r * flags.cur_reward_adj
+        if flags.cur_reward_norm or flags.cur_reward_pri:
+            if flags.cur_norm_type == 0:
+                if crnorm is None: crnorm = (0., 0., 1)
+                cmean, csq, ccounter = crnorm
+                cmean = flags.cur_ema * cmean + (1 - flags.cur_ema) * torch.mean(m_r)
+                csq = flags.cur_ema * csq + (1 - flags.cur_ema) * torch.mean(torch.square(m_r))                                        
+                adj = 1 - flags.cur_ema ** ccounter
+                adj_mean = cmean / adj
+                adj_sq = csq / adj
+                std = torch.sqrt(torch.relu(adj_sq - torch.square(adj_mean)) + 1e-8)
+                if flags.cur_reward_pri:
+                    m_r = m_r - adj_mean
+                if flags.cur_reward_norm: 
+                    m_r = m_r / std
+                cur_reward_min = None if flags.cur_reward_min < -100. else flags.cur_reward_min
+                cur_reward_max = None if flags.cur_reward_max > +100. else flags.cur_reward_max
+                if cur_reward_min is not None or cur_reward_max is not None:
+                    m_r = torch.clamp(m_r, min=cur_reward_min, max=cur_reward_max)
+                ccounter += 1
+                crnorm = (cmean, csq, ccounter)
+            else:
+                if crnorm is None: crnorm = FifoBuffer(flags.cur_reward_bn, device=m_r.device)
+                crnorm.push(m_r)
+                if flags.cur_reward_pri:
+                    mq = crnorm.get_percentile(flags.cur_reward_mq)
+                    m_r = m_r - mq
+                if flags.cur_reward_norm: 
+                    lq = crnorm.get_percentile(flags.cur_reward_lq)
+                    uq = crnorm.get_percentile(flags.cur_reward_uq)
+                    m_r = m_r / torch.clamp(uq - lq, min=1e-8)
+
+        r[cur_gate] = m_r
+    if torch.any(~cur_gate): 
+        r[~cur_gate] = 0.
+    return r, crnorm

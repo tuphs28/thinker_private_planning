@@ -3,7 +3,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from thinker import util
-from thinker.core.module import conv3x3, ResBlock
+from thinker.core.module import conv3x3, ResBlock, MLP
+import math
 
 OutNetOut = namedtuple(
     "OutNetOut",
@@ -13,7 +14,7 @@ OutNetOut = namedtuple(
 )
 SRNetOut = namedtuple(
     "SRNetOut",
-    ["rs", "r_enc_logits", "dones", "done_logits", "xs", "hs", "state"],
+    ["rs", "r_enc_logits", "dones", "done_logits", "xs", "hs", "state", "noise_loss"],
 )
 VPNetOut = namedtuple(
     "VPNetOut",
@@ -22,7 +23,7 @@ VPNetOut = namedtuple(
     ],
 )
 DualNetOut = namedtuple(
-    "DualNetOut", ["rs", "dones", "vs", "logits", "xs", "hs", "zs", "state"]
+    "DualNetOut", ["rs", "dones", "vs", "v_enc_logits", "logits", "xs", "hs", "zs", "state"]
 )
 
 class BaseNet(nn.Module):
@@ -197,7 +198,7 @@ class DynamicModel(nn.Module):
         inplanes,
         size_nn=1,
         outplanes=None,
-        disable_half_grad=False,
+        disable_half_grad=True,
         disable_bn=False,
     ):
         super(DynamicModel, self).__init__()
@@ -234,6 +235,39 @@ class DynamicModel(nn.Module):
         out = self.res(x)
         return out
 
+class NoiseModel(nn.Module):
+    def __init__(
+        self,
+        in_shape,
+        size_nn,
+        noise_n=20,
+        noise_d=10,
+    ):
+        super(NoiseModel, self).__init__()
+        self.in_shape = in_shape
+        self.size_nn = size_nn
+        self.noise_n = noise_n
+        self.noise_d = noise_d
+
+        res = [
+            ResBlock(
+                inplanes=in_shape[0],
+                outplanes=32,
+                disable_bn=True,
+            )
+        ] + [
+            ResBlock(inplanes=32, disable_bn=True)
+            for i in range(4 * self.size_nn)
+        ]
+        self.res = nn.Sequential(*res)
+        self.fc = nn.Linear(32*in_shape[1]*in_shape[2], noise_n*noise_d)
+        self.out_shape = (noise_n, noise_d)
+
+    def forward(self, x):
+        out = self.res(x)
+        out = torch.flatten(out, start_dim=1)
+        out = self.fc(out).view(out.shape[0], self.noise_n, self.noise_d)
+        return out
 
 class OutputNet(nn.Module):
     def __init__(
@@ -242,6 +276,7 @@ class OutputNet(nn.Module):
         input_shape,
         value_clamp,
         enc_type,
+        enc_f_type,
         zero_init,
         size_nn,
         predict_v_pi=True,
@@ -263,7 +298,7 @@ class OutputNet(nn.Module):
 
         c, h, w = input_shape
         if self.enc_type in [2, 3]:
-            self.rv_tran = RVTran(enc_type=enc_type)
+            self.rv_tran = RVTran(enc_type=enc_type, enc_f_type=enc_f_type)
             out_n = self.rv_tran.encoded_n
         else:
             self.rv_tran = None
@@ -359,8 +394,9 @@ class SRNet(nn.Module):
         self.num_actions = num_actions
         self.enc_type = flags.model_enc_type
         self.size_nn = flags.model_size_nn
-        self.downscale_c = flags.model_downscale_c
-        self.frame_stack_n = frame_stack_n
+        self.downscale_c = flags.model_downscale_c        
+        self.noise_enable = flags.noise_enable
+        self.frame_stack_n = frame_stack_n        
         assert self.obs_shape[0] % self.frame_stack_n == 0, \
             f"obs channel {self.obs_shape[0]} should be divisible by frame stacking number {self.frame_stack_n}"        
         self.copy_n = self.obs_shape[0] // self.frame_stack_n
@@ -374,10 +410,13 @@ class SRNet(nn.Module):
         )
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]
+        if self.noise_enable:
+            inplanes += self.flags.noise_n
         self.RNN = DynamicModel(
             num_actions=num_actions,
             inplanes=inplanes,
             size_nn=self.size_nn,
+            outplanes=self.hidden_shape[0], 
             disable_half_grad=True,
             disable_bn=self.flags.model_disable_bn,
         )
@@ -390,6 +429,7 @@ class SRNet(nn.Module):
             input_shape=self.hidden_shape,
             value_clamp=value_clamp,
             enc_type=self.enc_type,
+            enc_f_type=self.flags.model_enc_f_type,
             zero_init=flags.model_zero_init,
             size_nn=self.size_nn,
             predict_v_pi=False,
@@ -399,7 +439,58 @@ class SRNet(nn.Module):
         )
         self.rv_tran = self.out.rv_tran
 
-    def forward(self, x, actions, one_hot=False):
+        if flags.model_sup_loss_cost > 0.:
+            flatten_in_dim = math.prod(self.encoder.out_shape)
+            self.P_1 = torch.nn.Sequential(nn.Linear(flatten_in_dim, 512), 
+                                           nn.BatchNorm1d(512), 
+                                           nn.ReLU(),
+                                           nn.Linear(512, 512), 
+                                           nn.BatchNorm1d(512), 
+                                           nn.ReLU(),
+                                           nn.Linear(512, 1024), 
+                                           nn.BatchNorm1d(1024)
+                                           )
+            self.P_2 = torch.nn.Sequential(
+                nn.Linear(1024, 512), 
+                nn.BatchNorm1d(512), 
+                nn.ReLU(), 
+                nn.Linear(512, 1024)
+                )
+            self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
+        if self.noise_enable:
+            x_shape = self.encoder.out_shape
+            pre_in_shape = list(x_shape)
+            pre_in_shape[0] = x_shape[0] + num_actions
+            self.noise_pre = NoiseModel(
+                in_shape = pre_in_shape,
+                size_nn = 1,
+                noise_n = flags.noise_n,
+                noise_d = flags.noise_d,
+            )
+            post_in_shape = list(x_shape)
+            post_in_shape[0] = 2 * x_shape[0] + num_actions
+            self.noise_post = NoiseModel(
+                in_shape = post_in_shape,
+                size_nn = 1,
+                noise_n = flags.noise_n,
+                noise_d = flags.noise_d,
+            )
+            self.noise_n = flags.noise_n
+            self.noise_d = flags.noise_d
+            self.noise_alpha = flags.noise_alpha
+            self.noise_mlp = flags.noise_mlp
+            if self.noise_mlp:
+                self.noise_mlp_net = MLP(
+                    input_size=self.noise_n*self.noise_d,
+                    layer_sizes=[flags.noise_n*2],
+                    output_size=flags.noise_n,
+                    output_activation=nn.ReLU,
+                    norm=False
+                )
+
+
+    def forward(self, x, actions, one_hot=False, future_xs=None):
         """
         Args:
             x(tensor): frames (float) with shape (B, C, H, W), in the form of s_t
@@ -416,10 +507,30 @@ class SRNet(nn.Module):
             actions = F.one_hot(actions, self.num_actions)
         h = self.encoder(x, actions[0])
         hs = [h.unsqueeze(0)]
+
+        if self.noise_enable and future_xs is not None:
+            assert future_xs.shape[:2] == (k, b)
+            future_enc_xs = self.encoder(torch.flatten(future_xs, 0, 1), torch.flatten(actions[1:], 0, 1))
+            future_enc_xs = future_enc_xs.view((k, b) + future_enc_xs.shape[1:])
+
+        noise_losses = []
+
         for t in range(1, k + 1):
+            if self.noise_enable:
+                if future_xs is not None:
+                    future_enc_x = future_enc_xs[t-1]
+                else:
+                    future_enc_x = None
+                h, noise_loss = self.compute_noise(h, actions[t], future_enc_x)
+                noise_losses.append(noise_loss)
             h = self.RNN(h=h, actions=actions[t])
             hs.append(h.unsqueeze(0))
         hs = torch.concat(hs, dim=0)
+
+        if future_xs is not None and self.noise_enable:
+            noise_loss = torch.stack(noise_losses, dim=0)
+        else:
+            noise_loss = None
 
         state = {"sr_h": h}
         if len(hs) > 1:
@@ -451,9 +562,10 @@ class SRNet(nn.Module):
             xs=xs,
             hs=hs,
             state=state,
+            noise_loss=noise_loss,
         )
 
-    def forward_single(self, action, state, one_hot=False):
+    def forward_single(self, action, state, one_hot=False, future_x=None):
         """
         Single unroll of the network with one action
         Args:
@@ -462,7 +574,14 @@ class SRNet(nn.Module):
         """
         if not one_hot:
             action = F.one_hot(action, self.num_actions)
-        h = self.RNN(h=state["sr_h"], actions=action)
+        h = state["sr_h"]
+        if self.noise_enable:
+            if future_x is not None:
+                future_enc_x = self.encoder(future_x, action)
+            else:
+                future_enc_x = None
+            h, _ = self.compute_noise(h, action, future_enc_x)
+        h = self.RNN(h=h, actions=action)
         x = self.encoder.decode(h, flatten=False)
         if self.frame_stack_n > 1:
             x = torch.concat([state["last_x"], x], dim=1)
@@ -480,7 +599,81 @@ class SRNet(nn.Module):
             xs=util.safe_unsqueeze(x, 0),
             hs=util.safe_unsqueeze(h, 0),
             state=state,
+            noise_loss=None,
         )
+    
+    def supervise_loss(self, hs, xs, actions, is_weights, mask, one_hot=False):
+        """
+        Args:
+            hs(tensor): h from forward with shape (k, B, C, H, W) in the form of h_{t+1}, ..., h_{t+k}
+            xs(tensor): frames (uint8) with shape (k, B, C, H, W), in the form of s_{t+1}, ..., s{t+k}
+            actions(tensor): action (int64) with shape (k, B), in the form of a_{t}, a_{t}, a_{t+1}, .. a_{t+k}
+            is_weights(tensor): importance weight with shape (B) for each sample;  
+            mask(tensor): mask (float) with shape (k, B)            
+        Return:
+            loss(tensor): scalar self-supervised loss
+        """
+        k, b, *_ = hs.shape
+        if not one_hot:
+            actions = F.one_hot(actions, self.num_actions)        
+
+        hs = torch.flatten(hs, 0, 1)
+        hs = torch.flatten(hs, 1)
+        src = self.P_2(self.P_1(hs))
+        with torch.no_grad():
+            xs = torch.flatten(xs, 0, 1)
+            actions = torch.flatten(actions, 0, 1)
+            tgt_hs = self.encoder(xs, actions)            
+            tgt_hs = torch.flatten(tgt_hs, 1)
+            tgt = self.P_1(tgt_hs)
+        
+        loss = 1 - self.cos(src, tgt.detach())
+        loss = loss.view(k, b)
+        if mask is not None: loss = loss * mask
+        loss = torch.sum(loss, dim=0)
+        if is_weights is not None: loss = loss * is_weights
+        return loss
+    
+    def compute_noise(self, h, action, future_enc_x = None):   
+        b = h.shape[0]   
+        a = (
+            action.unsqueeze(-1).unsqueeze(-1).tile([1, 1, h.shape[2], h.shape[3]])
+        )
+        noise_pre_in = torch.concat([h, a], dim=1)
+        noise_pre_logit = self.noise_pre(noise_pre_in)
+        
+        if future_enc_x is not None:
+            # training mode
+            noise_post_in = torch.concat([noise_pre_in, future_enc_x], dim=1) 
+            noise_post_logit = self.noise_post(noise_post_in)
+            noise_logit = noise_post_logit
+        else:
+            # inference mode
+            noise_post_logit = None
+            noise_logit = noise_pre_logit
+
+        noise_p = F.softmax(noise_logit, dim=-1)
+        noise = torch.multinomial(noise_p.view(b*self.noise_n, self.noise_d), num_samples=1).view(b, self.noise_n)
+        noise = F.one_hot(noise, num_classes=self.noise_d)
+        noise = noise.detach() + noise_p - noise_p.detach()
+        if not self.noise_mlp:
+            noise = torch.sum(noise * torch.arange(self.noise_d, device=noise.device).float(), dim=-1) / self.noise_d
+        else:
+            noise = self.noise_mlp_net(noise.view(b, self.noise_n*self.noise_d))
+        noise =  (
+            noise.unsqueeze(-1).unsqueeze(-1).tile([1, 1, h.shape[2], h.shape[3]])
+        )
+        h = torch.concat([h, noise], dim=1)
+        
+        if future_enc_x is not None:
+            log_pre = F.log_softmax(noise_pre_logit, dim=-1)
+            log_post = F.log_softmax(noise_post_logit, dim=-1)
+            noise_loss = self.noise_alpha * torch.sum(F.kl_div(log_post.detach(), log_pre, reduction='none', log_target=True), dim=(-1, -2))
+            noise_loss += (1 - self.noise_alpha) * torch.sum(F.kl_div(log_post, log_pre.detach(), reduction='none', log_target=True), dim=(-1, -2))
+        else:
+            noise_loss = None
+        
+        return h, noise_loss
 
 class VPNet(nn.Module):
     def __init__(self, obs_shape, num_actions, flags):
@@ -532,6 +725,7 @@ class VPNet(nn.Module):
             input_shape=self.hidden_shape,
             value_clamp=value_clamp,
             enc_type=self.enc_type,
+            enc_f_type=self.flags.model_enc_f_type,
             zero_init=flags.model_zero_init,
             size_nn=self.size_nn,
             predict_v_pi=True,
@@ -705,7 +899,7 @@ class ModelNet(BaseNet):
         x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
         return x.to(torch.uint8)
 
-    def forward(self, x, actions, one_hot=False, normalize=True, ret_xs=False, ret_zs=False, ret_hs=False):
+    def forward(self, x, actions, one_hot=False, normalize=True, ret_xs=False, ret_zs=False, ret_hs=False, future_xs=None):
         """
         Args:
             x(tensor): starting frame (uint if normalize else float) with shape (B, C, H, W)
@@ -736,7 +930,7 @@ class ModelNet(BaseNet):
             assert x.dtype == torch.float
 
         if self.dual_net:
-            sr_net_out = self.sr_net(x, actions, one_hot=one_hot)
+            sr_net_out = self.sr_net(x, actions, one_hot=one_hot, future_xs=future_xs)
             if sr_net_out.xs is not None:
                 xs = torch.concat([x.unsqueeze(0), sr_net_out.xs], dim=0)
             else:
@@ -749,7 +943,7 @@ class ModelNet(BaseNet):
         state.update(vp_net_out.state)
         return self._prepare_out(sr_net_out, vp_net_out, ret_hs, ret_xs, ret_zs, state, xs)
 
-    def forward_single(self, state, action, one_hot=False, ret_xs=False, ret_zs=False, ret_hs=False):
+    def forward_single(self, state, action, one_hot=False, ret_xs=False, ret_zs=False, ret_hs=False, future_x=None):
         """
         One-step transition from z_t, h_t, a_t to predicted z_{t+1}, h_{t+1}, r_{t+1}, v_{t+1}, pi_{t+1}
         Args:
@@ -760,7 +954,7 @@ class ModelNet(BaseNet):
         state_ = {}
         if self.dual_net:
             sr_net_out = self.sr_net.forward_single(
-                action=action, state=state, one_hot=one_hot
+                action=action, state=state, one_hot=one_hot, future_x=future_x
             )
             xs = sr_net_out.xs 
             x = xs[0]
@@ -788,30 +982,45 @@ class ModelNet(BaseNet):
             rs=rd_out.rs,
             dones=rd_out.dones,
             vs=vp_net_out.vs,
+            v_enc_logits=vp_net_out.v_enc_logits,
             logits=vp_net_out.logits,
             xs=xs,
             hs=hs,
             zs=zs,
             state=state,
         )
+    
+    def compute_vs_loss(self, vs, v_enc_logits, target_vs):
+        k, b = target_vs.shape
+        if self.enc_type == 0:
+            vs_loss = (vs[:k] - target_vs.detach()) ** 2
+        else:
+            target_vs_enc_v = self.vp_net.rv_tran.encode(target_vs)
+            vs_loss = torch.nn.CrossEntropyLoss(reduction="none")(
+                input=torch.flatten(v_enc_logits[:k], 0, 1),
+                target=torch.flatten(target_vs_enc_v.detach(), 0, 1),
+            )
+            vs_loss = vs_loss.view(k, b)
+        return vs_loss
 
 class RVTran(nn.Module):
-    def __init__(self, enc_type, support=300, eps=0.001):
+    def __init__(self, enc_type, enc_f_type=0, eps=0.001):
         super(RVTran, self).__init__()
         assert enc_type in [
             1,
             2,
             3,
         ], f"only enc_type [1, 2, 3] is supported, not {enc_type}"
-        self.support = support
+        self.enc_f_type = enc_f_type # 0 for MuZero encoding, 1 for Dreamer (symexp)
+        self.support = 300 if self.enc_f_type == 0 else 20
         self.eps = eps
         self.enc_type = enc_type
         if self.enc_type == 2:
-            atom_vector = self.decode_s(torch.arange(-support, support + 1, 1).float())
+            atom_vector = self.decode_s(torch.arange(-self.support, self.support + 1, 1).float())
             self.register_buffer("atom_vector", atom_vector)
             self.encoded_n = 2 * self.support + 1
         elif self.enc_type == 3:
-            atom_vector = torch.arange(-support, support + 1, 1)
+            atom_vector = torch.arange(-self.support, self.support + 1, 1)
             self.register_buffer("atom_vector", atom_vector)
             self.encoded_n = 2 * self.support + 1
 
@@ -821,53 +1030,40 @@ class RVTran(nn.Module):
             if self.enc_type == 1:
                 enc = self.encode_s(x)
             elif self.enc_type == 2:
-                x = torch.clamp(x, self.atom_vector[0], self.atom_vector[-1])
-                # Find the indices of the atoms that are greater than or equal to the elements in x
-                gt_indices = (self.atom_vector.unsqueeze(0) < x.unsqueeze(-1)).sum(
-                    dim=-1
-                ) - 1
-                gt_indices = torch.clamp(gt_indices, 0, len(self.atom_vector) - 2)
-
-                # Calculate the lower and upper atom bounds for each element in x
-                lower_bounds = self.atom_vector[gt_indices]
-                upper_bounds = self.atom_vector[gt_indices + 1]
-
-                # Calculate the density between the lower and upper atom bounds
-                lower_density = (upper_bounds - x) / (upper_bounds - lower_bounds)
-                upper_density = 1 - lower_density
-
-                # Create a zero tensor of shape (3, 4)
-                enc = torch.zeros(
-                    x.shape + (len(self.atom_vector),),
-                    dtype=torch.float32,
-                    device=x.device,
-                )
-
-                # Use scatter to add the densities to the proper columns
-                enc.scatter_(-1, gt_indices.unsqueeze(-1), lower_density.unsqueeze(-1))
-                enc.scatter_(
-                    -1, (gt_indices + 1).unsqueeze(-1), upper_density.unsqueeze(-1)
-                )
+                enc = self.vector_enc(x)
             elif self.enc_type == 3:
                 enc_s = self.encode_s(x)
-                enc_s = torch.clamp(enc_s, -self.support, +self.support)
-                enc = torch.zeros(
-                    x.shape + (len(self.atom_vector),),
-                    dtype=torch.float32,
-                    device=x.device,
-                )
-                enc_floor = torch.floor(enc_s)
-                enc_reminder = enc_s - enc_floor
-                enc_floor = enc_floor.long().unsqueeze(-1)
-                enc.scatter_(
-                    -1,
-                    torch.clamp_max(self.support + enc_floor + 1, 2 * self.support),
-                    enc_reminder.unsqueeze(-1),
-                )
-                enc.scatter_(
-                    -1, self.support + enc_floor, 1 - enc_reminder.unsqueeze(-1)
-                )
+                enc = self.vector_enc(enc_s)
             return enc
+        
+    def vector_enc(self, x):
+        x = torch.clamp(x, self.atom_vector[0], self.atom_vector[-1])
+        # Find the indices of the atoms that are greater than or equal to the elements in x
+        gt_indices = (self.atom_vector.unsqueeze(0) < x.unsqueeze(-1)).sum(
+            dim=-1
+        ) - 1
+        gt_indices = torch.clamp(gt_indices, 0, len(self.atom_vector) - 2)
+
+        # Calculate the lower and upper atom bounds for each element in x
+        lower_bounds = self.atom_vector[gt_indices]
+        upper_bounds = self.atom_vector[gt_indices + 1]
+
+        # Calculate the density between the lower and upper atom bounds
+        lower_density = (upper_bounds - x) / (upper_bounds - lower_bounds)
+        upper_density = 1 - lower_density
+
+        enc = torch.zeros(
+            x.shape + (len(self.atom_vector),),
+            dtype=torch.float32,
+            device=x.device,
+        )
+
+        # Use scatter to add the densities to the proper columns
+        enc.scatter_(-1, gt_indices.unsqueeze(-1), lower_density.unsqueeze(-1))
+        enc.scatter_(
+            -1, (gt_indices + 1).unsqueeze(-1), upper_density.unsqueeze(-1)
+        )
+        return enc
 
     def encode(self, x):
         return self.forward(x)
@@ -884,13 +1080,19 @@ class RVTran(nn.Module):
             return dec
 
     def encode_s(self, x):
-        return torch.sign(x) * (torch.sqrt(torch.abs(x) + 1) - 1) + self.eps * x
+        if self.enc_f_type == 0:
+            return torch.sign(x) * (torch.sqrt(torch.abs(x) + 1) - 1) + self.eps * x
+        else:
+            return torch.sign(x) * torch.log(torch.abs(x) + 1)
 
     def decode_s(self, x):
-        return torch.sign(x) * (
-            torch.square(
-                (torch.sqrt(1 + 4 * self.eps * (torch.abs(x) + 1 + self.eps)) - 1)
-                / (2 * self.eps)
+        if self.enc_f_type == 0:
+            return torch.sign(x) * (
+                torch.square(
+                    (torch.sqrt(1 + 4 * self.eps * (torch.abs(x) + 1 + self.eps)) - 1)
+                    / (2 * self.eps)
+                )
+                - 1
             )
-            - 1
-        )
+        else:
+            return torch.sign(x) * (torch.exp(torch.abs(x)) - 1)
