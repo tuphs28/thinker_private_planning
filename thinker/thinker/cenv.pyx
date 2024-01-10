@@ -3,6 +3,7 @@ import numpy as np
 import gym
 from gym import spaces
 import torch
+import torch.nn.functional as F
 import thinker.util as util
 
 import cython
@@ -159,12 +160,22 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector
         node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type):
-    cdef float[:] result = np.zeros((pnode[0].num_actions*5+6) if detailed else (pnode[0].num_actions*5+3), dtype=np.float32) 
-    cdef int i
+cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type, int raw_num_actions=0):
+    cdef int i, j, base_ind
+    cdef float[:] result
+    cdef int obs_n
+    obs_n = pnode[0].num_actions*5+3
+    if detailed:
+        obs_n += 3
 
+    if raw_num_actions > 0:
+        encoded = <dict> pnode[0].encoded
+        obs_n += len(encoded["sampled_action"]) * raw_num_actions
+
+    result = np.zeros(obs_n , dtype=np.float32)    
     pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
     if mask_type == 3: return result
+
     result[pnode[0].action] = 1. # action
     if enc_type == 0:
         f = lambda x : x  
@@ -186,11 +197,17 @@ cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type
             if not mask_type in [3, 4]:
                 result[pnode[0].num_actions*3+3+i] = f(maximum(child.prollout_qs[0])) # child_rollout_qs_max
             result[pnode[0].num_actions*4+3+i] = child.rollout_n / <float>pnode[0].rec_t # child_rollout_ns_enc
+    base_ind = pnode[0].num_actions*5+3
     
     if detailed and not mask_type in [1, 2, 4]:        
         result[pnode[0].num_actions*5+3] = f((pnode[0].trail_r - pnode[0].r) / pnode[0].discounting)
         result[pnode[0].num_actions*5+4] = f((pnode[0].rollout_q - pnode[0].r) / pnode[0].discounting)
         result[pnode[0].num_actions*5+5] = f(pnode[0].max_q)
+        base_ind += 3
+
+    if raw_num_actions > 0:
+        for i, j in enumerate(encoded["sampled_action"]):
+            result[base_ind + raw_num_actions*i + j] = 1        
     return result
 
 cdef node_del(Node* pnode, int except_idx):
@@ -250,6 +267,12 @@ cdef class cWrapper():
     cdef int obs_n    
     cdef int env_n
     
+    cdef bool sample
+    cdef int sample_n         
+    cdef float sample_temp   
+    cdef bool sample_replace
+    cdef int raw_num_actions
+
     cdef bool return_h
     cdef bool return_x
     cdef bool return_double
@@ -274,6 +297,7 @@ cdef class cWrapper():
     cdef object env
     cdef object timings
     cdef object real_states
+    cdef object sampled_action
     cdef object baseline_mean_q    
 
     cdef readonly object observation_space
@@ -322,12 +346,24 @@ cdef class cWrapper():
         self.tree_carry = flags.tree_carry
         self.reset_mode = flags.reset_mode
 
+        self.sample_n = flags.sample_n
+        self.sample = flags.sample_n > 0
+        self.sample_temp = flags.sample_temp
+        self.sample_replace = flags.sample_replace
+
         self.enc_type = flags.model_enc_type
         self.enc_f_type = flags.model_enc_f_type
-        self.pred_done = flags.model_done_loss_cost > 0.        
-        self.num_actions = env.action_space[0].n
-        self.obs_n = 11 + self.num_actions * (10 + self.max_depth) + self.rep_rec_t
+        self.pred_done = flags.model_done_loss_cost > 0.     
+        if not self.sample:        
+            self.num_actions = env.action_space[0].n    
+            self.raw_num_actions = 0
+        else:            
+            self.num_actions = self.sample_n
+            self.raw_num_actions = env.action_space[0].n
+        self.obs_n = 9 + self.num_actions * 10 + self.rep_rec_t
+        if self.sample: self.obs_n += self.raw_num_actions * self.sample_n * 2
         if self.reset_mode == 0: self.obs_n += self.num_actions
+        self.env_n = env_n
 
         self.env_n = env_n
         self.return_h = flags.return_h  
@@ -408,10 +444,13 @@ cdef class cWrapper():
         idx1 = self.num_actions*5+6
         idx2 = self.num_actions*10+9
         idx3 = self.num_actions*10+11+self.rep_rec_t        
+        if self.sample:
+            idx1 += self.sample_n * self.raw_num_actions
+            idx2 += 2 * self.sample_n * self.raw_num_actions
         result = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type)    
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
             # reset
             if reset is None or status[i] == 1:
                 result[i, idx2] = 1.
@@ -455,6 +494,8 @@ cdef class cWrapper():
 
         if status is None or np.any(np.array(status)==1):
             self.real_states = self.compute_model_out(self.root_nodes, "real_states")
+            if self.sample:
+                self.sampled_action = self.compute_model_out(self.root_nodes, "sampled_action")
 
         states = {
             "tree_reps": tree_reps,
@@ -477,7 +518,32 @@ cdef class cWrapper():
             assert hs is not None, "hs cannot be None"
             states["hs"] = hs
 
+        if self.sample:
+            states["sampled_action"] = self.sampled_action
+
         return states    
+
+    def sample_from_dist(self, logits):
+        """sample from logits;
+        args:
+            logits: tensor of shape (env_n, raw_num_actions)
+        return:
+            sampled_action: sample_n actions sampled from logits; shape is (env_n, sample_n)
+            sampled_logits: the logit corresponds to each of the sampled action; shape is (env_n, sample_n)
+        """
+        B, N = logits.shape
+        sampled_action = torch.multinomial(
+            F.softmax(logits / self.sample_temp, dim=-1), 
+            num_samples=self.sample_n,
+            replacement=self.sample_replace
+        ) 
+        flat_indices = torch.arange(B, device=logits.device).unsqueeze(-1) * N + sampled_action
+        flat_indices = flat_indices.flatten()
+        # Flatten logits and gather using flat_indices
+        sampled_logits_flat = logits.flatten()[flat_indices]
+        # Reshape to get the final shape of (B, self.sample_n)
+        sampled_logits = sampled_logits_flat.view(B, self.sample_n)
+        return sampled_action, sampled_logits
 
     def close(self):
         cdef int i
@@ -532,7 +598,9 @@ cdef class cModelWrapper(cWrapper):
                                       ret_zs=False,
                                       ret_hs=self.return_h)  
             vs = model_net_out.vs.cpu()
-            logits = model_net_out.logits.cpu()      
+            logits = model_net_out.logits[-1]    
+            if self.sample: sampled_action, logits = self.sample_from_dist(logits)
+            logits = logits.cpu().numpy()
 
             # compute and update root node and current node
             for i in range(self.env_n):
@@ -543,8 +611,9 @@ cdef class cModelWrapper(cWrapper):
                            "hs": model_net_out.hs[-1, i] if model_net_out.hs is not None else None,
                            "model_states": dict({sk:sv[[i]] for sk, sv in model_net_out.state.items()})
                           }  
+                if self.sample: encoded["sampled_action"] = sampled_action[i]
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), t=self.total_step[i], done=False,
-                    logits=logits[-1, i].numpy(), encoded=<PyObject*>encoded, override=False)
+                    logits=logits[i], encoded=<PyObject*>encoded, override=False)
                 node_visit(pnode=root_node)
                 self.root_nodes.push_back(root_node)
                 self.cur_nodes.push_back(root_node)
@@ -638,8 +707,11 @@ cdef class cModelWrapper(cWrapper):
                 else:
                     encoded = <dict> self.cur_nodes[i][0].encoded
                     pass_model_states.append(encoded["model_states"])
-                    pass_model_action.push_back(im_action[i])
-                    self.status[i] = 4 # need expand status
+                    if not self.sample:
+                        pass_model_action.push_back(im_action[i])
+                    else:
+                        pass_model_action.push_back(encoded["sampled_action"][im_action[i]])
+                    self.status[i] = 4  
             else: # real step
                 self.cur_t[i] = 0
                 self.rollout_depth[i] = 0          
@@ -651,7 +723,10 @@ cdef class cModelWrapper(cWrapper):
                 encoded = <dict> self.root_nodes[i][0].encoded
                 pass_re_model_states.append(encoded["model_states"])
                 pass_inds_restore.push_back(i)
-                pass_action.push_back(re_action[i])                
+                if not self.sample:
+                    pass_action.push_back(re_action[i])                
+                else:
+                    pass_action.push_back(encoded["sampled_action"][re_action[i]])                        
                 pass_inds_step.push_back(i)
                 self.status[i] = 1        
         if self.time: self.timings.time("misc_1")
@@ -759,7 +834,9 @@ cdef class cModelWrapper(cWrapper):
                     cur_reward = cur_reward.float().cpu().numpy()   
                     
             vs_1 = model_net_out_1.vs[-1].float().cpu().numpy()
-            logits_1 = model_net_out_1.logits[-1].float().cpu().numpy()
+            logits_1_ = model_net_out_1.logits[-1].float()
+            if self.sample: sampled_action_1, logits_1_ = self.sample_from_dist(logits_1_)            
+            logits_1 = logits_1_.cpu().numpy()
                 
         if self.time: self.timings.time("misc_2")
         # use model for status 4 transition (imagination transition)
@@ -778,7 +855,9 @@ cdef class cModelWrapper(cWrapper):
                     ret_hs=self.return_h)  
             rs_4 = model_net_out_4.rs[-1].float().cpu().numpy()
             vs_4 = model_net_out_4.vs[-1].float().cpu().numpy()
-            logits_4 = model_net_out_4.logits[-1].float().cpu().numpy()
+            logits_4_ = model_net_out_4.logits[-1].float()
+            if self.sample: sampled_action_4, logits_4_ = self.sample_from_dist(logits_4_)
+            logits_4 = logits_4_.cpu().numpy()
             if self.pred_done:
                 done_4 = model_net_out_4.dones[-1].bool().cpu().numpy()
 
@@ -795,7 +874,8 @@ cdef class cModelWrapper(cWrapper):
                            "xs": model_net_out_1.xs[-1, j] if self.return_x else None,
                            "hs": model_net_out_1.hs[-1, j] if self.return_h else None,
                            "model_states": dict({sk:sv[[j]] for sk, sv in model_net_out_1.state.items()})
-                          }         
+                          } 
+                if self.sample: encoded["sampled_action"] = sampled_action_1[j]        
                 if new_root:
                     root_node = node_new(pparent=NULL, action=pass_action[j], logit=0., num_actions=self.num_actions, 
                         discounting=self.discounting, rec_t=self.rec_t, remember_path=True)                    
@@ -839,6 +919,7 @@ cdef class cModelWrapper(cWrapper):
                            "hs": model_net_out_4.hs[-1, l] if self.return_h else None,
                            "model_states": dict({sk:sv[[l]] for sk, sv in model_net_out_4.state.items()})
                            }
+                if self.sample: encoded["sampled_action"] = sampled_action_4[l]
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
                 if self.pred_done:
                     v_in = vs_4[l] if not done_4[l] else 0.
@@ -945,6 +1026,7 @@ cdef class cModelWrapper(cWrapper):
         if self.cur_enable:
             info["cur_reward"] = torch.tensor(self.full_cur_reward, dtype=torch.float, device=self.device)
             info["cur_gate"] = torch.tensor(self.full_cur_gate, dtype=torch.bool, device=self.device)
+            if self.sample: info["sampled_action"] = self.sampled_action
         if self.time: self.timings.time("end")
 
         return (states, 

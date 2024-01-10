@@ -25,6 +25,9 @@ def process_flags(flags):
         flags.return_h = False
         flags.return_double = False
 
+    if flags.sample_n > 0:
+        assert flags.wrapper_type == 0, "sampled-based mode only supported on wrapper_type 0"
+
     if flags.wrapper_type == 2:
         flags.dual_net = False
         flags.cur_enable = False

@@ -113,6 +113,7 @@ class Env(gym.Wrapper):
         self.has_model = self.flags.wrapper_type != 1
         self.train_model = self.has_model and self.flags.train_model 
         self.require_prob = False
+        self.sample = self.flags.sample_n > 0
         if self.has_model:
             model_param = {
                 "obs_space": self.real_state_space,
@@ -277,11 +278,6 @@ class Env(gym.Wrapper):
     
     def _write_single_model_buffer(self, n, t, state, reward, done, info,
                                   action, action_prob):
-        
-        if not torch.is_tensor(action):
-            action = torch.tensor(action, device=self.device)
-        if action_prob is not None and not torch.is_tensor(action_prob):
-            action_prob = torch.tensor(action_prob, device=self.device)
 
         if self.frame_stack_n <= 1:
             self.model_local_buffer[n].real_state[t] = state["real_states"]
@@ -306,6 +302,14 @@ class Env(gym.Wrapper):
             self.flags.model_return_n,
             self.frame_stack_n - 1
         )
+        if not torch.is_tensor(action):
+            action = torch.tensor(action, device=self.device)
+        if action_prob is not None and not torch.is_tensor(action_prob):
+            action_prob = torch.tensor(action_prob, device=self.device)
+
+        if self.sample:
+            action, action_prob = self.to_raw_action(self.sampled_action, action, action_prob)
+
         self._write_single_model_buffer(n, t, state, reward, done, info, action, action_prob)
 
         if t >= pf + cap_t:
@@ -336,6 +340,7 @@ class Env(gym.Wrapper):
 
     def reset(self):
         state = self.env.reset(self.model_net)
+        if self.sample: self.sampled_action = state["sampled_action"]
         return state
 
     def step(self, primary_action, reset_action=None, action_prob=None, ignore=False):        
@@ -350,13 +355,18 @@ class Env(gym.Wrapper):
             action = (primary_action, reset_action)            
                 
         if self.require_prob and not ignore: 
-            assert action_prob is not None and action_prob.shape == (self.env_n, self.num_actions), \
-                    f"action_prob should have shape f{(self.env_n, self.num_actions)}"
+            if not self.sample:
+                action_prob_shape =  (self.env_n, self.num_actions)
+            else:
+                action_prob_shape =  (self.env_n, self.flags.sample_n)
+            assert action_prob is not None and action_prob.shape == action_prob_shape, \
+                    f"action_prob should have shape f{action_prob_shape}"
         
         with torch.set_grad_enabled(False):
-            state, reward, done, info = self.env.step(action, self.model_net)        
+            state, reward, done, info = self.env.step(action, self.model_net)  
         if self.train_model and info["step_status"][0] == 0 and not ignore: # assume all transition in same step within a stage
             self._write_send_model_buffer(state, reward, done, info, primary_action, action_prob)        
+        if self.sample: self.sampled_action = state["sampled_action"] # should refresh sampled_action only after sending model buffer
         if self.train_model:
             if self.parallel:
                 if self.counter % 200 == 0: self.status = self._refresh_wait()     
@@ -370,6 +380,20 @@ class Env(gym.Wrapper):
         self.counter += 1
         return state, reward, done, info       
     
+    def to_raw_action(self, sampled_raw_action, action, action_prob):
+        B, N = sampled_raw_action.shape
+        # Get the selected raw action for each batch instance
+        raw_action = sampled_raw_action[torch.arange(B, device=self.device), action]
+        if action_prob is not None:
+            # Compute the probability of selecting each raw action
+            raw_action_prob = torch.zeros(B, self.num_actions, device=self.device)
+            for n in range(self.num_actions):
+                mask = (sampled_raw_action == n).float()  # Create a mask where the raw action is n
+                raw_action_prob[:, n] = torch.sum(mask * action_prob, dim=1)
+        else:
+            raw_action_prob = None
+        return raw_action, raw_action_prob
+
     def _refresh_wait(self):
         status = self._update_status()
         if status["running"]: self._refresh_net()

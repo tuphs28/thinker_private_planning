@@ -46,6 +46,10 @@ return_h: true # whether to return model's hidden state
 return_x: false # whether to return the model's predicted state
 return_double: false # whether to return both root node and current node's h / raw_s
 grayscale: false # whether to apply grayscale for atari
+# sampled-based search
+sample_n: -1 # number of sampled action; <0 for disabling sample mode
+sample_temp: 4 # whether to use sampled action in imagination
+sample_replace: false # whether to allow replacement when sampling 
 # reward-related
 discounting: 0.97 # discount rate of the raw MDP
 reward_clip: -1 # reward clipping; if positve, the reward is clipped within the absolute value of this values; set to negative number for no clipping
