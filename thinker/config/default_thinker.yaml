@@ -46,6 +46,7 @@ return_h: true # whether to return model's hidden state
 return_x: false # whether to return the model's predicted state
 return_double: false # whether to return both root node and current node's h / raw_s
 grayscale: false # whether to apply grayscale for atari
+has_action_seq: true # whether tree rep contains action sequence
 # sampled-based search
 sample_n: -1 # number of sampled action; <0 for disabling sample mode
 sample_temp: 4 # whether to use sampled action in imagination

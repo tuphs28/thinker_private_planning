@@ -276,6 +276,7 @@ cdef class cWrapper():
     cdef bool return_h
     cdef bool return_x
     cdef bool return_double
+    cdef bool has_action_seq
 
     cdef bool im_enable
     cdef bool cur_enable
@@ -349,7 +350,8 @@ cdef class cWrapper():
         self.sample_n = flags.sample_n
         self.sample = flags.sample_n > 0
         self.sample_temp = flags.sample_temp
-        self.sample_replace = flags.sample_replace
+        self.sample_replace = flags.sample_replace        
+        self.has_action_seq = flags.has_action_seq
 
         self.enc_type = flags.model_enc_type
         self.enc_f_type = flags.model_enc_f_type
@@ -360,9 +362,13 @@ cdef class cWrapper():
         else:            
             self.num_actions = self.sample_n
             self.raw_num_actions = env.action_space[0].n
-        self.obs_n = 9 + self.num_actions * 10 + self.rep_rec_t
+        self.obs_n = 11 + self.num_actions * 10 + self.rep_rec_t
         if self.sample: self.obs_n += self.raw_num_actions * self.sample_n * 2
-        if self.reset_mode == 0: self.obs_n += self.num_actions
+        if self.has_action_seq: 
+            self.obs_n += self.max_depth * self.num_actions
+            if self.reset_mode == 0:
+                self.obs_n += self.num_actions
+
         self.env_n = env_n
 
         self.env_n = env_n
@@ -447,6 +453,7 @@ cdef class cWrapper():
         if self.sample:
             idx1 += self.sample_n * self.raw_num_actions
             idx2 += 2 * self.sample_n * self.raw_num_actions
+            idx3 += 2 * self.sample_n * self.raw_num_actions
         result = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         for i in range(self.env_n):
             result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
@@ -462,10 +469,11 @@ cdef class cWrapper():
             # deprec
             result[i, idx2+self.rep_rec_t+1] = (self.discounting ** (self.rollout_depth[i]))     
             # action sequence
-            node = self.cur_nodes[i]            
-            for j in range(self.rollout_depth[i] + 1):                
-                result[i, idx3+(self.rollout_depth[i] - j)*self.num_actions+node[0].action] = 1.
-                node = node[0].pparent
+            if self.has_action_seq:
+                node = self.cur_nodes[i]            
+                for j in range(self.rollout_depth[i] + 1):               
+                    result[i, idx3+(self.rollout_depth[i] - j)*self.num_actions+node[0].action] = 1.
+                    node = node[0].pparent
 
         return result
 
