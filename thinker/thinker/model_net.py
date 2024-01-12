@@ -49,7 +49,7 @@ class BaseNet(nn.Module):
 class FrameEncoder(nn.Module):
     def __init__(
         self,
-        num_actions,
+        actions_ch,
         input_shape,
         size_nn=1,
         downscale_c=2,
@@ -59,16 +59,17 @@ class FrameEncoder(nn.Module):
         disable_bn=False,
     ):
         super(FrameEncoder, self).__init__()
-        self.num_actions = num_actions
+        self.actions_ch = actions_ch
         self.size_nn = size_nn
         self.downscale_c = downscale_c
         self.decoder = decoder
-        self.frame_stack_n = frame_stack_n
-        frame_channels, h, w = input_shape
+        self.frame_stack_n = frame_stack_n        
+        self.input_shape = input_shape        
         self.concat_action = concat_action
 
+        frame_channels, h, w = input_shape
         if self.concat_action:
-            in_channels = frame_channels + num_actions
+            in_channels = frame_channels + actions_ch
         else:
             in_channels = frame_channels
 
@@ -187,14 +188,16 @@ class FrameEncoder(nn.Module):
             input_shape = z.shape
             z = z.view((z.shape[0] * z.shape[1],) + z.shape[2:])
         x = self.d_conv(z)
+        if x.shape[2] > self.input_shape[1]: x = x[:, :, :self.input_shape[1]]
+        if x.shape[3] > self.input_shape[2]: x = x[:, :, :, :self.input_shape[2]]
         if flatten:
-            x = x.view(input_shape[:2] + x.shape[1:])
+            x = x.view(input_shape[:2] + x.shape[1:])        
         return x
 
 class DynamicModel(nn.Module):
     def __init__(
         self,
-        num_actions,
+        actions_ch,
         inplanes,
         size_nn=1,
         outplanes=None,
@@ -202,7 +205,7 @@ class DynamicModel(nn.Module):
         disable_bn=False,
     ):
         super(DynamicModel, self).__init__()
-        self.num_actions = num_actions
+        self.actions_ch = actions_ch
         self.inplanes = inplanes
         self.size_nn = size_nn
         self.disable_half_grad = disable_half_grad
@@ -211,7 +214,7 @@ class DynamicModel(nn.Module):
 
         res = [
             ResBlock(
-                inplanes=inplanes + num_actions,
+                inplanes=inplanes + actions_ch,
                 outplanes=outplanes,
                 disable_bn=disable_bn,
             )
@@ -273,6 +276,7 @@ class OutputNet(nn.Module):
     def __init__(
         self,
         num_actions,
+        dim_actions,
         input_shape,
         value_clamp,
         enc_type,
@@ -286,6 +290,8 @@ class OutputNet(nn.Module):
     ):
         super(OutputNet, self).__init__()
 
+        self.num_actions = num_actions
+        self.dim_actions = dim_actions
         self.input_shape = input_shape
         self.size_nn = size_nn
         self.value_clamp = value_clamp
@@ -315,7 +321,7 @@ class OutputNet(nn.Module):
         fc_in = h * w * (c // 4)
 
         if predict_v_pi:
-            self.fc_logits = nn.Linear(fc_in, num_actions)
+            self.fc_logits = nn.Linear(fc_in, num_actions*dim_actions)
             self.fc_v = nn.Linear(fc_in, out_n)
             if zero_init:
                 nn.init.constant_(self.fc_v.weight, 0.0)
@@ -345,6 +351,7 @@ class OutputNet(nn.Module):
 
         if self.predict_v_pi:
             logits = self.fc_logits(x_logits)
+            logits = logits.view(b, self.dim_actions, self.num_actions)
             if self.enc_type in [2, 3]:
                 v_enc_logit = self.fc_v(x_v)
                 v_enc_v = F.softmax(v_enc_logit, dim=-1)
@@ -387,11 +394,13 @@ class OutputNet(nn.Module):
         return out
 
 class SRNet(nn.Module):
-    def __init__(self, obs_shape, num_actions, flags, frame_stack_n=1):
+    def __init__(self, obs_shape, num_actions, dim_actions, flags, frame_stack_n=1):
         super(SRNet, self).__init__()
         self.flags = flags
         self.obs_shape = obs_shape
         self.num_actions = num_actions
+        self.dim_actions = dim_actions
+        self.actions_ch = self.num_actions if dim_actions <=1 else self.dim_actions
         self.enc_type = flags.model_enc_type
         self.size_nn = flags.model_size_nn
         self.downscale_c = flags.model_downscale_c        
@@ -401,7 +410,7 @@ class SRNet(nn.Module):
             f"obs channel {self.obs_shape[0]} should be divisible by frame stacking number {self.frame_stack_n}"        
         self.copy_n = self.obs_shape[0] // self.frame_stack_n
         self.encoder = FrameEncoder(
-            num_actions=num_actions,
+            actions_ch=self.actions_ch,
             input_shape=obs_shape,
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
@@ -413,7 +422,7 @@ class SRNet(nn.Module):
         if self.noise_enable:
             inplanes += self.flags.noise_n
         self.RNN = DynamicModel(
-            num_actions=num_actions,
+            actions_ch=self.actions_ch,
             inplanes=inplanes,
             size_nn=self.size_nn,
             outplanes=self.hidden_shape[0], 
@@ -426,6 +435,7 @@ class SRNet(nn.Module):
             value_clamp = None
         self.out = OutputNet(
             num_actions=num_actions,
+            dim_actions=dim_actions,
             input_shape=self.hidden_shape,
             value_clamp=value_clamp,
             enc_type=self.enc_type,
@@ -461,7 +471,7 @@ class SRNet(nn.Module):
         if self.noise_enable:
             x_shape = self.encoder.out_shape
             pre_in_shape = list(x_shape)
-            pre_in_shape[0] = x_shape[0] + num_actions
+            pre_in_shape[0] = x_shape[0] + self.actions_ch
             self.noise_pre = NoiseModel(
                 in_shape = pre_in_shape,
                 size_nn = 1,
@@ -469,7 +479,7 @@ class SRNet(nn.Module):
                 noise_d = flags.noise_d,
             )
             post_in_shape = list(x_shape)
-            post_in_shape[0] = 2 * x_shape[0] + num_actions
+            post_in_shape[0] = 2 * x_shape[0] + self.actions_ch
             self.noise_post = NoiseModel(
                 in_shape = post_in_shape,
                 size_nn = 1,
@@ -494,7 +504,7 @@ class SRNet(nn.Module):
         """
         Args:
             x(tensor): frames (float) with shape (B, C, H, W), in the form of s_t
-            actions(tensor): action (int64) with shape (k+1, B, *), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
+            actions(tensor): action (int64) with shape (k+1, B, D, *), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
             one_hot (bool): whether to the action use one-hot encoding
         Return:
             SRNetOut tuple with predicted rewards (rs), images (xs), done (dones) in the shape of (k, B, ...);
@@ -503,8 +513,8 @@ class SRNet(nn.Module):
         """
         k, b, *_ = actions.shape
         k = k - 1
-        if not one_hot:
-            actions = F.one_hot(actions, self.num_actions)
+        actions = self.convert_action(actions, one_hot)         
+
         h = self.encoder(x, actions[0])
         hs = [h.unsqueeze(0)]
 
@@ -572,8 +582,7 @@ class SRNet(nn.Module):
             action(tensor): action (int64) with shape (B, *)
             one_hot (bool): whether to the action use one-hot encoding
         """
-        if not one_hot:
-            action = F.one_hot(action, self.num_actions)
+        action = self.convert_action(action, one_hot)    
         h = state["sr_h"]
         if self.noise_enable:
             if future_x is not None:
@@ -607,15 +616,14 @@ class SRNet(nn.Module):
         Args:
             hs(tensor): h from forward with shape (k, B, C, H, W) in the form of h_{t+1}, ..., h_{t+k}
             xs(tensor): frames (uint8) with shape (k, B, C, H, W), in the form of s_{t+1}, ..., s{t+k}
-            actions(tensor): action (int64) with shape (k, B), in the form of a_{t}, a_{t}, a_{t+1}, .. a_{t+k}
+            actions(tensor): action (int64) with shape (k, B, D), in the form of a_{t}, a_{t}, a_{t+1}, .. a_{t+k}
             is_weights(tensor): importance weight with shape (B) for each sample;  
             mask(tensor): mask (float) with shape (k, B)            
         Return:
             loss(tensor): scalar self-supervised loss
         """
         k, b, *_ = hs.shape
-        if not one_hot:
-            actions = F.one_hot(actions, self.num_actions)        
+        actions = self.convert_action(actions, one_hot)      
 
         hs = torch.flatten(hs, 0, 1)
         hs = torch.flatten(hs, 1)
@@ -674,13 +682,28 @@ class SRNet(nn.Module):
             noise_loss = None
         
         return h, noise_loss
+    
+    def convert_action(self, action, one_hot):        
+        if not one_hot:
+            assert action.dtype == torch.long
+            action = F.one_hot(action, self.num_actions)
+        else:
+            assert action.dtype in [torch.float16, torch.float32]
+        if self.dim_actions <= 1:
+            action = action[..., 0]
+        else:
+            action = torch.sum(action * torch.arange(self.num_actions, device=action.device), dim=-1)
+            action = action / self.num_actions
+        return action
 
 class VPNet(nn.Module):
-    def __init__(self, obs_shape, num_actions, flags):
+    def __init__(self, obs_shape, num_actions, dim_actions, flags):
         super(VPNet, self).__init__()
         self.flags = flags
         self.obs_shape = obs_shape
         self.num_actions = num_actions
+        self.dim_actions = dim_actions
+        self.actions_ch = self.num_actions if dim_actions <=1 else self.dim_actions
         self.enc_type = flags.model_enc_type
         self.size_nn = (
             flags.model_size_nn
@@ -699,7 +722,7 @@ class VPNet(nn.Module):
         )  # network also predicts reward and done if not dual net under non-perfect dynamic   
 
         self.encoder = FrameEncoder(
-            num_actions=num_actions,
+            actions_ch=self.actions_ch,
             input_shape=obs_shape,
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
@@ -709,7 +732,7 @@ class VPNet(nn.Module):
         inplanes = self.hidden_shape[0]
         if self.use_rnn:
             self.RNN = DynamicModel(
-                num_actions=num_actions,
+                actions_ch=self.actions_ch,
                 inplanes=inplanes * 2 if self.receive_z else inplanes,
                 outplanes=inplanes,
                 size_nn=self.size_nn,
@@ -722,6 +745,7 @@ class VPNet(nn.Module):
             value_clamp = None
         self.out = OutputNet(
             num_actions=num_actions,
+            dim_actions=dim_actions,
             input_shape=self.hidden_shape,
             value_clamp=value_clamp,
             enc_type=self.enc_type,
@@ -771,7 +795,7 @@ class VPNet(nn.Module):
         Args:
             xs(tensor): frames (uint8) with shape (k+1, B, C, H, W) in the form of s_t, s_{t+1}, ..., s_{t+k}
               or (1, B, C, H, W) / (B, C, H, W) in the form of s_t
-            actions(tensor): action (int64) with shape (k+1, B, *), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
+            actions(tensor): action (int64) with shape (k+1, B, D, *), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
             one_hot (bool): whether to the action use one-hot encoding
         Return:
             VPNetOut tuple with predicted values (vs), policies (logits) in the shape of (k+1, B, ...);
@@ -782,9 +806,9 @@ class VPNet(nn.Module):
         if len(xs.shape) == 4:
             assert not self.receive_z
             xs = xs.unsqueeze(0)
-        if not one_hot:
-            actions = F.one_hot(actions, self.num_actions)
-        zs = self.encoder(xs.detach(), actions[: xs.shape[0]], flatten=True)
+
+        actions = self.convert_action(actions, one_hot)  
+        zs = self.encoder(xs.detach(), actions[:xs.shape[0]], flatten=True)
         if self.use_rnn:
             if not self.receive_z:
                 h = self.z_to_h(zs[0], flatten=False)
@@ -832,11 +856,10 @@ class VPNet(nn.Module):
         Single unroll of the network with one action
         Args:
             x(tensor): frame (float) with shape (B, *)
-            action(tensor): action (int64) with shape (B, *)
+            action(tensor): action (int64) with shape (B, D, *)
             one_hot (bool): whether to the action use one-hot encoding
         """
-        if not one_hot:
-            action = F.one_hot(action, self.num_actions)
+        action = self.convert_action(action, one_hot)          
         if self.receive_z:
             z = self.encoder(x, action, flatten=False)
             rnn_in = torch.concat([state["vp_h"], z], dim=1)
@@ -864,46 +887,73 @@ class VPNet(nn.Module):
             pred_zs=util.safe_unsqueeze(pred_z, 0),
             state=state,
         )
+    
+    def convert_action(self, action, one_hot):        
+        if not one_hot:
+            action = F.one_hot(action, self.num_actions)
+        if self.dim_actions <= 1:
+            action = action[..., 0]
+        else:
+            action = torch.sum(action * torch.arange(self.num_actions, device=action.device), dim=-1)
+            action = action / self.num_actions
+        return action
 
 class ModelNet(BaseNet):
-    def __init__(self, obs_space, num_actions, flags, frame_stack_n=1):
+    def __init__(self, obs_space, num_actions, dim_actions, flags, frame_stack_n=1):
         super(ModelNet, self).__init__()
         self.rnn = False
         self.flags = flags
         self.obs_shape = obs_space.shape
         self.num_actions = num_actions
+        self.dim_actions = dim_actions
         self.enc_type = flags.model_enc_type
         self.size_nn = flags.model_size_nn
         self.dual_net = flags.dual_net
-        
-        self.register_buffer("norm_low", torch.tensor(obs_space.low))
-        self.register_buffer("norm_high", torch.tensor(obs_space.high))
 
-        self.vp_net = VPNet(self.obs_shape, num_actions, flags)
+        if obs_space.dtype == 'uint8':
+            self.state_dtype = 0
+        elif obs_space.dtype == 'float32':
+            self.state_dtype = 1
+        else:
+            raise Exception(f"Unupported observation sapce", obs_space)
+        
+        low = torch.tensor(obs_space.low)
+        high = torch.tensor(obs_space.high)
+        self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()
+        
+        if self.need_norm:
+            self.register_buffer("norm_low", low)
+            self.register_buffer("norm_high", high)
+
+        self.vp_net = VPNet(self.obs_shape, num_actions, dim_actions, flags)
         self.hidden_shape = list(self.vp_net.hidden_shape)
         if self.dual_net:
-            self.sr_net = SRNet(self.obs_shape, num_actions, flags, frame_stack_n)
+            self.sr_net = SRNet(self.obs_shape, num_actions, dim_actions, flags, frame_stack_n)
             self.hidden_shape[0] += self.sr_net.hidden_shape[0]
         self.copy_n = self.obs_shape[0] // frame_stack_n
 
     def normalize(self, x):
-        assert x.dtype == torch.uint8
-        x = (x.float() - self.norm_low) / \
-            (self.norm_high -  self.norm_low)
+        if self.state_dtype == 0: assert x.dtype == torch.uint8
+        if self.state_dtype == 1: assert x.dtype == torch.float32
+        if self.need_norm:
+            x = (x.float() - self.norm_low) / \
+                (self.norm_high -  self.norm_low)
         return x
     
     def unnormalize(self, x):
-        assert x.dtype == torch.float or x.dtype == torch.float32
-        ch = x.shape[-3]
-        x = torch.clamp(x, 0, 1)
-        x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
-        return x.to(torch.uint8)
+        assert x.dtype == torch.float or x.dtype == torch.float32        
+        if self.need_norm:
+            ch = x.shape[-3]
+            x = torch.clamp(x, 0, 1)
+            x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
+            if self.state_dtype == 0: x = x.to(torch.uint8)
+        return x
 
     def forward(self, x, actions, one_hot=False, normalize=True, ret_xs=False, ret_zs=False, ret_hs=False, future_xs=None):
         """
         Args:
             x(tensor): starting frame (uint if normalize else float) with shape (B, C, H, W)
-            actions(tensor): action (int64) with shape (k+1, B), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
+            actions(tensor): action (int64) with shape (k+1, B, D), in the form of a_{t-1}, a_{t}, a_{t+1}, .. a_{t+k-1}
             one_hot (bool): whether to the action use one-hot encoding
             normalize (tensor): whether to normalize x 
             ret_xs (bool): whther to return predicted states
@@ -921,7 +971,6 @@ class ModelNet(BaseNet):
         """
         k, b, *_ = actions.shape
         k = k - 1
-
         state = {}
 
         if normalize:

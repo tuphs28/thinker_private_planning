@@ -92,18 +92,37 @@ class Env(gym.Wrapper):
 
         if env_fn is None:
             if name == "Sokoban-v0": import gym_sokoban
-            env_fn = lambda: PreWrapper(gym.make(name), name=name, grayscale=self.flags.grayscale)         
+            if "Safexp" in name: import mujoco_py, safety_gym
+            env_fn = lambda: PreWrapper(gym.make(name), name=name, grayscale=self.flags.grayscale, discrete_k=self.flags.discrete_k)         
 
         # initialize a single env to collect env information
         env = env_fn()
         assert len(env.observation_space.shape) == 3, \
             f"env.observation_space should be 3d, not {env.observation_space.shape}"
-        assert type(env.action_space) == gym.spaces.discrete.Discrete, \
-            f"env.action_space should be Discrete, not {type(env.action_space)}"          
-
+        assert type(env.action_space) in [gym.spaces.discrete.Discrete, gym.spaces.tuple.Tuple], \
+            f"env.action_space should be Discrete or Tuple, not {type(env.action_space)}"  
+        
+        if env.observation_space.dtype == 'uint8':
+            self.state_dtype = 0
+        elif env.observation_space.dtype == 'float32':
+            self.state_dtype = 1        
+        
         self.real_state_space  = env.observation_space
         self.real_state_shape = env.observation_space.shape
-        self.num_actions = env.action_space.n
+
+        if type(env.action_space) == gym.spaces.discrete.Discrete:            
+            self.raw_num_actions = env.action_space.n
+            self.raw_dim_actions = 1
+        else:
+            self.raw_num_actions = env.action_space[0].n
+            self.raw_dim_actions = len(env.action_space)
+        
+        self.sample = self.flags.sample_n > 0
+        if self.sample:
+            self.num_actions = self.flags.sample_n
+        else:
+            self.num_actions = self.raw_num_actions
+
         self.frame_stack_n = env.frame_stack_n if hasattr(env, "frame_stack_n") else 1
         if self.rank == 0 and self.frame_stack_n > 1:
             self._logger.info("Detected frame stacking with %d counts" % self.frame_stack_n)
@@ -116,8 +135,9 @@ class Env(gym.Wrapper):
         self.sample = self.flags.sample_n > 0
         if self.has_model:
             model_param = {
-                "obs_space": self.real_state_space,
-                "num_actions": self.num_actions, 
+                "obs_space": self.real_state_space,                
+                "num_actions": self.raw_num_actions, 
+                "dim_actions": self.raw_dim_actions, 
                 "flags": self.flags,
                 "frame_stack_n": self.frame_stack_n
             }
@@ -261,15 +281,15 @@ class Env(gym.Wrapper):
         return TrainModelOut(
             real_state=torch.zeros(
                 pre_shape + real_state_shape,
-                dtype=torch.uint8,
+                dtype=torch.uint8 if self.state_dtype==0 else torch.float32,
                 device=self.device,
             ),
             action_prob=torch.zeros(
-                pre_shape + (self.num_actions,),
+                pre_shape + (self.raw_dim_actions, self.raw_num_actions,),
                 dtype=torch.float32,
                 device=self.device,
             ),
-            action=torch.zeros(pre_shape, dtype=torch.long, device=self.device),
+            action=torch.zeros(pre_shape + (self.raw_dim_actions,), dtype=torch.long, device=self.device),
             reward=torch.zeros(pre_shape, dtype=torch.float, device=self.device),
             done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
             truncated_done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
@@ -381,15 +401,20 @@ class Env(gym.Wrapper):
         return state, reward, done, info       
     
     def to_raw_action(self, sampled_raw_action, action, action_prob):
-        B, N = sampled_raw_action.shape
+        B, M, D = sampled_raw_action.shape
+        assert M == self.num_actions
+        assert D == self.raw_dim_actions
+
         # Get the selected raw action for each batch instance
-        raw_action = sampled_raw_action[torch.arange(B, device=self.device), action]
+        raw_action = sampled_raw_action[torch.arange(B, device=self.device), action] # shape (B, D)
         if action_prob is not None:
             # Compute the probability of selecting each raw action
-            raw_action_prob = torch.zeros(B, self.num_actions, device=self.device)
-            for n in range(self.num_actions):
-                mask = (sampled_raw_action == n).float()  # Create a mask where the raw action is n
-                raw_action_prob[:, n] = torch.sum(mask * action_prob, dim=1)
+            raw_action_prob = torch.zeros(B, self.raw_dim_actions, self.raw_num_actions, device=self.device)
+            for n in range(self.raw_num_actions):
+                mask = (sampled_raw_action == n).float()  # Create a mask where the raw action is n; shape (B, M, D)
+                # action_prob has shape (B, M)
+                # raw_action_prob has shape (B, D, N)
+                raw_action_prob[:, :, n] = torch.sum(mask * action_prob.unsqueeze(-1), dim=1)
         else:
             raw_action_prob = None
         return raw_action, raw_action_prob

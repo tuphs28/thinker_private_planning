@@ -50,7 +50,6 @@ has_action_seq: true # whether tree rep contains action sequence
 # sampled-based search
 sample_n: -1 # number of sampled action; <0 for disabling sample mode
 sample_temp: 4 # whether to use sampled action in imagination
-sample_replace: false # whether to allow replacement when sampling 
 # reward-related
 discounting: 0.97 # discount rate of the raw MDP
 reward_clip: -1 # reward clipping; if positve, the reward is clipped within the absolute value of this values; set to negative number for no clipping
@@ -83,6 +82,7 @@ profile: false # whether to output all the time statistics of the run
 parallel: false # whether to use a parallel ray actor for training the model
 float16: false # whether to use mixed precision
 base_seed: 1 # base seed for the gym environment
+discrete_k: -1 # bin used to discretize the action space; -1 for no discretizing
 # ray resources
 ray_mem: -1 # default initialized ray memory
 ray_gpu: -1 # number of initial gpu (set to -1 for auto detect)

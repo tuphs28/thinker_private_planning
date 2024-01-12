@@ -160,17 +160,20 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector
         node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type, int raw_num_actions=0):
-    cdef int i, j, base_ind
+cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type, int raw_num_actions=-1, bool sample=False):
+    cdef int i, j, dim_actions, sample_n, base_ind
     cdef float[:] result
+    cdef float a
     cdef int obs_n
     obs_n = pnode[0].num_actions*5+3
+    
     if detailed:
         obs_n += 3
 
-    if raw_num_actions > 0:
+    if sample:
         encoded = <dict> pnode[0].encoded
-        obs_n += len(encoded["sampled_action"]) * raw_num_actions
+        sample_n, dim_actions = encoded["sampled_action"].shape
+        obs_n += sample_n * dim_actions
 
     result = np.zeros(obs_n , dtype=np.float32)    
     pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
@@ -205,9 +208,11 @@ cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type
         result[pnode[0].num_actions*5+5] = f(pnode[0].max_q)
         base_ind += 3
 
-    if raw_num_actions > 0:
-        for i, j in enumerate(encoded["sampled_action"]):
-            result[base_ind + raw_num_actions*i + j] = 1        
+    if sample:
+        for i in range(sample_n):
+            for j in range(dim_actions):
+                a = float(encoded["sampled_action"][i, j]) / raw_num_actions
+                result[base_ind + dim_actions * i + j] = a
     return result
 
 cdef node_del(Node* pnode, int except_idx):
@@ -263,7 +268,7 @@ cdef class cWrapper():
     cdef int enc_type
     cdef int enc_f_type
     cdef bool pred_done
-    cdef int num_actions
+    cdef int num_actions    
     cdef int obs_n    
     cdef int env_n
     
@@ -272,6 +277,10 @@ cdef class cWrapper():
     cdef float sample_temp   
     cdef bool sample_replace
     cdef int raw_num_actions
+    cdef int raw_dim_actions
+    cdef int discrete_k
+    cdef int state_dtype
+    cdef bool cont_raw_actions
 
     cdef bool return_h
     cdef bool return_x
@@ -349,27 +358,43 @@ cdef class cWrapper():
 
         self.sample_n = flags.sample_n
         self.sample = flags.sample_n > 0
-        self.sample_temp = flags.sample_temp
-        self.sample_replace = flags.sample_replace        
+        self.sample_temp = flags.sample_temp     
         self.has_action_seq = flags.has_action_seq
 
         self.enc_type = flags.model_enc_type
         self.enc_f_type = flags.model_enc_f_type
         self.pred_done = flags.model_done_loss_cost > 0.     
-        if not self.sample:        
-            self.num_actions = env.action_space[0].n    
-            self.raw_num_actions = 0
+
+        self.discrete_k = flags.discrete_k
+        self.cont_raw_actions = self.discrete_k > 0
+
+        action_space =  env.action_space[0]
+        if type(env.action_space) == spaces.discrete.Discrete:                    
+            self.raw_num_actions = action_space.n    
+            self.raw_dim_actions = 1
+        else:
+            self.raw_num_actions = action_space[0].n    
+            self.raw_dim_actions = len(action_space)            
+
+        if not self.sample:      
+            self.num_actions = self.raw_num_actions
         else:            
             self.num_actions = self.sample_n
-            self.raw_num_actions = env.action_space[0].n
+
+        if env.observation_space.dtype == 'uint8':
+            self.state_dtype = 0
+        elif env.observation_space.dtype == 'float32':
+            self.state_dtype = 1
+        else:
+            raise Exception(f"Unupported observation sapce", env.observation_space)
+
         self.obs_n = 11 + self.num_actions * 10 + self.rep_rec_t
-        if self.sample: self.obs_n += self.raw_num_actions * self.sample_n * 2
+        if self.sample: 
+            self.obs_n += self.raw_dim_actions * self.sample_n * 2
         if self.has_action_seq: 
             self.obs_n += self.max_depth * self.num_actions
             if self.reset_mode == 0:
                 self.obs_n += self.num_actions
-
-        self.env_n = env_n
 
         self.env_n = env_n
         self.return_h = flags.return_h  
@@ -451,13 +476,13 @@ cdef class cWrapper():
         idx2 = self.num_actions*10+9
         idx3 = self.num_actions*10+11+self.rep_rec_t        
         if self.sample:
-            idx1 += self.sample_n * self.raw_num_actions
-            idx2 += 2 * self.sample_n * self.raw_num_actions
-            idx3 += 2 * self.sample_n * self.raw_num_actions
+            idx1 += self.sample_n * self.raw_dim_actions
+            idx2 += 2 * self.sample_n * self.raw_dim_actions
+            idx3 += 2 * self.sample_n * self.raw_dim_actions
         result = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions, sample=self.sample)
+            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions, sample=self.sample)
             # reset
             if reset is None or status[i] == 1:
                 result[i, idx2] = 1.
@@ -531,27 +556,65 @@ cdef class cWrapper():
 
         return states    
 
-    def sample_from_dist(self, logits):
+    cpdef sample_from_dist(self, logits):
         """sample from logits;
         args:
-            logits: tensor of shape (env_n, raw_num_actions)
+            logits: tensor of shape (env_n, raw_dim_actions, raw_num_actions)
         return:
-            sampled_action: sample_n actions sampled from logits; shape is (env_n, sample_n)
-            sampled_logits: the logit corresponds to each of the sampled action; shape is (env_n, sample_n)
+            sampled_action: sample_n actions sampled from logits; shape is (env_n, sample_n, raw_dim_actions) 
+            sampled_probs: the logit corresponds to each of the sampled action; shape is (env_n, sample_n)
         """
-        B, N = logits.shape
-        sampled_action = torch.multinomial(
-            F.softmax(logits / self.sample_temp, dim=-1), 
-            num_samples=self.sample_n,
-            replacement=self.sample_replace
-        ) 
-        flat_indices = torch.arange(B, device=logits.device).unsqueeze(-1) * N + sampled_action
-        flat_indices = flat_indices.flatten()
-        # Flatten logits and gather using flat_indices
-        sampled_logits_flat = logits.flatten()[flat_indices]
-        # Reshape to get the final shape of (B, self.sample_n)
-        sampled_logits = sampled_logits_flat.view(B, self.sample_n)
-        return sampled_action, sampled_logits
+        cdef int B, M, D, N, initial_sample_size, b, i
+        B, D, N = logits.shape
+        M = self.sample_n
+
+        assert M <= N**D, f"M ({M}) cannot be greater than N**D ({N**D})"
+        # Reshape logits to (B*D, N) and apply softmax
+        reshaped_logits = logits.view(B * D, N)
+        probabilities = torch.softmax(reshaped_logits, dim=1)
+
+        # Initially sample a larger number of indices (e.g., 4 * M)
+        initial_sample_size = 4 * M
+        sampled_indices = torch.multinomial(probabilities, initial_sample_size, replacement=True)
+
+        # Reshape sampled_indices to (B, D, initial_sample_size)
+        sampled_indices = sampled_indices.view(B, D, initial_sample_size)
+
+        # Process the samples to ensure M unique samples per batch
+        output = torch.zeros(B, M, D, dtype=torch.long, device=logits.device)
+        for b in range(B):
+            unique_combinations = set()
+
+            # Iterate through the sampled indices and find unique tuples
+            for i in range(initial_sample_size):
+                # Extract the tuple for this sample
+                sample_tuple = tuple(sampled_indices[b, :, i].tolist())
+
+                # Add to the set of unique combinations
+                unique_combinations.add(sample_tuple)
+
+                # Break if we have M unique samples
+                if len(unique_combinations) >= M:
+                    break
+
+            # If we don't have enough unique combinations, sample more
+            while len(unique_combinations) < M:
+                extra_samples = torch.multinomial(probabilities[b*D:(b+1)*D, :], 1, replacement=True)
+                extra_samples = extra_samples.view(D, 1)
+                sample_tuple = tuple(extra_samples[:, 0].tolist())
+                unique_combinations.add(sample_tuple)
+
+            # Convert the unique combinations to a tensor
+            selected_samples = torch.tensor(list(unique_combinations)[:M], dtype=torch.long)
+            output[b] = selected_samples
+
+        one_hot_output = torch.nn.functional.one_hot(output, num_classes=N)
+        probabilities = probabilities.view(B, D, N)
+        expanded_probabilities = probabilities.unsqueeze(1).expand(-1, M, -1, -1)  # Shape (B, M, D, N)
+        selected_probs = torch.sum(one_hot_output * expanded_probabilities, dim=3)  # Shape (B, M, D)    
+        product_probs = torch.prod(selected_probs, dim=2)  # Shape (B, M)
+
+        return output, product_probs
 
     def close(self):
         cdef int i
@@ -582,7 +645,7 @@ cdef class cModelWrapper(cWrapper):
         cdef int i
         cdef Node* root_node
         cdef Node* cur_node
-        cdef float[:,:] model_out        
+        cdef float[:,:] model_out       
 
         with torch.no_grad():
             # some init.
@@ -597,8 +660,8 @@ cdef class cModelWrapper(cWrapper):
             obs = self.env.reset()
 
             # obtain output from model
-            obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-            pass_action = torch.zeros(self.env_n, dtype=torch.long)
+            obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
+            pass_action = torch.zeros(self.env_n, self.raw_dim_actions, dtype=torch.long)
             model_net_out = model_net(obs_py, 
                                       pass_action.unsqueeze(0).to(self.device), 
                                       one_hot=False,
@@ -612,7 +675,7 @@ cdef class cModelWrapper(cWrapper):
 
             # compute and update root node and current node
             for i in range(self.env_n):
-                root_node = node_new(pparent=NULL, action=pass_action[i].item(), logit=0., num_actions=self.num_actions, 
+                root_node = node_new(pparent=NULL, action=pass_action[i, 0].item(), logit=0., num_actions=self.num_actions, 
                     discounting=self.discounting, rec_t=self.rec_t, remember_path=True)                
                 encoded = {"real_states": obs_py[i],
                            "xs": model_net_out.xs[-1, i] if model_net_out.xs is not None else None,
@@ -691,7 +754,7 @@ cdef class cModelWrapper(cWrapper):
                     f"reset action should be in [0, 1], not {a}"  
 
         pass_model_states, pass_re_model_states = [], []
-
+        pass_raw_action, pass_model_raw_action = [], []
         for i in range(self.env_n):            
             # compute the mask of real / imagination step                             
             self.max_rollout_depth_[i] = self.max_rollout_depth[i]            
@@ -715,10 +778,9 @@ cdef class cModelWrapper(cWrapper):
                 else:
                     encoded = <dict> self.cur_nodes[i][0].encoded
                     pass_model_states.append(encoded["model_states"])
-                    if not self.sample:
-                        pass_model_action.push_back(im_action[i])
-                    else:
-                        pass_model_action.push_back(encoded["sampled_action"][im_action[i]])
+                    pass_model_action.push_back(im_action[i])
+                    if self.sample:
+                        pass_model_raw_action.append(encoded["sampled_action"][im_action[i]])
                     self.status[i] = 4  
             else: # real step
                 self.cur_t[i] = 0
@@ -731,21 +793,23 @@ cdef class cModelWrapper(cWrapper):
                 encoded = <dict> self.root_nodes[i][0].encoded
                 pass_re_model_states.append(encoded["model_states"])
                 pass_inds_restore.push_back(i)
-                if not self.sample:
-                    pass_action.push_back(re_action[i])                
-                else:
-                    pass_action.push_back(encoded["sampled_action"][re_action[i]])                        
+                pass_action.push_back(re_action[i])                
+                if self.sample:
+                    pass_raw_action.append(encoded["sampled_action"][re_action[i]])                        
                 pass_inds_step.push_back(i)
                 self.status[i] = 1        
         if self.time: self.timings.time("misc_1")
-
         # one step of env
         if pass_inds_step.size() > 0:
-            obs, reward, done, info = self.env.step(pass_action, inds=pass_inds_step) 
+            if self.sample:
+                pass_raw_action = torch.stack(pass_raw_action, dim=0)
+                pass_action_in = pass_raw_action.detach().cpu().numpy()
+            else:
+                pass_action_in = pass_action
+            obs, reward, done, info = self.env.step(pass_action_in, inds=pass_inds_step) 
             real_done = [m["real_done"] if "real_done" in m else done[n] for n, m in enumerate(info)]
             truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
         if self.time: self.timings.time("step_state")
-
         # env reset needed?
         for i, j in enumerate(pass_inds_step):
             if done[i]:
@@ -762,8 +826,11 @@ cdef class cModelWrapper(cWrapper):
         # use model for status 1 transition (real transition)
         if pass_inds_step.size() > 0:
             with torch.no_grad():
-                obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-                pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0)
+                obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
+                if not self.sample:
+                    pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0)
+                else:
+                    pass_action_py = pass_raw_action.unsqueeze(0)
                 model_net_out_1 = model_net(obs_py, 
                         pass_action_py, 
                         one_hot=False,
@@ -845,7 +912,7 @@ cdef class cModelWrapper(cWrapper):
             logits_1_ = model_net_out_1.logits[-1].float()
             if self.sample: sampled_action_1, logits_1_ = self.sample_from_dist(logits_1_)            
             logits_1 = logits_1_.cpu().numpy()
-                
+
         if self.time: self.timings.time("misc_2")
         # use model for status 4 transition (imagination transition)
         if pass_model_action.size() > 0:
@@ -853,7 +920,10 @@ cdef class cModelWrapper(cWrapper):
                 pass_model_states = dict({msd: torch.concat([ms[msd] for ms in pass_model_states], dim=0)
                         for msd in pass_model_states[0].keys()})
                     # all batch index are in the first index 
-                pass_model_action_py = torch.tensor(pass_model_action, dtype=long, device=self.device)
+                if not self.sample:
+                    pass_model_action_py = torch.tensor(pass_model_action, dtype=long, device=self.device)
+                else:
+                    pass_model_action_py = torch.stack(pass_model_raw_action, dim=0)
                 model_net_out_4 = model_net.forward_single(
                     state=pass_model_states,
                     action=pass_model_action_py,                     
@@ -900,8 +970,7 @@ cdef class cModelWrapper(cWrapper):
                     
                 j += 1
                 root_nodes_.push_back(root_node)
-                cur_nodes_.push_back(root_node)
-            
+                cur_nodes_.push_back(root_node) 
             elif self.status[i] == 2:
                 # expanded already
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
@@ -942,8 +1011,7 @@ cdef class cModelWrapper(cWrapper):
                 node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)   
-                l += 1             
-            
+                l += 1                   
             elif self.status[i] == 5:
                 # reset
                 self.rollout_depth[i] = 0
@@ -986,7 +1054,7 @@ cdef class cModelWrapper(cWrapper):
             if self.status[i] == 1:
                 j += 1
         if self.time: self.timings.time("compute_reward")        
-  
+
         j = 0
         for i in range(self.env_n):
             # compute done & full_real_done
@@ -1069,8 +1137,8 @@ cdef class cPerfectWrapper(cWrapper):
             obs = self.env.reset()
 
             # obtain output from model
-            obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-            pass_action = torch.zeros(self.env_n, dtype=torch.long)
+            obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
+            pass_action = torch.zeros(self.env_n, self.raw_dim_actions, dtype=torch.long)
             model_net_out = model_net(obs_py, 
                                       pass_action.unsqueeze(0).to(self.device), 
                                       one_hot=False,
@@ -1083,7 +1151,7 @@ cdef class cPerfectWrapper(cWrapper):
 
             # compute and update root node and current node
             for i in range(self.env_n):
-                root_node = node_new(pparent=NULL, action=pass_action[i].item(), logit=0., num_actions=self.num_actions, 
+                root_node = node_new(pparent=NULL, action=pass_action[i, 0].item(), logit=0., num_actions=self.num_actions, 
                     discounting=self.discounting, rec_t=self.rec_t, remember_path=False)                
                 encoded = {"real_states": obs_py[i],
                            "xs": model_net_out.xs[-1, i] if model_net_out.xs is not None else None,
@@ -1227,7 +1295,7 @@ cdef class cPerfectWrapper(cWrapper):
         # use model
         if pass_inds_step.size() > 0:
             with torch.no_grad():
-                obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
+                obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
                 pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0)
                 model_net_out = model_net(obs_py, 
                                           pass_action_py, 

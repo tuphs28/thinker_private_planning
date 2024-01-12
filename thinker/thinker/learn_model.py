@@ -13,11 +13,12 @@ import thinker.util as util
 import gc
 
 def compute_cross_entropy_loss(logits, target_policy, is_weights, mask=None):
-    k, b, *_ = logits.shape
+    k, b, d, _ = logits.shape
     loss = torch.nn.CrossEntropyLoss(reduction="none")(
-        input=torch.flatten(logits, 0, 1), target=torch.flatten(target_policy, 0, 1)
+        input=torch.flatten(logits, 0, 2), target=torch.flatten(target_policy, 0, 2)
     )
-    loss = loss.view(k, b)
+    loss = loss.view(k, b, d)
+    loss = torch.mean(loss, dim=2)
     if mask is not None:
         loss = loss * mask
     loss = torch.sum(loss, dim=0)
@@ -408,10 +409,7 @@ class SModelLearner:
             diff = target["xs"] - out.xs
         elif self.flags.model_img_type == 1:
             with torch.no_grad():
-                action = F.one_hot(
-                    train_model_out.action[1 : k + 1],
-                    self.num_actions,
-                )
+                action = self.model_net.vp_net.convert_action(train_model_out.action[1 : k + 1], one_hot=False)
                 target_enc = self.model_net.vp_net.encoder(
                     target["xs"], action, flatten=True
                 )
@@ -479,7 +477,7 @@ class SModelLearner:
             )
             vs = out.vs.view(k, b)
             v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
-            logits = out.logits.view(k, b, -1)
+            logits = out.logits.view((k, b) + out.logits.shape[1:])
         else:
             out = self.model_net.vp_net.forward(
                 xs=xs[: k + 1],  # s_0, ..., s_k
@@ -491,7 +489,7 @@ class SModelLearner:
                 v_enc_logits = util.safe_view(out.v_enc_logits[:-1], (k, b, -1))
             else:
                 v_enc_logits = None
-            logits = out.logits[:-1].view(k, b, -1)
+            logits = out.logits[:-1]
 
         done_mask = target["done_mask"]
         if self.model_net.vp_net.predict_rd:

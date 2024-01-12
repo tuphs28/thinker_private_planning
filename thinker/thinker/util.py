@@ -1,5 +1,5 @@
 __version__ = "1.1.2"
-__project__ = "thinker"
+__project__ = "detect"
 
 import collections
 import time

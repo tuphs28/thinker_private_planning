@@ -125,9 +125,15 @@ class PostWrapper(gym.Wrapper):
             reward = torch.clamp(reward, -self.reward_clip, +self.reward_clip)
         return state, reward, done, info
 
-def PreWrapper(env, name, grayscale=False, frame_wh=96):
+def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1):
+    if discrete_k > 0:
+        env = DiscretizeActionWrapper(env, K=discrete_k)
+
     if "Sokoban" in name:
         env = TransposeWrap(env)
+    elif "Safexp" in name:
+        assert discrete_k > 0, "Safeexp require discretizing the action space"
+        env = TileObservationWrapper(env)
     else:
         env = StateWrapper(env)
         env = TimeLimit_(env, max_episode_steps=108000)
@@ -582,3 +588,45 @@ def wrap_deepmind(
     if frame_stack:
         env = FrameStack(env, 4)
     return env
+
+class DiscretizeActionWrapper(gym.ActionWrapper):
+    def __init__(self, env, K=11):
+        super().__init__(env)
+        self.K = K  # Number of bins for discretization
+
+        # Infer min and max actions from the original environment
+        self.min_action = self.env.action_space.low
+        self.max_action = self.env.action_space.high
+
+        # Ensure the original action space is a Box
+        assert isinstance(env.action_space, gym.spaces.Box), "The action space must be of type gym.spaces.Box"
+
+        # Define the new action space as a tuple of Discrete(K) spaces
+        self.action_space = spaces.Tuple([spaces.Discrete(K) for _ in range(env.action_space.shape[0])])
+
+    def action(self, action):
+        # Convert the discrete action to continuous action using vectorized operations
+        action = np.array(action)  # Ensure action is a NumPy array
+        discrete_to_cont = ((2 * action / (self.K - 1)) - 1) * (self.max_action - self.min_action) + self.min_action
+        return discrete_to_cont
+
+class TileObservationWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super(TileObservationWrapper, self).__init__(env)
+
+        # Ensure the original observation space is a Box with a single dimension
+        assert isinstance(env.observation_space, gym.spaces.Box), "This wrapper only works with continuous state spaces (Box)"
+        assert len(env.observation_space.shape) == 1, "The observation space must be 1D"
+
+        n = env.observation_space.shape[0]
+
+        # Update the observation space to Box(1, n, n)
+        self.observation_space = spaces.Box(low=np.tile(env.observation_space.low, (1, n)).reshape(1, n, n),
+                                     high=np.tile(env.observation_space.high, (1, n)).reshape(1, n, n),
+                                     dtype=env.observation_space.dtype)
+
+    def observation(self, observation):
+        # Tile the observation and reshape to (1, n, n)
+        n = len(observation)
+        tiled_observation = np.tile(observation, (n, 1)).reshape(1, n, n)
+        return tiled_observation
