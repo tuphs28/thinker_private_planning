@@ -160,22 +160,14 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector
         node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
-cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type, int raw_num_actions=-1, bool sample=False):
+cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type, int raw_num_actions=-1):
     cdef int i, j, dim_actions, sample_n, base_ind
     cdef float[:] result
-    cdef float a
     cdef int obs_n
-    obs_n = pnode[0].num_actions*5+3
-    
-    if detailed:
-        obs_n += 3
+    obs_n = pnode[0].num_actions*5+3    
+    if detailed: obs_n += 3
 
-    if sample:
-        encoded = <dict> pnode[0].encoded
-        sample_n, dim_actions = encoded["sampled_action"].shape
-        obs_n += sample_n * dim_actions
-
-    result = np.zeros(obs_n , dtype=np.float32)    
+    result = np.zeros(obs_n, dtype=np.float32)    
     pnode[0].max_q = (maximum(pnode[0].prollout_qs[0]) - pnode[0].r) / pnode[0].discounting
     if mask_type == 3: return result
 
@@ -208,11 +200,6 @@ cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type
         result[pnode[0].num_actions*5+5] = f(pnode[0].max_q)
         base_ind += 3
 
-    if sample:
-        for i in range(sample_n):
-            for j in range(dim_actions):
-                a = float(encoded["sampled_action"][i, j]) / raw_num_actions
-                result[base_ind + dim_actions * i + j] = a
     return result
 
 cdef node_del(Node* pnode, int except_idx):
@@ -342,6 +329,8 @@ cdef class cWrapper():
     cdef int[:] step_status
     cdef int[:] total_step  
     cdef int[:] step_from_done  
+    cdef float[:, :] c_sampled_action
+    cdef int internal_counter
 
     def __init__(self, env, env_n, flags, model_net, device=None, time=False):        
            
@@ -359,6 +348,7 @@ cdef class cWrapper():
         self.sample_n = flags.sample_n
         self.sample = flags.sample_n > 0
         self.sample_temp = flags.sample_temp     
+        self.sample_replace = flags.sample_replace
         self.has_action_seq = flags.has_action_seq
 
         self.enc_type = flags.model_enc_type
@@ -369,7 +359,7 @@ cdef class cWrapper():
         self.cont_raw_actions = self.discrete_k > 0
 
         action_space =  env.action_space[0]
-        if type(env.action_space) == spaces.discrete.Discrete:                    
+        if type(action_space) == spaces.discrete.Discrete:                    
             self.raw_num_actions = action_space.n    
             self.raw_dim_actions = 1
         else:
@@ -466,39 +456,52 @@ cdef class cWrapper():
         self.total_step = np.zeros(self.env_n, dtype=np.intc)
         self.step_status = np.zeros(self.env_n, dtype=np.intc)  
         self.step_from_done = np.zeros(self.env_n, dtype=np.intc)  
+        self.internal_counter = 0
     
     cdef float[:, :] compute_tree_reps(self, int[:]& reset, int[:]& status):
         cdef int i, j
-        cdef int idx1, idx2, idx3
-        cdef float[:, :] result
+        cdef int idx1, idx2, idx3, idx4, idx5
+        cdef float[:, :] result, cur_sampled_action
         cdef Node* node
-        idx1 = self.num_actions*5+6
-        idx2 = self.num_actions*10+9
-        idx3 = self.num_actions*10+11+self.rep_rec_t        
+
+        idx1 = self.num_actions * 5 + 6
         if self.sample:
-            idx1 += self.sample_n * self.raw_dim_actions
-            idx2 += 2 * self.sample_n * self.raw_dim_actions
-            idx3 += 2 * self.sample_n * self.raw_dim_actions
+            idx2 = idx1 + self.sample_n * self.raw_dim_actions
+        else:
+            idx2 = idx1
+        idx3 = idx2 + self.num_actions * 5 + 3
+        if self.sample:
+            idx4 = idx3 + self.sample_n * self.raw_dim_actions
+        else:
+            idx4 = idx3
+        idx5 = idx4 + 2 + self.rep_rec_t        
+
         result = np.zeros((self.env_n, self.obs_n), dtype=np.float32)
         for i in range(self.env_n):
-            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions, sample=self.sample)
-            result[i, idx1:idx2] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions, sample=self.sample)
+            result[i, :idx1] = node_stat(self.root_nodes[i], detailed=True, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
+            result[i, idx2:idx3] = node_stat(self.cur_nodes[i], detailed=False, enc_type=self.enc_type, enc_f_type=self.enc_f_type, mask_type=self.stat_mask_type, raw_num_actions=self.raw_num_actions)
             # reset
             if reset is None or status[i] == 1:
-                result[i, idx2] = 1.
+                result[i, idx4] = 1.
             else:
-                result[i, idx2] = reset[i]
+                result[i, idx4] = reset[i]
             # time
             if self.cur_t[i] < self.rep_rec_t:
-                result[i, idx2+1+self.cur_t[i]] = 1.
+                result[i, idx4+1+self.cur_t[i]] = 1.
             # deprec
-            result[i, idx2+self.rep_rec_t+1] = (self.discounting ** (self.rollout_depth[i]))     
+            result[i, idx4+self.rep_rec_t+1] = (self.discounting ** (self.rollout_depth[i]))     
             # action sequence
             if self.has_action_seq:
                 node = self.cur_nodes[i]            
                 for j in range(self.rollout_depth[i] + 1):               
-                    result[i, idx3+(self.rollout_depth[i] - j)*self.num_actions+node[0].action] = 1.
+                    result[i, idx5+(self.rollout_depth[i] - j)*self.num_actions+node[0].action] = 1.
                     node = node[0].pparent
+
+        if self.sample:
+            result[:, idx1:idx2] = self.c_sampled_action
+            cur_sampled_action_py = self.compute_model_out(self.cur_nodes, "sampled_action")
+            cur_sampled_action = (torch.flatten(cur_sampled_action_py, -2, -1)/self.raw_num_actions).cpu().numpy()
+            result[:, idx3:idx4] = cur_sampled_action
 
         return result
 
@@ -509,26 +512,28 @@ cdef class cWrapper():
         raise NotImplementedError("Subclasses must implement this!")
     
     cdef compute_model_out(self, vector[Node*] nodes, key):
+        cdef int i
         outs = []
         for i in range(self.env_n):
             encoded = <dict>nodes[i][0].encoded
             if key not in encoded or encoded[key] is None: 
                 return None
             outs.append((encoded[key] if not nodes[i][0].done 
-                else torch.zeros_like(encoded[key])).unsqueeze(0))
-        outs = torch.concat(outs)
+                else torch.zeros_like(encoded[key])))
+        outs = torch.stack(outs, dim=0)
         return outs
 
     cdef prepare_state(self, int[:]& reset, int[:]& status):
         cdef int i
 
-        tree_reps = self.compute_tree_reps(reset, status)
-        tree_reps = torch.tensor(tree_reps, dtype=torch.float, device=self.device)
-
         if status is None or np.any(np.array(status)==1):
             self.real_states = self.compute_model_out(self.root_nodes, "real_states")
             if self.sample:
                 self.sampled_action = self.compute_model_out(self.root_nodes, "sampled_action")
+                self.c_sampled_action = (torch.flatten(self.sampled_action, -2, -1)/self.raw_num_actions).cpu().numpy()
+
+        tree_reps = self.compute_tree_reps(reset, status)
+        tree_reps = torch.tensor(tree_reps, dtype=torch.float, device=self.device)
 
         states = {
             "tree_reps": tree_reps,
@@ -573,40 +578,47 @@ cdef class cWrapper():
         reshaped_logits = logits.view(B * D, N)
         probabilities = torch.softmax(reshaped_logits, dim=1)
 
-        # Initially sample a larger number of indices (e.g., 4 * M)
-        initial_sample_size = 4 * M
-        sampled_indices = torch.multinomial(probabilities, initial_sample_size, replacement=True)
+        if not self.sample_replace:
+            if D == 1:
+                sampled_indices = torch.multinomial(probabilities, M, replacement=False)
+                sampled_indices = sampled_indices.view(B, D, M)
+                output = torch.transpose(sampled_indices, -1, -2)[:, :M]
+            else:
+                # sample until number of unique sample reaches M; very slow
+                initial_sample_size = 4 * M
+                sampled_indices = torch.multinomial(probabilities, 4*M, replacement=True)
+                sampled_indices = sampled_indices.view(B, D, initial_sample_size)
+                output = torch.zeros(B, M, D, dtype=torch.long, device=logits.device)
+                for b in range(B):
+                    unique_combinations = set()
 
-        # Reshape sampled_indices to (B, D, initial_sample_size)
-        sampled_indices = sampled_indices.view(B, D, initial_sample_size)
+                    # Iterate through the sampled indices and find unique tuples
+                    for i in range(initial_sample_size):
+                        # Extract the tuple for this sample
+                        sample_tuple = tuple(sampled_indices[b, :, i].tolist())
 
-        # Process the samples to ensure M unique samples per batch
-        output = torch.zeros(B, M, D, dtype=torch.long, device=logits.device)
-        for b in range(B):
-            unique_combinations = set()
+                        # Add to the set of unique combinations
+                        unique_combinations.add(sample_tuple)
 
-            # Iterate through the sampled indices and find unique tuples
-            for i in range(initial_sample_size):
-                # Extract the tuple for this sample
-                sample_tuple = tuple(sampled_indices[b, :, i].tolist())
+                        # Break if we have M unique samples
+                        if len(unique_combinations) >= M:
+                            break
 
-                # Add to the set of unique combinations
-                unique_combinations.add(sample_tuple)
+                    # If we don't have enough unique combinations, sample more
+                    while len(unique_combinations) < M:
+                        extra_samples = torch.multinomial(probabilities[b*D:(b+1)*D, :], 1, replacement=True)
+                        extra_samples = extra_samples.view(D, 1)
+                        sample_tuple = tuple(extra_samples[:, 0].tolist())
+                        unique_combinations.add(sample_tuple)
 
-                # Break if we have M unique samples
-                if len(unique_combinations) >= M:
-                    break
+                    # Convert the unique combinations to a tensor
+                    selected_samples = torch.tensor(list(unique_combinations)[:M], dtype=torch.long)
+                    output[b] = selected_samples     
 
-            # If we don't have enough unique combinations, sample more
-            while len(unique_combinations) < M:
-                extra_samples = torch.multinomial(probabilities[b*D:(b+1)*D, :], 1, replacement=True)
-                extra_samples = extra_samples.view(D, 1)
-                sample_tuple = tuple(extra_samples[:, 0].tolist())
-                unique_combinations.add(sample_tuple)
-
-            # Convert the unique combinations to a tensor
-            selected_samples = torch.tensor(list(unique_combinations)[:M], dtype=torch.long)
-            output[b] = selected_samples
+        else:
+            sampled_indices = torch.multinomial(probabilities, M, replacement=True)
+            sampled_indices = sampled_indices.view(B, D, M)
+            output = torch.transpose(sampled_indices, -1, -2)[:, :M]
 
         one_hot_output = torch.nn.functional.one_hot(output, num_classes=N)
         probabilities = probabilities.view(B, D, N)
@@ -670,7 +682,10 @@ cdef class cModelWrapper(cWrapper):
                                       ret_hs=self.return_h)  
             vs = model_net_out.vs.cpu()
             logits = model_net_out.logits[-1]    
-            if self.sample: sampled_action, logits = self.sample_from_dist(logits)
+            if self.sample: 
+                sampled_action, logits = self.sample_from_dist(logits)
+            else:
+                logits = logits.squeeze(-2)
             logits = logits.cpu().numpy()
 
             # compute and update root node and current node
@@ -828,7 +843,7 @@ cdef class cModelWrapper(cWrapper):
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
                 if not self.sample:
-                    pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0)
+                    pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0).unsqueeze(-1)
                 else:
                     pass_action_py = pass_raw_action.unsqueeze(0)
                 model_net_out_1 = model_net(obs_py, 
@@ -910,7 +925,10 @@ cdef class cModelWrapper(cWrapper):
                     
             vs_1 = model_net_out_1.vs[-1].float().cpu().numpy()
             logits_1_ = model_net_out_1.logits[-1].float()
-            if self.sample: sampled_action_1, logits_1_ = self.sample_from_dist(logits_1_)            
+            if self.sample: 
+                sampled_action_1, logits_1_ = self.sample_from_dist(logits_1_)            
+            else:
+                logits_1_ = logits_1_.squeeze(-2)
             logits_1 = logits_1_.cpu().numpy()
 
         if self.time: self.timings.time("misc_2")
@@ -921,7 +939,7 @@ cdef class cModelWrapper(cWrapper):
                         for msd in pass_model_states[0].keys()})
                     # all batch index are in the first index 
                 if not self.sample:
-                    pass_model_action_py = torch.tensor(pass_model_action, dtype=long, device=self.device)
+                    pass_model_action_py = torch.tensor(pass_model_action, dtype=long, device=self.device).unsqueeze(-1)
                 else:
                     pass_model_action_py = torch.stack(pass_model_raw_action, dim=0)
                 model_net_out_4 = model_net.forward_single(
@@ -934,7 +952,11 @@ cdef class cModelWrapper(cWrapper):
             rs_4 = model_net_out_4.rs[-1].float().cpu().numpy()
             vs_4 = model_net_out_4.vs[-1].float().cpu().numpy()
             logits_4_ = model_net_out_4.logits[-1].float()
-            if self.sample: sampled_action_4, logits_4_ = self.sample_from_dist(logits_4_)
+            if self.sample: 
+                sampled_action_4, logits_4_ = self.sample_from_dist(logits_4_)
+            else:
+                logits_4_ = logits_4_.squeeze(-2)
+
             logits_4 = logits_4_.cpu().numpy()
             if self.pred_done:
                 done_4 = model_net_out_4.dones[-1].bool().cpu().numpy()
@@ -1104,6 +1126,9 @@ cdef class cModelWrapper(cWrapper):
             info["cur_gate"] = torch.tensor(self.full_cur_gate, dtype=torch.bool, device=self.device)
             if self.sample: info["sampled_action"] = self.sampled_action
         if self.time: self.timings.time("end")
+
+        self.internal_counter += 1
+        if self.internal_counter % 500 == 0 and self.time: print(self.timings.summary())
 
         return (states, 
                 torch.tensor(self.full_reward, dtype=torch.float, device=self.device), 
@@ -1296,7 +1321,7 @@ cdef class cPerfectWrapper(cWrapper):
         if pass_inds_step.size() > 0:
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
-                pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0)
+                pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(-1).unsqueeze(0)
                 model_net_out = model_net(obs_py, 
                                           pass_action_py, 
                                           one_hot=False,
@@ -1449,6 +1474,9 @@ cdef class cPerfectWrapper(cWrapper):
         if self.im_enable:
             info["im_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)
         if self.time: self.timings.time("end")
+
+        self.internal_counter += 1
+        if self.internal_counter % 500 == 0 and self.time: print(self.timings.summary())
  
         return (states, 
                 torch.tensor(self.full_reward, dtype=torch.float, device=self.device), 

@@ -690,7 +690,7 @@ class SRNet(nn.Module):
         else:
             assert action.dtype in [torch.float16, torch.float32]
         if self.dim_actions <= 1:
-            action = action[..., 0]
+            action = action[..., 0, :]
         else:
             action = torch.sum(action * torch.arange(self.num_actions, device=action.device), dim=-1)
             action = action / self.num_actions
@@ -892,7 +892,7 @@ class VPNet(nn.Module):
         if not one_hot:
             action = F.one_hot(action, self.num_actions)
         if self.dim_actions <= 1:
-            action = action[..., 0]
+            action = action[..., 0, :]
         else:
             action = torch.sum(action * torch.arange(self.num_actions, device=action.device), dim=-1)
             action = action / self.num_actions

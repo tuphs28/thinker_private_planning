@@ -54,6 +54,7 @@ class Env(gym.Wrapper):
                  env_n=1, 
                  gpu=True,
                  load_net=True, 
+                 time=False,
                  **kwargs):
         assert name is not None or env_fn is not None, \
             "need either env or env-making function"        
@@ -195,7 +196,7 @@ class Env(gym.Wrapper):
                         flags=self.flags, 
                         model_net=self.model_net, 
                         device=self.device, 
-                        time=False)
+                        time=time)
         
         # wrap the env with a wrapper that computes episode
         # return and episode step for logging purpose;
@@ -329,6 +330,9 @@ class Env(gym.Wrapper):
 
         if self.sample:
             action, action_prob = self.to_raw_action(self.sampled_action, action, action_prob)
+        else:
+            action = action.unsqueeze(-1)
+            action_prob = action_prob.unsqueeze(-2)
 
         self._write_single_model_buffer(n, t, state, reward, done, info, action, action_prob)
 

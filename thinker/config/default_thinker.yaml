@@ -50,6 +50,7 @@ has_action_seq: true # whether tree rep contains action sequence
 # sampled-based search
 sample_n: -1 # number of sampled action; <0 for disabling sample mode
 sample_temp: 4 # whether to use sampled action in imagination
+sample_replace: true # whether to have replcaement when sampling action
 # reward-related
 discounting: 0.97 # discount rate of the raw MDP
 reward_clip: -1 # reward clipping; if positve, the reward is clipped within the absolute value of this values; set to negative number for no clipping
