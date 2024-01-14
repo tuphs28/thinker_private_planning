@@ -291,10 +291,10 @@ class Env(gym.Wrapper):
                 device=self.device,
             ),
             action=torch.zeros(pre_shape + (self.raw_dim_actions,), dtype=torch.long, device=self.device),
-            reward=torch.zeros(pre_shape, dtype=torch.float, device=self.device),
+            reward=torch.full(pre_shape, fill_value=float('nan'), dtype=torch.float, device=self.device),
             done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
             truncated_done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
-            baseline=torch.zeros(pre_shape, dtype=torch.float, device=self.device),
+            baseline=torch.full(pre_shape, fill_value=float('nan'), dtype=torch.float, device=self.device),
         )
     
     def _write_single_model_buffer(self, n, t, state, reward, done, info,
@@ -336,10 +336,10 @@ class Env(gym.Wrapper):
 
         self._write_single_model_buffer(n, t, state, reward, done, info, action, action_prob)
 
-        if t >= pf + cap_t:
+        if t >= cap_t:
             # write the beginning of another buffer
             self._write_single_model_buffer(
-                1 - n, t - cap_t - pf, state, reward, done, info, action, action_prob
+                1 - n, t - cap_t, state, reward, done, info, action, action_prob
             )
 
         if t >= pf + cap_t + k + ret_n:
@@ -353,7 +353,7 @@ class Env(gym.Wrapper):
                 self.model_buffer.write(send_model_local_buffer)
             self.model_local_buffer[n] = self._empty_local_buffer()
             self.model_n = 1 - n
-            self.model_t = t - cap_t - pf + 1
+            self.model_t = t - cap_t + 1
         else:
             self.model_t += 1
 
