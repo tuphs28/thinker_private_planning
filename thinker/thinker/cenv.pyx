@@ -1069,7 +1069,7 @@ cdef class cModelWrapper(cWrapper):
             if self.cur_enable:
                 if self.status[i] == 1: 
                     self.full_cur_reward[i] = cur_reward[j]
-                    self.full_cur_gate[i] = cur_gate[j]
+                    self.full_cur_gate[i] = ~cur_gate[j]
                 else:                    
                     self.full_cur_reward[i] = 0
                     self.full_cur_gate[i] = False
