@@ -276,9 +276,11 @@ class ActorNetBase(BaseNet):
         self.see_h = flags.see_h and not self.disable_thinker
         if self.see_h:
             self.hs_shape = obs_space["hs"].shape[1:]
+            self.oned_h = len(self.hs_shape) == 1
         self.see_x = flags.see_x
         if self.see_x and not self.disable_thinker:
             self.xs_shape = obs_space["xs"].shape[1:]
+            self.oned_x = len(self.xs_shape) == 1
         self.see_real_state = flags.see_real_state        
         if flags.see_real_state:
             self.real_states_shape = obs_space["real_states"].shape[1:]  
@@ -315,20 +317,41 @@ class ActorNetBase(BaseNet):
             last_out_size += 2
 
         if self.see_h:
-            self.h_encoder = ThreeDEncoder(
-                input_shape=self.hs_shape,                                 
-                see_double=self.see_double
-            )
-            last_out_size += self.h_encoder.out_size
+            if not self.oned_x:
+                self.h_encoder = ThreeDEncoder(
+                    input_shape=self.hs_shape,                                 
+                    see_double=self.see_double
+                )
+                h_out_size = self.h_encoder.out_size
+            else:
+                self.h_encoder = MLP(
+                    input_size=self.hs_shape[0],
+                    layer_sizes=[200, 200, 200],
+                    output_size=100,
+                    norm=False,
+                    skip_connection=True,
+                )
+                h_out_size = 100
+            last_out_size += h_out_size
         
         if self.see_x:
-            self.x_encoder_pre =  ThreeDEncoder(
-                input_shape=self.xs_shape, 
-                downpool=True,
-                firstpool=flags.x_enc_first_pool,
-                see_double=self.see_double
-            )
-            x_out_size = self.x_encoder_pre.out_size
+            if not self.oned_x:
+                self.x_encoder_pre = ThreeDEncoder(
+                    input_shape=self.xs_shape, 
+                    downpool=True,
+                    firstpool=flags.x_enc_first_pool,
+                    see_double=self.see_double
+                )
+                x_out_size = self.x_encoder_pre.out_size
+            else:
+                self.x_encoder_pre = MLP(
+                    input_size=self.xs_shape[0],
+                    layer_sizes=[200, 200, 200],
+                    output_size=100,
+                    norm=False,
+                    skip_connection=True,
+                )
+                x_out_size = 100
 
             if self.x_rnn:
                 x_rnn_in_size = x_out_size
