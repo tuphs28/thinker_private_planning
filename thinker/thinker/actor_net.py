@@ -221,6 +221,7 @@ class RNNEncoder(nn.Module):
                 mem_n=tran_mem_n,
                 attn=not tran_lstm_no_attn,
                 attn_mask_b=tran_attn_b,
+                tran_t=tran_t,
             ) 
         self.rnn_out_fc = nn.Sequential(
             nn.Linear(tran_dim, tran_dim), nn.ReLU()
@@ -238,31 +239,14 @@ class RNNEncoder(nn.Module):
         T, B = done.shape
         x = self.rnn_in_fc(x)
         if self.tran_layer_n >= 1:
-            core_input = x.view(*((T, B) + x.shape[1:]))
-            core_output_list = []
-            notdone = ~(done.bool())
-            core_input = core_input.unsqueeze(-1).unsqueeze(-1)
-            for n, (input, nd) in enumerate(
-                zip(core_input.unbind(), notdone.unbind())
-            ):
-                if self.disable_mem:
-                    core_state = tuple(torch.zeros_like(s) for s in core_state)
-                for t in range(self.tran_t):
-                    if t > 0:
-                        nd = torch.ones_like(nd)
-                    nd = nd.view(-1)
-                    output, core_state = self.rnn(
-                        input, core_state, nd, nd
-                    )  # output shape: 1, B, core_output_size                  
-                core_output_list.append(output)
-            core_output = torch.cat(core_output_list)
+            x = x.view(*((T, B) + x.shape[1:])).unsqueeze(-1).unsqueeze(-1)            
+            core_output, core_state = self.rnn(x, done, core_state)
             core_output = torch.flatten(core_output, 0, 1)
-            d = torch.flatten(core_output, start_dim=1)   
+            d = torch.flatten(core_output, 1)   
         else:
             d = x     
         d = self.rnn_out_fc(d)
         return d, core_state
-
 
 class ActorNetBase(BaseNet):
     def __init__(self, obs_space, action_space, flags):

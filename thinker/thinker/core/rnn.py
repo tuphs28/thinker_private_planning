@@ -214,6 +214,7 @@ class ConvAttnLSTM(nn.Module):
         mem_n,
         attn,
         attn_mask_b,
+        tran_t,
         grad_scale=1,
         pool_inject=False,
     ):
@@ -229,6 +230,7 @@ class ConvAttnLSTM(nn.Module):
         self.mem_n = mem_n
         self.grad_scale = grad_scale
         self.attn = attn
+        self.tran_t = tran_t
         self.tot_head_dim = h * w * hidden_dim // num_heads
 
         layers = []
@@ -280,19 +282,41 @@ class ConvAttnLSTM(nn.Module):
                 torch.ones(1, bsz, self.mem_n, device=device).bool(),
             )
         return core_state
+    
+    def forward(self, x, done, core_state):
+        assert len(x.shape) == 5
+        core_output_list = []
+        reset = done.float()
+        for n, (x_single, reset_single) in enumerate(
+            zip(x.unbind(), reset.unbind())
+        ):
+            for t in range(self.tran_t):
+                if t > 0:
+                    reset_single = torch.ones_like(reset_single)
+                reset_single = reset_single.view(-1)
+                output, core_state = self.forward_single(
+                    x_single, core_state, reset_single, reset_single
+                )  # output shape: 1, B, core_output_size                  
+            core_output_list.append(output)
+        core_output = torch.cat(core_output_list)
+        return core_output, core_state
 
-    def forward(self, x, core_state, notdone, notdone_attn=None):
+    def forward_single(self, x, core_state, reset, reset_attn):
+        reset = reset.float()
+        if reset_attn is None:
+            reset_attn = reset.float()
+        else:
+            reset_attn = reset_attn.float()
+
         b, c, h, w = x.shape
         layer_n = 4 if self.attn else 2
-        out = core_state[(self.num_layers - 1) * layer_n][0] * notdone.float().view(
+        out = core_state[(self.num_layers - 1) * layer_n][0] * (1 - reset).view(
             b, 1, 1, 1
         )  # h_cur on last layer
-
-        if notdone_attn is None:
-            notdone_attn = notdone
+        
         if self.attn:
             src_mask = core_state[-1][0]
-            src_mask[~(notdone_attn.bool()), :] = True
+            src_mask[reset_attn.bool(), :] = True
             src_mask[:, :-1] = src_mask[:, 1:].clone().detach()
             src_mask[:, -1] = False
             new_src_mask = src_mask.unsqueeze(0)
@@ -309,8 +333,8 @@ class ConvAttnLSTM(nn.Module):
         new_core_state = []
         for n, cell in enumerate(self.layers):
             cell_input = torch.concat([x, out], dim=1)
-            h_cur = core_state[n * layer_n + 0][0] * notdone.float().view(b, 1, 1, 1)
-            c_cur = core_state[n * layer_n + 1][0] * notdone.float().view(b, 1, 1, 1)
+            h_cur = core_state[n * layer_n + 0][0] * (1 - reset.view(b, 1, 1, 1))
+            c_cur = core_state[n * layer_n + 1][0] * (1 - reset.view(b, 1, 1, 1))
             concat_k_cur = core_state[n * layer_n + 2][0] if self.attn else None
             concat_v_cur = core_state[n * layer_n + 3][0] if self.attn else None
 
