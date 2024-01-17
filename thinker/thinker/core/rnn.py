@@ -255,13 +255,12 @@ class ConvAttnLSTM(nn.Module):
         core_state = ()
         for _ in range(self.num_layers):
             core_state = core_state + (
-                torch.zeros(1, bsz, self.hidden_dim, self.h, self.w, device=device),
-                torch.zeros(1, bsz, self.hidden_dim, self.h, self.w, device=device),
+                torch.zeros(bsz, self.hidden_dim, self.h, self.w, device=device),
+                torch.zeros(bsz, self.hidden_dim, self.h, self.w, device=device),
             )
             if self.attn:
                 core_state = core_state + (
                     torch.zeros(
-                        1,
                         bsz,
                         self.num_heads,
                         self.mem_n,
@@ -269,7 +268,6 @@ class ConvAttnLSTM(nn.Module):
                         device=device,
                     ),
                     torch.zeros(
-                        1,
                         bsz,
                         self.num_heads,
                         self.mem_n,
@@ -279,7 +277,7 @@ class ConvAttnLSTM(nn.Module):
                 )
         if self.attn:
             core_state = core_state + (
-                torch.ones(1, bsz, self.mem_n, device=device).bool(),
+                torch.ones(bsz, self.mem_n, device=device).bool(),
             )
         return core_state
     
@@ -310,16 +308,16 @@ class ConvAttnLSTM(nn.Module):
 
         b, c, h, w = x.shape
         layer_n = 4 if self.attn else 2
-        out = core_state[(self.num_layers - 1) * layer_n][0] * (1 - reset).view(
+        out = core_state[(self.num_layers - 1) * layer_n] * (1 - reset).view(
             b, 1, 1, 1
         )  # h_cur on last layer
         
         if self.attn:
-            src_mask = core_state[-1][0]
+            src_mask = core_state[-1]
             src_mask[reset_attn.bool(), :] = True
             src_mask[:, :-1] = src_mask[:, 1:].clone().detach()
             src_mask[:, -1] = False
-            new_src_mask = src_mask.unsqueeze(0)
+            new_src_mask = src_mask
             src_mask_reshape = (
                 src_mask.view(b, 1, 1, -1)
                 .broadcast_to(b, self.num_heads, 1, -1)
@@ -333,10 +331,10 @@ class ConvAttnLSTM(nn.Module):
         new_core_state = []
         for n, cell in enumerate(self.layers):
             cell_input = torch.concat([x, out], dim=1)
-            h_cur = core_state[n * layer_n + 0][0] * (1 - reset.view(b, 1, 1, 1))
-            c_cur = core_state[n * layer_n + 1][0] * (1 - reset.view(b, 1, 1, 1))
-            concat_k_cur = core_state[n * layer_n + 2][0] if self.attn else None
-            concat_v_cur = core_state[n * layer_n + 3][0] if self.attn else None
+            h_cur = core_state[n * layer_n + 0] * (1 - reset.view(b, 1, 1, 1))
+            c_cur = core_state[n * layer_n + 1] * (1 - reset.view(b, 1, 1, 1))
+            concat_k_cur = core_state[n * layer_n + 2] if self.attn else None
+            concat_v_cur = core_state[n * layer_n + 3] if self.attn else None
 
             h_next, c_next, concat_k, concat_v = cell(
                 cell_input, h_cur, c_cur, concat_k_cur, concat_v_cur, src_mask_reshape
@@ -348,11 +346,11 @@ class ConvAttnLSTM(nn.Module):
                 concat_k.register_hook(lambda grad: grad * self.grad_scale)
                 concat_v.register_hook(lambda grad: grad * self.grad_scale)
 
-            new_core_state.append(h_next.unsqueeze(0))
-            new_core_state.append(c_next.unsqueeze(0))
+            new_core_state.append(h_next)
+            new_core_state.append(c_next)
             if self.attn:
-                new_core_state.append(concat_k.unsqueeze(0))
-                new_core_state.append(concat_v.unsqueeze(0))
+                new_core_state.append(concat_k)
+                new_core_state.append(concat_v)
             out = h_next
 
         core_state = tuple(new_core_state)

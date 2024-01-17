@@ -78,7 +78,7 @@ class ActorBuffer:
             )
         )
         output_state = tuple(
-            np.concatenate([state[i] for state in collected_state], axis=1)
+            np.concatenate([state[i] for state in collected_state], axis=0)
             for i in range(len(collected_state[0]))
         )
 
@@ -94,7 +94,7 @@ class ActorBuffer:
             )
             self.buffer.insert(0, extra_data)
             extra_state = tuple(
-                state[:, -collected_size + self.batch_size :, ...]
+                state[-collected_size + self.batch_size :, ...]
                 for state in output_state
             )
             self.buffer_state.insert(0, extra_state)
@@ -107,7 +107,7 @@ class ActorBuffer:
                 )
             )
             output_state = tuple(
-                state[:, : self.batch_size, ...] for state in output_state
+                state[: self.batch_size, ...] for state in output_state
             )
 
         return output, output_state
