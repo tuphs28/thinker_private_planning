@@ -94,12 +94,18 @@ class Env(gym.Wrapper):
         if env_fn is None:
             if name == "Sokoban-v0": import gym_sokoban
             if "Safexp" in name: import mujoco_py, safety_gym
-            env_fn = lambda: PreWrapper(gym.make(name), name=name, grayscale=self.flags.grayscale, discrete_k=self.flags.discrete_k)         
+            env_fn = lambda: PreWrapper(
+                gym.make(name), 
+                name=name, 
+                grayscale=self.flags.grayscale, 
+                discrete_k=self.flags.discrete_k, 
+                one_to_threed_state=self.flags.one_to_threed_state
+            )         
 
         # initialize a single env to collect env information
         env = env_fn()
-        assert len(env.observation_space.shape) == 3, \
-            f"env.observation_space should be 3d, not {env.observation_space.shape}"
+        assert len(env.observation_space.shape) in [1, 3], \
+            f"env.observation_space should be 1d or 3d, not {env.observation_space.shape}"
         assert type(env.action_space) in [gym.spaces.discrete.Discrete, gym.spaces.tuple.Tuple], \
             f"env.action_space should be Discrete or Tuple, not {type(env.action_space)}"  
         

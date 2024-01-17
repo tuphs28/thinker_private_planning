@@ -125,15 +125,14 @@ class PostWrapper(gym.Wrapper):
             reward = torch.clamp(reward, -self.reward_clip, +self.reward_clip)
         return state, reward, done, info
 
-def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1):
-    if discrete_k > 0:
-        env = DiscretizeActionWrapper(env, K=discrete_k)
+def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, one_to_threed_state=False):
+    if discrete_k > 0: env = DiscretizeActionWrapper(env, K=discrete_k)
+    if one_to_threed_state: env = TileObservationWrapper(env)
 
     if "Sokoban" in name:
         env = TransposeWrap(env)
     elif "Safexp" in name:
         assert discrete_k > 0, "Safeexp require discretizing the action space"
-        env = TileObservationWrapper(env)
     else:
         env = StateWrapper(env)
         env = TimeLimit_(env, max_episode_steps=108000)

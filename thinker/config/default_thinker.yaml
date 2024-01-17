@@ -47,6 +47,7 @@ return_x: false # whether to return the model's predicted state
 return_double: false # whether to return both root node and current node's h / raw_s
 grayscale: false # whether to apply grayscale for atari
 has_action_seq: true # whether tree rep contains action sequence
+one_to_threed_state: false # if enabled, one-dim observation state space will be converted to three-dim
 # sampled-based search
 sample_n: -1 # number of sampled action; <0 for disabling sample mode
 sample_temp: 4 # whether to use sampled action in imagination

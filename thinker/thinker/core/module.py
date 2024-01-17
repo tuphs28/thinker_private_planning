@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 def simple_mlp(
     input_size,
@@ -142,3 +143,19 @@ class ResBlock(nn.Module):
             out += identity
         out = self.relu(out)
         return out
+    
+class OneDResBlock(nn.Module):
+    def __init__(self, hidden_size):
+        super(OneDResBlock, self).__init__()
+        self.norm1 = nn.LayerNorm(hidden_size)
+        self.linear1 = nn.Linear(hidden_size, hidden_size)
+        self.norm2 = nn.LayerNorm(hidden_size)
+        self.linear2 = nn.Linear(hidden_size, hidden_size)
+
+    def forward(self, x):
+        out = self.norm1(x)
+        out = F.relu(self.linear1(out))
+        out = self.norm2(out)
+        out = F.relu(self.linear2(out))
+        out = out + x  # Skip connection
+        return out    

@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from thinker import util
-from thinker.core.module import conv3x3, ResBlock, MLP
+from thinker.core.module import conv3x3, ResBlock, MLP, OneDResBlock
 import math
 
 OutNetOut = namedtuple(
@@ -66,94 +66,117 @@ class FrameEncoder(nn.Module):
         self.frame_stack_n = frame_stack_n        
         self.input_shape = input_shape        
         self.concat_action = concat_action
+        self.oned_input = len(self.input_shape) == 1
 
-        frame_channels, h, w = input_shape
+        frame_channels = input_shape[0]
         if self.concat_action:
             in_channels = frame_channels + actions_ch
         else:
             in_channels = frame_channels
 
-        n_block = 1 * self.size_nn
-        out_channels = int(128 // downscale_c)
+        if not self.oned_input:
+            h, w = input_shape[1:]
+            frame_channels, h, w = input_shape
+            if self.concat_action:
+                in_channels = frame_channels + actions_ch
+            else:
+                in_channels = frame_channels
 
-        self.conv1 = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-        )
-        res = [
-            ResBlock(inplanes=out_channels, disable_bn=disable_bn)
-            for _ in range(n_block)
-        ]  # Deep: 2 blocks here
-        self.res1 = nn.Sequential(*res)
-        self.conv2 = nn.Conv2d(
-            in_channels=out_channels,
-            out_channels=out_channels * 2,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-        )
-        res = [
-            ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
-            for _ in range(n_block)
-        ]  # Deep: 3 blocks here
-        self.res2 = nn.Sequential(*res)
-        self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
-        res = [
-            ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
-            for _ in range(n_block)
-        ]  # Deep: 3 blocks here
-        self.res3 = nn.Sequential(*res)
-        self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
-        self.out_shape = (
-            out_channels * 2,
-            h // 16 + int((h % 16) > 0),
-            w // 16 + int((w % 16) > 0),
-        )
+            n_block = 1 * self.size_nn
+            out_channels = int(128 // downscale_c)
 
-        if decoder:
-            d_conv = [
+            self.conv1 = nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            )
+            res = [
+                ResBlock(inplanes=out_channels, disable_bn=disable_bn)
+                for _ in range(n_block)
+            ]  # Deep: 2 blocks here
+            self.res1 = nn.Sequential(*res)
+            self.conv2 = nn.Conv2d(
+                in_channels=out_channels,
+                out_channels=out_channels * 2,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+            )
+            res = [
                 ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
                 for _ in range(n_block)
-            ]
-            kernel_sizes = [4, 4, 4, 4]
-            conv_channels = [
-                frame_channels
-                if frame_stack_n == 1
-                else frame_channels // frame_stack_n,
-                out_channels,
+            ]  # Deep: 3 blocks here
+            self.res2 = nn.Sequential(*res)
+            self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
+            res = [
+                ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
+                for _ in range(n_block)
+            ]  # Deep: 3 blocks here
+            self.res3 = nn.Sequential(*res)
+            self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
+            self.out_shape = (
                 out_channels * 2,
-                out_channels * 2,
-                out_channels * 2,
-            ]
-            for i in range(4):
-                if i in [1, 3]:
-                    d_conv.extend(
-                        [
-                            ResBlock(
-                                inplanes=conv_channels[4 - i], disable_bn=disable_bn
-                            )
-                            for _ in range(n_block)
-                        ]
+                h // 16 + int((h % 16) > 0),
+                w // 16 + int((w % 16) > 0),
+            )
+
+            if decoder:
+                d_conv = [
+                    ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
+                    for _ in range(n_block)
+                ]
+                kernel_sizes = [4, 4, 4, 4]
+                conv_channels = [
+                    frame_channels
+                    if frame_stack_n == 1
+                    else frame_channels // frame_stack_n,
+                    out_channels,
+                    out_channels * 2,
+                    out_channels * 2,
+                    out_channels * 2,
+                ]
+                for i in range(4):
+                    if i in [1, 3]:
+                        d_conv.extend(
+                            [
+                                ResBlock(
+                                    inplanes=conv_channels[4 - i], disable_bn=disable_bn
+                                )
+                                for _ in range(n_block)
+                            ]
+                        )
+                    d_conv.append(nn.ReLU())
+                    d_conv.append(
+                        nn.ConvTranspose2d(
+                            conv_channels[4 - i],
+                            conv_channels[4 - i - 1],
+                            kernel_size=kernel_sizes[i],
+                            stride=2,
+                            padding=1,
+                        )
                     )
-                d_conv.append(nn.ReLU())
-                d_conv.append(
-                    nn.ConvTranspose2d(
-                        conv_channels[4 - i],
-                        conv_channels[4 - i - 1],
-                        kernel_size=kernel_sizes[i],
-                        stride=2,
-                        padding=1,
-                    )
-                )
-            self.d_conv = nn.Sequential(*d_conv)
+                self.d_conv = nn.Sequential(*d_conv)
+        
+        else:
+            n_block = 2 * size_nn
+            hidden_size = 512 // downscale_c
+            self.input_block = nn.Sequential(
+                nn.Linear(in_channels, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.Tanh()
+            )
+            self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+            self.out_shape = (hidden_size,)
+            if decoder:
+                self.d_res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+                self.output_block = nn.Linear(hidden_size, input_shape[0])            
 
     def forward(self, x, actions=None, flatten=False):
         """
         Args:
-          x (tensor): frame with shape B, C, H, W
+          x (tensor): frame with shape B, C, H, W or B, C
           action (tensor): action with shape B, num_actions (in one-hot)
         """
         assert x.dtype in [torch.float, torch.float16]
@@ -164,17 +187,23 @@ class FrameEncoder(nn.Module):
                 (actions.shape[0] * actions.shape[1],) + actions.shape[2:]
             )
         if self.concat_action:
-            actions = (
-                actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])
-            )
+            if not self.oned_input:
+                actions = (
+                    actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])
+                )                
             x = torch.concat([x, actions], dim=1)
-        x = F.relu(self.conv1(x))
-        x = self.res1(x)
-        x = F.relu(self.conv2(x))
-        x = self.res2(x)
-        x = self.avg1(x)
-        x = self.res3(x)
-        z = self.avg2(x)
+
+        if not self.oned_input:
+            x = F.relu(self.conv1(x))
+            x = self.res1(x)
+            x = F.relu(self.conv2(x))
+            x = self.res2(x)
+            x = self.avg1(x)
+            x = self.res3(x)
+            z = self.avg2(x)
+        else:
+            x = self.input_block(x)
+            z = self.res(x)
         if flatten:
             z = z.view(input_shape[:2] + z.shape[1:])
         return z
@@ -187,9 +216,13 @@ class FrameEncoder(nn.Module):
         if flatten:
             input_shape = z.shape
             z = z.view((z.shape[0] * z.shape[1],) + z.shape[2:])
-        x = self.d_conv(z)
-        if x.shape[2] > self.input_shape[1]: x = x[:, :, :self.input_shape[1]]
-        if x.shape[3] > self.input_shape[2]: x = x[:, :, :, :self.input_shape[2]]
+        if not self.oned_input:
+            x = self.d_conv(z)
+            if x.shape[2] > self.input_shape[1]: x = x[:, :, :self.input_shape[1]]
+            if x.shape[3] > self.input_shape[2]: x = x[:, :, :, :self.input_shape[2]]
+        else:
+            x = self.d_res(z)
+            x = self.output_block(x)
         if flatten:
             x = x.view(input_shape[:2] + x.shape[1:])        
         return x
@@ -199,6 +232,7 @@ class DynamicModel(nn.Module):
         self,
         actions_ch,
         inplanes,
+        oned_input,
         size_nn=1,
         outplanes=None,
         disable_half_grad=True,
@@ -211,31 +245,45 @@ class DynamicModel(nn.Module):
         self.disable_half_grad = disable_half_grad
         if outplanes is None:
             outplanes = inplanes
+        self.oned_input = oned_input
 
-        res = [
-            ResBlock(
-                inplanes=inplanes + actions_ch,
-                outplanes=outplanes,
-                disable_bn=disable_bn,
+        if not self.oned_input:
+            res = [
+                ResBlock(
+                    inplanes=inplanes + actions_ch,
+                    outplanes=outplanes,
+                    disable_bn=disable_bn,
+                )
+            ] + [
+                ResBlock(inplanes=outplanes, disable_bn=disable_bn)
+                for i in range(4 * self.size_nn)
+            ]
+            self.res = nn.Sequential(*res)
+        else:
+            n_block = 2 * size_nn
+            self.input_block = nn.Sequential(
+                nn.Linear(inplanes + actions_ch, outplanes),
+                nn.LayerNorm(outplanes),
+                nn.ReLU()
             )
-        ] + [
-            ResBlock(inplanes=outplanes, disable_bn=disable_bn)
-            for i in range(4 * self.size_nn)
-        ]
-        self.res = nn.Sequential(*res)
+            self.res = nn.Sequential(*[OneDResBlock(outplanes) for _ in range(n_block)])
         self.outplanes = outplanes
 
     def forward(self, h, actions):
         x = h
-        b, c, height, width = x.shape
         if self.training and not self.disable_half_grad:
             # no half-gradient for dreamer net
             x.register_hook(lambda grad: grad * 0.5)
-        actions = (
-            actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])
-        )
-        x = torch.concat([x, actions], dim=1)
-        out = self.res(x)
+        if not self.oned_input:
+            actions = (
+                actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])
+            )
+            x = torch.concat([x, actions], dim=1)
+            out = self.res(x)
+        else:
+            x = torch.concat([x, actions], dim=1)
+            x = self.input_block(x)
+            out = self.res(x)
         return out
 
 class NoiseModel(nn.Module):
@@ -251,6 +299,8 @@ class NoiseModel(nn.Module):
         self.size_nn = size_nn
         self.noise_n = noise_n
         self.noise_d = noise_d
+
+        assert len(self.in_shape) == 3
 
         res = [
             ResBlock(
@@ -292,17 +342,17 @@ class OutputNet(nn.Module):
 
         self.num_actions = num_actions
         self.dim_actions = dim_actions
-        self.input_shape = input_shape
+        self.input_shape = input_shape        
+        self.oned_input = len(self.input_shape) == 1
         self.size_nn = size_nn
         self.value_clamp = value_clamp
         self.enc_type = enc_type
         self.predict_v_pi = predict_v_pi
         self.predict_r = predict_r
-        self.predict_done = predict_done
+        self.predict_done = predict_done        
 
         assert self.enc_type in [0, 2, 3], "model encoding type can only be 0, 2, 3"
 
-        c, h, w = input_shape
         if self.enc_type in [2, 3]:
             self.rv_tran = RVTran(enc_type=enc_type, enc_f_type=enc_f_type)
             out_n = self.rv_tran.encoded_n
@@ -310,15 +360,18 @@ class OutputNet(nn.Module):
             self.rv_tran = None
             out_n = 1
 
-        layer_norm = nn.BatchNorm2d if not disable_bn else nn.Identity
-
-        self.conv1 = nn.Conv2d(
-            in_channels=c, out_channels=c // 2, kernel_size=3, padding="same"
-        )
-        self.conv2 = nn.Conv2d(
-            in_channels=c // 2, out_channels=c // 4, kernel_size=3, padding="same"
-        )
-        fc_in = h * w * (c // 4)
+        if not self.oned_input:            
+            c, h, w = input_shape
+            self.conv1 = nn.Conv2d(
+                in_channels=c, out_channels=c // 2, kernel_size=3, padding="same"
+            )
+            self.conv2 = nn.Conv2d(
+                in_channels=c // 2, out_channels=c // 4, kernel_size=3, padding="same"
+            )
+            fc_in = h * w * (c // 4)
+        else:
+            self.res = OneDResBlock(input_shape[0])
+            fc_in = self.input_shape[0]
 
         if predict_v_pi:
             self.fc_logits = nn.Linear(fc_in, num_actions*dim_actions)
@@ -340,13 +393,15 @@ class OutputNet(nn.Module):
                 nn.init.constant_(self.fc_r.weight, 0.0)
                 nn.init.constant_(self.fc_r.bias, 0.0)
 
-    def forward(self, h, predict_reward=True, state={}):
+    def forward(self, h, predict_reward=True):
         x = h
         b = x.shape[0]
-        state_ = {}
-        x_ = F.relu(self.conv1(x))
-        x_ = F.relu(self.conv2(x_))
-        x_ = torch.flatten(x_, start_dim=1)
+        if not self.oned_input:
+            x_ = F.relu(self.conv1(x))
+            x_ = F.relu(self.conv2(x_))
+            x_ = torch.flatten(x_, start_dim=1)
+        else:
+            x_ = self.res(x)
         x_v, x_logits, x_done = x_, x_, x_
 
         if self.predict_v_pi:
@@ -398,6 +453,7 @@ class SRNet(nn.Module):
         super(SRNet, self).__init__()
         self.flags = flags
         self.obs_shape = obs_shape
+        self.oned_input = len(obs_shape) == 1
         self.num_actions = num_actions
         self.dim_actions = dim_actions
         self.actions_ch = self.num_actions if dim_actions <=1 else self.dim_actions
@@ -424,6 +480,7 @@ class SRNet(nn.Module):
         self.RNN = DynamicModel(
             actions_ch=self.actions_ch,
             inplanes=inplanes,
+            oned_input=self.oned_input,
             size_nn=self.size_nn,
             outplanes=self.hidden_shape[0], 
             disable_half_grad=True,
@@ -595,7 +652,7 @@ class SRNet(nn.Module):
         if self.frame_stack_n > 1:
             x = torch.concat([state["last_x"], x], dim=1)
 
-        out = self.out(h, predict_reward=True, state=state)
+        out = self.out(h, predict_reward=True)
         state = {"sr_h": h}
         if self.frame_stack_n > 1:
             state["last_x"] = x[:, self.copy_n:]        
@@ -701,6 +758,7 @@ class VPNet(nn.Module):
         super(VPNet, self).__init__()
         self.flags = flags
         self.obs_shape = obs_shape
+        self.oned_input = len(self.obs_shape) == 1
         self.num_actions = num_actions
         self.dim_actions = dim_actions
         self.actions_ch = self.num_actions if dim_actions <=1 else self.dim_actions
@@ -730,10 +788,12 @@ class VPNet(nn.Module):
         )
         self.hidden_shape = self.encoder.out_shape
         inplanes = self.hidden_shape[0]
+        
         if self.use_rnn:
             self.RNN = DynamicModel(
                 actions_ch=self.actions_ch,
                 inplanes=inplanes * 2 if self.receive_z else inplanes,
+                oned_input=self.oned_input, 
                 outplanes=inplanes,
                 size_nn=self.size_nn,
                 disable_half_grad=False,
@@ -759,14 +819,18 @@ class VPNet(nn.Module):
         )
 
         if not self.receive_z:
-            self.h_to_z_conv = nn.Sequential(
-                ResBlock(inplanes=inplanes, disable_bn=False),
-                conv3x3(inplanes, inplanes),
-            )
-            self.z_to_h_conv = nn.Sequential(
-                ResBlock(inplanes=inplanes, disable_bn=False),
-                conv3x3(inplanes, inplanes),
-            )
+            if not self.oned_input:
+                self.h_to_z_nn = nn.Sequential(
+                    ResBlock(inplanes=inplanes, disable_bn=False),
+                    conv3x3(inplanes, inplanes),
+                )
+                self.z_to_h_nn = nn.Sequential(
+                    ResBlock(inplanes=inplanes, disable_bn=False),
+                    conv3x3(inplanes, inplanes),
+                )
+            else:
+                self.h_to_z_nn = OneDResBlock(hidden_size=inplanes)
+                self.z_to_h_nn = OneDResBlock(hidden_size=inplanes)
 
         self.rv_tran = self.out.rv_tran
 
@@ -775,7 +839,7 @@ class VPNet(nn.Module):
             h_ = torch.flatten(h, 0, 1)
         else:
             h_ = h
-        z = self.h_to_z_conv(h_)
+        z = self.h_to_z_nn(h_)
         if flatten:
             z = z.view(h.shape[:2] + z.shape[1:])
         return z
@@ -785,7 +849,7 @@ class VPNet(nn.Module):
             z_ = torch.flatten(z, 0, 1)
         else:
             z_ = z
-        h = self.z_to_h_conv(z_)
+        h = self.z_to_h_nn(z_)
         if flatten:
             h = h.view(z.shape[:2] + h.shape[1:])
         return h
@@ -866,7 +930,7 @@ class VPNet(nn.Module):
         else:
             rnn_in = state["vp_h"]
         h = self.RNN(h=rnn_in, actions=action)
-        out = self.out(h, predict_reward=True, state=state)
+        out = self.out(h, predict_reward=True)
         state = {"vp_h": h}
 
         if not self.receive_z:
@@ -904,6 +968,7 @@ class ModelNet(BaseNet):
         self.rnn = False
         self.flags = flags
         self.obs_shape = obs_space.shape
+        self.oned_input = len(self.obs_shape) == 1
         self.num_actions = num_actions
         self.dim_actions = dim_actions
         self.enc_type = flags.model_enc_type

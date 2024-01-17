@@ -93,9 +93,7 @@ class SModelLearner:
         self.model_net.to(self.device)
         if self.flags.dual_net:
             util.optimizer_to(self.optimizer_m, self.device)
-        util.optimizer_to(self.optimizer_p, self.device)
-
-        
+        util.optimizer_to(self.optimizer_p, self.device)        
         
         self.timing = util.Timings() if self.time else None
         self.perfect_model = flags.wrapper_type == 2
@@ -253,6 +251,7 @@ class SModelLearner:
             self.timing.time("convert_data")
 
         if self.flags.dual_net:
+            torch.autograd.set_detect_anomaly(True)
             # compute losses for model_net
             with autocast(enabled=self.flags.float16):
                 losses_m, pred_xs = self.compute_losses_m(
@@ -415,7 +414,10 @@ class SModelLearner:
                 )
             pred_enc = self.model_net.vp_net.encoder(out.xs, action, flatten=True)
             diff = target_enc - pred_enc
-        img_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
+        if not self.model_net.oned_input:
+            img_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
+        else:
+            img_loss = torch.mean(torch.square(diff), dim=2)
         img_loss = img_loss * target["done_mask"][1:]
         img_loss = torch.sum(img_loss, dim=0)
         img_loss = img_loss * is_weights
