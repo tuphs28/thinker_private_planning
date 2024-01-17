@@ -336,7 +336,7 @@ class OutputNet(nn.Module):
         predict_v_pi=True,
         predict_r=True,
         predict_done=False,
-        disable_bn=False,
+        ordinal=False,
     ):
         super(OutputNet, self).__init__()
 
@@ -349,7 +349,8 @@ class OutputNet(nn.Module):
         self.enc_type = enc_type
         self.predict_v_pi = predict_v_pi
         self.predict_r = predict_r
-        self.predict_done = predict_done        
+        self.predict_done = predict_done  
+        self.ordinal = ordinal      
 
         assert self.enc_type in [0, 2, 3], "model encoding type can only be 0, 2, 3"
 
@@ -392,6 +393,12 @@ class OutputNet(nn.Module):
             if zero_init:
                 nn.init.constant_(self.fc_r.weight, 0.0)
                 nn.init.constant_(self.fc_r.bias, 0.0)
+        
+        if self.ordinal:
+            indices = torch.arange(self.num_actions).view(-1, 1)
+            ordinal_mask = (indices + indices.T) <= (self.num_actions - 1)
+            ordinal_mask = ordinal_mask.float()
+            self.register_buffer("ordinal_mask", ordinal_mask)
 
     def forward(self, h, predict_reward=True):
         x = h
@@ -407,6 +414,11 @@ class OutputNet(nn.Module):
         if self.predict_v_pi:
             logits = self.fc_logits(x_logits)
             logits = logits.view(b, self.dim_actions, self.num_actions)
+            if self.ordinal:
+                norm_softm = F.sigmoid(logits)
+                norm_softm_tiled = torch.tile(norm_softm.unsqueeze(-1), [1,1,1,self.num_actions])
+                logits = torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
+
             if self.enc_type in [2, 3]:
                 v_enc_logit = self.fc_v(x_v)
                 v_enc_v = F.softmax(v_enc_logit, dim=-1)
@@ -502,7 +514,7 @@ class SRNet(nn.Module):
             predict_v_pi=False,
             predict_r=True,
             predict_done=self.flags.model_done_loss_cost > 0.0,
-            disable_bn=self.flags.model_disable_bn,
+            ordinal=self.flags.model_ordinal,
         )
         self.rv_tran = self.out.rv_tran
 
@@ -815,7 +827,7 @@ class VPNet(nn.Module):
             predict_v_pi=True,
             predict_r=self.predict_rd,
             predict_done=self.predict_rd and self.flags.model_done_loss_cost > 0.0,
-            disable_bn=self.flags.model_disable_bn,
+            ordinal=self.flags.model_ordinal,
         )
 
         if not self.receive_z:

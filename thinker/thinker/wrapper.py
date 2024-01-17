@@ -606,7 +606,7 @@ class DiscretizeActionWrapper(gym.ActionWrapper):
     def action(self, action):
         # Convert the discrete action to continuous action using vectorized operations
         action = np.array(action)  # Ensure action is a NumPy array
-        discrete_to_cont = ((2 * action / (self.K - 1)) - 1) * (self.max_action - self.min_action) + self.min_action
+        discrete_to_cont = (action / (self.K - 1)) * (self.max_action - self.min_action) + self.min_action
         return discrete_to_cont
 
 class TileObservationWrapper(gym.ObservationWrapper):

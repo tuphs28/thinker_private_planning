@@ -33,6 +33,7 @@ model_size_nn: 1 # model size mulitplier (integer)
 model_downscale_c: 2 # model channel size divisor (integer)
 model_disable_bn: true # whether to disable batch norm in model
 model_zero_init: true # whether to zero initialize the model's predicted rewards and values
+model_ordinal: false # whether to use ordinal representation in model's policy
 model_img_type: 1 # type of model's state loss: 0 for L2 loss, 1 for feature loss
 # wrapper to be used
 require_prob: false # whether to use prob to train model instead of sampled action
