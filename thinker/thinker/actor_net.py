@@ -193,38 +193,26 @@ class RNNEncoder(nn.Module):
     # RNN processor for 1d inputs; can be used directly on tree rep or encoded 3d input
     def __init__(self, 
                  in_size, # int; input size
-                 tran_dim, # int; size of transformer / LSTM embedding dim
-                 tran_t, # int; number of inner recurrent step
-                 tran_layer_n, # int; number of layers
-                 tran_mem_n, # int; size of memory for the attn modules
-                 tran_head_n, # int; number of head for attention module
-                 tran_lstm_no_attn, # boolean; whether to use attention module; if true, becomes vanilla LSTM
-                 tran_attn_b, # float; atention bias for current position
-                 disable_mem, # boolean; whther to disable memory                 
+                 flags            
                  ):
-        super(RNNEncoder, self).__init__()
-        self.tran_layer_n = tran_layer_n
-        self.tran_t = tran_t
-        self.disable_mem = disable_mem        
+        super(RNNEncoder, self).__init__()  
         self.rnn_in_fc = nn.Sequential(
-                    nn.Linear(in_size, tran_dim), nn.ReLU()
+                    nn.Linear(in_size, flags.tran_dim), nn.ReLU()
         )  
+        self.tran_layer_n = flags.tran_layer_n 
         if self.tran_layer_n > 0:
             self.rnn = ConvAttnLSTM(
-                h=1,
-                w=1,
-                input_dim=tran_dim,
-                hidden_dim=tran_dim,
-                kernel_size=1,
-                num_layers=tran_layer_n,
-                num_heads=tran_head_n,
-                mem_n=tran_mem_n,
-                attn=not tran_lstm_no_attn,
-                attn_mask_b=tran_attn_b,
-                tran_t=tran_t,
+                input_dim=flags.tran_dim,
+                hidden_dim=flags.tran_dim,
+                num_layers=flags.tran_layer_n,
+                attn=not flags.tran_lstm_no_attn,
+                mem_n=flags.tran_mem_n,
+                num_heads=flags.tran_head_n,
+                attn_mask_b=flags.tran_attn_b,
+                tran_t=flags.tran_t,
             ) 
         self.rnn_out_fc = nn.Sequential(
-            nn.Linear(tran_dim, tran_dim), nn.ReLU()
+            nn.Linear(flags.tran_dim, flags.tran_dim), nn.ReLU()
         )
 
     def initial_state(self, batch_size=1, device=None):
@@ -342,14 +330,7 @@ class ActorNetBase(BaseNet):
                 x_rnn_in_size += aux_info_size
                 self.x_encoder_rnn = RNNEncoder(
                     in_size=x_rnn_in_size,
-                    tran_dim=flags.tran_dim,
-                    tran_t=flags.tran_t,
-                    tran_layer_n=flags.tran_layer_n,
-                    tran_mem_n=flags.tran_mem_n,
-                    tran_head_n=flags.tran_head_n,
-                    tran_lstm_no_attn=flags.tran_lstm_no_attn,
-                    tran_attn_b=flags.tran_attn_b,
-                    disable_mem=flags.disable_mem,
+                    flags=flags,
                 )
                 x_out_size = flags.tran_dim
             
@@ -369,16 +350,9 @@ class ActorNetBase(BaseNet):
             if self.tree_rep_rnn:
                 self.tree_rep_encoder = RNNEncoder(
                     in_size=self.tree_reps_shape[0],
-                    tran_dim=flags.tran_dim,
-                    tran_t=flags.tran_t,
-                    tran_layer_n=flags.tran_layer_n,
-                    tran_mem_n=flags.tran_mem_n,
-                    tran_head_n=flags.tran_head_n,
-                    tran_lstm_no_attn=flags.tran_lstm_no_attn,
-                    tran_attn_b=flags.tran_attn_b,
-                    disable_mem=flags.disable_mem,
+                    flags=flags
                 )
-                last_out_size += self.tran_dim
+                last_out_size += flags.tran_dim
             else:
                 self.tree_rep_encoder = MLP(
                     input_size=self.tree_reps_shape[0],

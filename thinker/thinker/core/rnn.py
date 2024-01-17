@@ -203,18 +203,18 @@ class ConvAttnLSTMCell(nn.Module):
 
 class ConvAttnLSTM(nn.Module):
     def __init__(
-        self,
-        h,
-        w,
+        self,        
         input_dim,
-        hidden_dim,
-        kernel_size,
-        num_layers,
-        num_heads,
-        mem_n,
+        hidden_dim,        
+        num_layers,        
         attn,
-        attn_mask_b,
-        tran_t,
+        h=1,
+        w=1,
+        kernel_size=1,
+        mem_n=None,
+        num_heads=None,
+        attn_mask_b=5,
+        tran_t=1,
         grad_scale=1,
         pool_inject=False,
     ):

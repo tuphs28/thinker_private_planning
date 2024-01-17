@@ -43,7 +43,6 @@ tran_head_n: 8 # number of head for each attention layer
 tran_lstm_no_attn: false # whether to disable the attention module in lstm-attn
 tran_attn_b: 5 # initial bias for attending to the current step
 tran_dim: 128 # hidden dimension of lstm-attn
-disable_mem: false # whether to erasing rnn's hidden state on each step
 critic_zero_init: true # whether to zero initialize the critic outputs
 critic_enc_type: 0 # reward / value encoding type for the critic; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
 critic_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 for MuZero-like encoding, 1 for Dreamer-like encoding
