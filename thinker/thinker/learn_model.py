@@ -390,9 +390,24 @@ class SModelLearner:
 
     def compute_losses_m(self, train_model_out, target, is_weights):
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
+        initial_per_state = {sk: sv[0] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
+        if self.flags.model_mem_unroll_len > 0:
+            past_real_state = train_model_out.initial_per_state["past_real_state"]
+            past_done = train_model_out.initial_per_state["past_done"]
+            past_action = train_model_out.initial_per_state["past_action"]
+            past_action = self.model_net.sr_net.convert_action(past_action, one_hot=False)
+            _, per_state = self.model_net.sr_net.encoder(past_real_state, past_done, past_action, initial_per_state, flatten=True)
+
+            #dbg_per_state = {sk: sv[-1] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
+            #for sk in per_state.keys(): print(sk, torch.sum(torch.abs(per_state[sk] - dbg_per_state[sk])))
+        else:
+            per_state = initial_per_state
+
         out = self.model_net.sr_net.forward(
             x=self.model_net.normalize(train_model_out.real_state[0]),
+            done=train_model_out.done[0],
             actions=train_model_out.action[: k + 1],
+            state = per_state,
             one_hot=False,
             future_xs=self.model_net.normalize(train_model_out.real_state[1:k+1])
         )
@@ -409,10 +424,10 @@ class SModelLearner:
         elif self.flags.model_img_type == 1:
             with torch.no_grad():
                 action = self.model_net.vp_net.convert_action(train_model_out.action[1 : k + 1], one_hot=False)
-                target_enc = self.model_net.vp_net.encoder(
+                target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
                     target["xs"], action, flatten=True
                 )
-            pred_enc = self.model_net.vp_net.encoder(out.xs, action, flatten=True)
+            pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True)
             diff = target_enc - pred_enc
         if not self.model_net.oned_input:
             img_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
@@ -465,6 +480,16 @@ class SModelLearner:
 
     def compute_losses_p(self, train_model_out, target, is_weights, pred_xs):
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
+        initial_per_state = {sk: sv[0] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
+        if self.flags.model_mem_unroll_len > 0:
+            past_real_state = train_model_out.initial_per_state["past_real_state"]
+            past_done = train_model_out.initial_per_state["past_done"]
+            past_action = train_model_out.initial_per_state["past_action"]
+            past_action = self.model_net.vp_net.convert_action(past_action, one_hot=False)
+            _, per_state = self.model_net.vp_net.encoder(past_real_state, past_done, past_action, initial_per_state, flatten=True)
+        else:
+            per_state = initial_per_state
+
         first_x = train_model_out.real_state[[0]].float() / 255.0
         if self.flags.dual_net:
             xs = torch.concat([first_x, pred_xs], dim=0)
@@ -483,7 +508,9 @@ class SModelLearner:
         else:
             out = self.model_net.vp_net.forward(
                 xs=xs[: k + 1],  # s_0, ..., s_k
-                actions=train_model_out.action[: k + 1],  # a_-1, ..., a_k-1
+                done=train_model_out.done[0],
+                actions=train_model_out.action[: k + 1],  # a_-1, ..., a_k-1                
+                state=per_state,
                 one_hot=False,
             )
             vs = out.vs[:-1].view(k, b)

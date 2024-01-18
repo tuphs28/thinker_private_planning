@@ -12,6 +12,7 @@ priority_alpha: 0.6 # alpha in prioritized sampling from the buffer
 priority_beta: 0.4 # beta in prioritized sampling from the buffer
 buffer_traj_len: 50 # length of trajectory stored in the replay buffer
 model_unroll_len: 5 # model unroll length when training model
+model_mem_unroll_len: 0 # model unroll length for computing initial model state (only needed when model_has_memory is true)
 model_return_n: 5 # n-step return when training model
 model_self_bootstrap: false # whether to boostrap itself as target
 model_warm_up_n: 200000 # number of augmented step before model starts to be trained
@@ -33,6 +34,7 @@ model_size_nn: 1 # model size mulitplier (integer)
 model_downscale_c: 2 # model channel size divisor (integer)
 model_disable_bn: true # whether to disable batch norm in model
 model_zero_init: true # whether to zero initialize the model's predicted rewards and values
+model_has_memory: false # whether to enable memory in model
 model_ordinal: false # whether to use ordinal representation in model's policy
 model_img_type: 1 # type of model's state loss: 0 for L2 loss, 1 for feature loss
 # wrapper to be used

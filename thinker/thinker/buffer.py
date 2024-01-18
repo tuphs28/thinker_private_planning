@@ -128,6 +128,10 @@ class SModelBuffer:
             flags.model_warm_up_n if not flags.ckp else flags.model_buffer_n
         )  # number of total transition before returning samples
 
+        self.frame_stack_n = 1
+        self.pf = 0 # frame_stack_n - 1
+        self.mrl = flags.model_mem_unroll_len
+
         self.buffer = []
         
         self.abs_processed_traj = 0 # number of absolute processed trajectory so far
@@ -139,8 +143,6 @@ class SModelBuffer:
 
         self.base_ind = 0
         self.clean_m = 0
-
-        self.pf = 0 # frame_stack_n - 1
         self.finish = False
 
     def write(self, data):
@@ -192,13 +194,13 @@ class SModelBuffer:
 
         data = {}
         for d, field in enumerate(self.buffer[0]._fields):
+            if field == "initial_per_state": continue
             elems = []
             st_pd = 0 if field == "real_state" else self.pf # we need also get the previous frame_stack_n - 1 states
             for i in range(self.batch_size):
+                sel_elem = self.buffer[ind_0[i]][d]
                 elems.append(
-                    self.buffer[ind_0[i]][d][
-                        st_pd + ind_2[i] : self.pf + ind_2[i] + self.k + self.ret_n + 1, [ind_1[i]]
-                    ]
+                    sel_elem[self.mrl + st_pd + ind_2[i] : self.mrl + self.pf + ind_2[i] + self.k + self.ret_n + 1, [ind_1[i]]]
                 )
             data[field] = np.concatenate(elems, axis=1)
 
@@ -206,8 +208,44 @@ class SModelBuffer:
             done = np.logical_or(data["done"], data["truncated_done"])
             data["real_state"] = stack_frame(data["real_state"], self.pf + 1, done)            
         
-        data = type(self.buffer[0])(**data)
+        initial_per_state = {}
+        for field in self.buffer[0].initial_per_state.keys():
+            elems = []
+            for i in range(self.batch_size):
+                sel_elem = self.buffer[ind_0[i]].initial_per_state[field]
+                elems.append(
+                    sel_elem[self.pf + ind_2[i] : self.pf + ind_2[i] + 1, [ind_1[i]]]
+                )
+            initial_per_state[field] = np.concatenate(elems, axis=1)
 
+        if self.mrl > 0:
+            past_real_state = []
+            past_done = []
+            past_action = []
+            for i in range(self.batch_size):
+                sel_elem = self.buffer[ind_0[i]].real_state
+                past_real_state.append(
+                    sel_elem[ind_2[i] : self.mrl + self.pf + ind_2[i], [ind_1[i]]]
+                )
+                sel_elem = self.buffer[ind_0[i]].done
+                past_done.append(
+                    sel_elem[self.pf + ind_2[i] : self.mrl + self.pf + ind_2[i], [ind_1[i]]]
+                )
+                sel_elem = self.buffer[ind_0[i]].action
+                past_action.append(
+                    sel_elem[self.pf + ind_2[i] : self.mrl + self.pf + ind_2[i], [ind_1[i]]]
+                )
+            past_real_state = np.concatenate(past_real_state, axis=1)            
+            if self.pf > 0:
+                past_real_state = stack_frame(past_real_state, self.pf + 1, done)   
+            past_done = np.concatenate(past_done, axis=1)
+            past_action = np.concatenate(past_action, axis=1)
+            initial_per_state["past_real_state"] = past_real_state
+            initial_per_state["past_done"] = past_done
+            initial_per_state["past_action"] = past_action
+        
+        data["initial_per_state"] = initial_per_state        
+        data = type(self.buffer[0])(**data)
         base_ind_pri = self.base_ind * self.t
         abs_flat_inds = flat_ind + base_ind_pri
         return data, weights, abs_flat_inds, self.abs_processed_traj * self.t
@@ -222,8 +260,9 @@ class SModelBuffer:
                 "finish": self.finish,
                  }
 
-    def set_frame_stack_n(self, x):
-        self.pf = x - 1
+    def set_frame_stack_n(self, frame_stack_n):
+        self.frame_stack_n = frame_stack_n
+        self.pf = frame_stack_n - 1 
 
     def update_priority(self, abs_flat_inds, priorities):
         """Update priority in the buffer; both input

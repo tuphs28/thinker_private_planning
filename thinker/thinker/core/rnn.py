@@ -212,7 +212,7 @@ class ConvAttnLSTM(nn.Module):
         w=1,
         kernel_size=1,
         mem_n=None,
-        num_heads=None,
+        num_heads=8,
         attn_mask_b=5,
         tran_t=1,
         grad_scale=1,
@@ -230,7 +230,7 @@ class ConvAttnLSTM(nn.Module):
         self.mem_n = mem_n
         self.grad_scale = grad_scale
         self.attn = attn
-        self.tran_t = tran_t
+        self.tran_t = tran_t        
         self.tot_head_dim = h * w * hidden_dim // num_heads
 
         layers = []
@@ -359,3 +359,37 @@ class ConvAttnLSTM(nn.Module):
 
         core_out = out.unsqueeze(0)
         return core_out, core_state
+    
+class LSTMReset(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers):
+        super(LSTMReset, self).__init__()
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers)
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+
+    def initial_state(self, bsz, device=None):
+        return (torch.zeros(bsz, self.num_layers, self.hidden_dim, device=device),
+                torch.zeros(bsz, self.num_layers, self.hidden_dim, device=device)
+                )
+
+    def forward(self, input, reset, state):
+        # input shape: (seq_len, batch, input_size)
+        # reset shape: (seq_len, batch), dtype=torch.bool
+        
+        seq_len = input.shape[0]
+        reset = reset.float()
+
+        state = tuple(s.transpose(0,1).contiguous() for s in state)
+
+        outputs = []
+        for t in range(seq_len):
+            # Process one timestep
+            input_t = input[t].unsqueeze(0)
+            state_reset = tuple(s * (1 - reset[t]).unsqueeze(-1) for s in state)
+            output_t, state = self.lstm(input_t, state_reset)
+            outputs.append(output_t)
+
+        state = tuple(s.transpose(0,1) for s in state)
+
+        outputs = torch.cat(outputs, dim=0)
+        return outputs, state    

@@ -22,6 +22,7 @@ TrainModelOut = namedtuple(
         "done",
         "truncated_done",
         "baseline",
+        "initial_per_state",
     ],
 )
 
@@ -131,6 +132,10 @@ class Env(gym.Wrapper):
             self.num_actions = self.raw_num_actions
 
         self.frame_stack_n = env.frame_stack_n if hasattr(env, "frame_stack_n") else 1
+        self.model_mem_unroll_len = self.flags.model_mem_unroll_len
+        self.pre_len = self.frame_stack_n - 1 + self.model_mem_unroll_len
+        self.post_len = self.flags.model_unroll_len + self.flags.model_return_n + 1
+
         if self.rank == 0 and self.frame_stack_n > 1:
             self._logger.info("Detected frame stacking with %d counts" % self.frame_stack_n)
         env.close()
@@ -171,11 +176,13 @@ class Env(gym.Wrapper):
                     self.model_buffer = SModelBuffer(flags=self.flags)
             if self.train_model: self.require_prob = self.flags.require_prob
             
-            if self.frame_stack_n > 1 and self.train_model:
+            if self.train_model:
                 if self.parallel: 
                     self.model_buffer.set_frame_stack_n.remote(self.frame_stack_n)
                 else:
                     self.model_buffer.set_frame_stack_n(self.frame_stack_n)
+            per_state = self.model_net.initial_state(batch_size=1)
+            self.per_state_shape = {k:v.shape[1:] for k, v in per_state.items()}
         else:
             self.model_net = None            
             
@@ -277,7 +284,7 @@ class Env(gym.Wrapper):
     
     def _empty_local_buffer(self):
         pre_shape = (
-            self.frame_stack_n - 1 + self.flags.buffer_traj_len + self.flags.model_unroll_len + self.flags.model_return_n + 1,
+            self.pre_len + self.flags.buffer_traj_len + self.post_len,
             self.env_n,
         )
         if self.frame_stack_n <= 1:
@@ -285,6 +292,7 @@ class Env(gym.Wrapper):
         else:
             self.copy_n = self.real_state_shape[0] // self.frame_stack_n
             real_state_shape = (self.copy_n,) + self.real_state_shape[1:]
+        
         return TrainModelOut(
             real_state=torch.zeros(
                 pre_shape + real_state_shape,
@@ -301,6 +309,7 @@ class Env(gym.Wrapper):
             done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
             truncated_done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
             baseline=torch.full(pre_shape, fill_value=float('nan'), dtype=torch.float, device=self.device),
+            initial_per_state={k:torch.zeros(pre_shape + v, dtype=torch.float, device=self.device) for k, v in self.per_state_shape.items()},
         )
     
     def _write_single_model_buffer(self, n, t, state, reward, done, info,
@@ -317,17 +326,16 @@ class Env(gym.Wrapper):
         self.model_local_buffer[n].done[t] = done
         self.model_local_buffer[n].truncated_done[t] = info["truncated_done"]        
         self.model_local_buffer[n].baseline[t] = info["baseline"]
+        for k in self.per_state_shape.keys():
+            self.model_local_buffer[n].initial_per_state[k][t] = info["initial_per_state"][k]
 
     def _write_send_model_buffer(
         self, state, reward, done, info, action, action_prob
     ):
-        n, t, cap_t, k, ret_n, pf = (
+        n, t, cap_t = (
             self.model_n,
             self.model_t,
             self.flags.buffer_traj_len,
-            self.flags.model_unroll_len,
-            self.flags.model_return_n,
-            self.frame_stack_n - 1
         )
         if not torch.is_tensor(action):
             action = torch.tensor(action, device=self.device)
@@ -348,7 +356,7 @@ class Env(gym.Wrapper):
                 1 - n, t - cap_t, state, reward, done, info, action, action_prob
             )
 
-        if t >= pf + cap_t + k + ret_n:
+        if t >= self.pre_len + cap_t + self.post_len - 1:
             # finish writing a buffer, send it
             send_model_local_buffer = util.tuple_map(
                 self.model_local_buffer[n], lambda x: x.cpu().numpy()

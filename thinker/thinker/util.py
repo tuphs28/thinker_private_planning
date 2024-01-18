@@ -251,7 +251,7 @@ def tuple_map(x, f):
         return type(x)(*(process_element(y) for y in x))
 
 def dict_map(x, f):
-    return {k:f(v) for (k, v) in x.items()}
+    return {k:f(v) if v is not None else None for (k, v) in x.items()}
 
 def safe_view(x, dims):
     if x is None:

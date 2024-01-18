@@ -296,6 +296,8 @@ cdef class cWrapper():
     cdef object real_states
     cdef object sampled_action
     cdef object baseline_mean_q    
+    cdef object initial_per_state   
+    cdef object per_state    
 
     cdef readonly object observation_space
     cdef readonly object action_space
@@ -628,6 +630,13 @@ cdef class cWrapper():
 
         return output, product_probs
 
+    cdef update_per_state(self, model_net_out, inds):
+        if inds is None or len(inds) == self.env_n:
+            self.per_state = model_net_out.state
+        else:
+            for k in model_net_out.state.keys(): 
+                self.per_state[k][inds] = model_net_out.state[k]
+
     def close(self):
         cdef int i
         if hasattr(self, "root_nodes"):
@@ -648,7 +657,7 @@ cdef class cWrapper():
         self.env.restore_state(state)
 
     def get_action_meanings(self):
-        return self.env.get_action_meanings()       
+        return self.env.get_action_meanings()           
 
 cdef class cModelWrapper(cWrapper):
 
@@ -674,12 +683,16 @@ cdef class cModelWrapper(cWrapper):
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
             pass_action = torch.zeros(self.env_n, self.raw_dim_actions, dtype=torch.long)
-            model_net_out = model_net(obs_py, 
-                                      pass_action.unsqueeze(0).to(self.device), 
+            self.initial_per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
+            model_net_out = model_net(x=obs_py, 
+                                      done=None,
+                                      actions=pass_action.unsqueeze(0).to(self.device), 
+                                      state=self.initial_per_state,
                                       one_hot=False,
                                       ret_xs=self.return_x,
                                       ret_zs=False,
                                       ret_hs=self.return_h)  
+            self.update_per_state(model_net_out, inds=None)
             vs = model_net_out.vs.cpu()
             logits = model_net_out.logits[-1]    
             if self.sample: 
@@ -846,17 +859,25 @@ cdef class cModelWrapper(cWrapper):
                     pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(0).unsqueeze(-1)
                 else:
                     pass_action_py = pass_raw_action.unsqueeze(0)
-                model_net_out_1 = model_net(obs_py, 
-                        pass_action_py, 
-                        one_hot=False,
-                        ret_xs=True,
-                        ret_zs=self.cur_enable,
-                        ret_hs=self.return_h)  
+                done_py = torch.tensor(done, dtype=torch.bool, device=self.device)
+                if pass_inds_step.size() == self.env_n:
+                    self.initial_per_state = self.per_state
+                else:
+                    self.initial_per_state = {sk: sv[pass_inds_step] for sk, sv in self.per_state.items()}
+                model_net_out_1 = model_net(
+                    x=obs_py, 
+                    done=done_py,
+                    actions=pass_action_py, 
+                    state=self.initial_per_state,
+                    one_hot=False,
+                    ret_xs=True,
+                    ret_zs=self.cur_enable,
+                    ret_hs=self.return_h
+                )  
+                self.update_per_state(model_net_out_1, inds=pass_inds_step)
                 if self.cur_enable:
-                    pass_re_model_states = dict({msd: torch.concat([ms[msd] for ms in pass_re_model_states], dim=0)
-                        for msd in pass_re_model_states[0].keys()})
                     pred_model_net_out_1 = model_net.forward_single(
-                        state=pass_re_model_states,
+                        state=self.initial_per_state,
                         action=pass_action_py[0],  
                         one_hot=False,  
                         ret_xs=True,
@@ -1117,7 +1138,8 @@ cdef class cModelWrapper(cWrapper):
                 #"im_done": torch.tensor(self.full_im_done, dtype=torch.float, device=self.device).bool(),
                 "step_status": torch.tensor(self.step_status, device=self.device),
                 "max_rollout_depth":  torch.tensor(self.max_rollout_depth_, dtype=torch.long, device=self.device),
-                "baseline": self.baseline_mean_q,                
+                "baseline": self.baseline_mean_q,    
+                "initial_per_state": self.initial_per_state,
                 }
         if self.im_enable:
             info["im_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)
