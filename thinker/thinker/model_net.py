@@ -176,7 +176,7 @@ class FrameEncoder(nn.Module):
                 nn.LayerNorm(hidden_size),
                 nn.Tanh()
             )            
-            #self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+            self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
             self.out_shape = (hidden_size,)
             
             if self.has_memory:
@@ -241,7 +241,7 @@ class FrameEncoder(nn.Module):
             x = self.avg2(x)
         else:
             x = self.input_block(x)
-            #x = self.res(x)
+            x = self.res(x)
 
         if flatten:
             x = x.view(input_shape[:2] + x.shape[1:])
