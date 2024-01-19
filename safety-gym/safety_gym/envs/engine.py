@@ -1512,6 +1512,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
             "steps": self.steps,
             "goal_pos": self.world_config_dict['geoms']['goal']['pos'][:2],
             "sim_goal_pos": self.sim.model.body_pos[goal_body_id][:2],
+            "done": self.done,
         }
         
         return {"mojoco_state": state,
@@ -1524,5 +1525,8 @@ class Engine(gym.Env, gym.utils.EzPickle):
         safe_rl_state = state["safe_rl_state"]
         self.steps = safe_rl_state["steps"]
         self.world_config_dict['geoms']['goal']['pos'][:2] = safe_rl_state["goal_pos"]
+        self.done = safe_rl_state["done"]
         self.sim.model.body_pos[goal_body_id][:2] = safe_rl_state["sim_goal_pos"]
         self.sim.forward()        
+
+        

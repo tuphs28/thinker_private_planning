@@ -402,6 +402,7 @@ def visualize(
     )
     im_list = ["pri_logits", "reset_logits", "pri", "reset"]
     im_dict = {k: [] for k in im_list}
+    im_done = False
 
     video_stats = {"real_imgs": [], "im_imgs": [], "status": [], "tree_reps": []}
 
@@ -443,7 +444,7 @@ def visualize(
                     cur_raw_action = cur_raw_action.long().unsqueeze(0)
                 else:
                     cur_raw_action = action[0]
-                env.unwrapped_step(cur_raw_action.numpy())
+                if not im_done: _, _, im_done, _ = env.unwrapped_step(cur_raw_action.numpy())
 
         env_out = create_env_out(action, state, reward, done, info, flags)
 
@@ -464,7 +465,8 @@ def visualize(
             img = env.render(mode='rgb_array', camera_id=0)[0]   
 
         if render and (tree_reps["reset"] == 1 or info["step_status"]==2):
-            env.restore_state(root_env_state, [0])      
+            env.restore_state(root_env_state, [0])   
+            im_done = False   
 
         if env_out.step_status != 0 and (
             tree_reps["reset"] == 1 or env_out.step_status == 2

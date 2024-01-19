@@ -660,7 +660,7 @@ cdef class cWrapper():
         self.env.restore_state(state, inds)
 
     def unwrapped_step(self, *args, **kwargs):
-        self.env.step(*args, **kwargs)
+        return self.env.step(*args, **kwargs)
 
     def get_action_meanings(self):
         return self.env.get_action_meanings()           
@@ -988,6 +988,8 @@ cdef class cModelWrapper(cWrapper):
             if self.pred_done:
                 done_4 = model_net_out_4.dones[-1].bool().cpu().numpy()
 
+        if self.time: self.timings.time("model_unroll_4")
+
         # compute the current and root nodes
         j = 0 # counter for status 1 transition
         l = 0 # counter for status 4 transition
@@ -1156,7 +1158,7 @@ cdef class cModelWrapper(cWrapper):
         if self.time: self.timings.time("end")
 
         self.internal_counter += 1
-        if self.internal_counter % 500 == 0 and self.time: print(self.timings.summary())
+        if self.internal_counter % 200 == 0 and self.time: print(self.timings.summary())
 
         return (states, 
                 torch.tensor(self.full_reward, dtype=torch.float, device=self.device), 
