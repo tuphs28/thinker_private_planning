@@ -707,6 +707,7 @@ class SRNet(nn.Module):
         for t in range(1, k + 1):
             out = self.out(hs[t], predict_reward=True)
             outs.append(out)
+
         return SRNetOut(
             rs=util.safe_concat(outs, "rs", 0),
             r_enc_logits=util.safe_concat(outs, "r_enc_logits", 0),
@@ -745,8 +746,8 @@ class SRNet(nn.Module):
         out = self.out(h, predict_reward=True)
         new_state["sr_h"] = h
         if self.frame_stack_n > 1:
-            new_state["last_x"] = x[:, self.copy_n:]        
-                
+            new_state["last_x"] = x[:, self.copy_n:]    
+
         return SRNetOut(
             rs=util.safe_unsqueeze(out.rs, 0),
             r_enc_logits=util.safe_unsqueeze(out.r_enc_logits, 0),

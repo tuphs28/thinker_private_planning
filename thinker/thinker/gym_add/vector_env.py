@@ -100,6 +100,10 @@ class VectorEnv(gym.Env):
     def restore_state(self, data, inds):
         self.restore_state_async(data, inds)
         return self.restore_state_wait()
+    
+    def render(self, inds=None, *args, **kwargs):
+        self.render_async(inds, *args, **kwargs)
+        return self.render_wait()
 
     def close_extras(self, **kwargs):
         r"""Clean up the extra resources e.g. beyond what's in this base class."""

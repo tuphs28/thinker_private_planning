@@ -425,38 +425,53 @@ def compute_grad_norm(parameters, norm_type=2.0):
     )
     return total_norm
 
-def slice_tree_reps(num_actions, rec_t):
+def slice_tree_reps(num_actions, raw_dim_actions, sample_n, rec_t):
     idx1 = num_actions * 5 + 6
-    idx2 = num_actions * 10 + 9
-    idx3 = num_actions * 10 + 11 + rec_t 
-    d = {
-        "root_a": slice(0, num_actions), # action at root node
-        "root_r": slice(num_actions, num_actions + 1), # reward at root node (should be zero)
-        "root_d": slice(num_actions + 1, num_actions + 2), # reward at root node (should be zero)
-        "root_v": slice(num_actions + 2, num_actions + 3), # value at root node
-        "root_logits": slice(num_actions + 3, 2 * num_actions + 3), # policy logit at root node
-        "root_qs_mean": slice(2 * num_actions + 3, 3 * num_actions + 3), # child mean rollout return at root node
-        "root_qs_max": slice(3 * num_actions + 3, 4 * num_actions + 3), # child max rollout return at root node
-        "root_ns": slice(4 * num_actions + 3, 5 * num_actions + 3), # visit count at root node
-        "root_trail_r": slice(5 * num_actions + 3, 5 * num_actions + 4), # trailing sum of reward till the current node
-        "root_trail_q": slice(5 * num_actions + 4, 5 * num_actions + 5), # trailing rollout return till the current node
-        "root_max_v": slice(5 * num_actions + 5, 5 * num_actions + 6), # maximum roolout return at the root node        
-        "cur_a": slice(idx1, idx1 + num_actions), # action at current node; the belows are similar as above
-        "cur_r": slice(idx1 + num_actions, idx1 + num_actions + 1),
-        "cur_d": slice(idx1 + num_actions + 1, idx1 + num_actions + 2),
-        "cur_v": slice(idx1 + num_actions + 2, idx1 + num_actions + 3),
-        "cur_logits": slice(idx1 + num_actions + 3, idx1 + 2 * num_actions + 3),
-        "cur_qs_mean": slice(idx1 + 2 * num_actions + 3, idx1 + 3 * num_actions + 3),
-        "cur_qs_max": slice(idx1 + 3 * num_actions + 3, idx1 + 4 * num_actions + 3),
-        "cur_ns": slice(idx1 + 4 * num_actions + 3, idx2),
-        "reset": slice(idx2, idx2 + 1), # whether reset is triggered
-        "k": slice(idx2 + 1, idx2 + rec_t + 1), # step within current stage
-        "derec": slice(idx2 + rec_t + 1, idx2 + rec_t + 2), # accumulated discount
-        "action_seq": slice(idx3, None), # action seqeuence
-        }
-    return d
+    sample = sample_n > 0
+    if sample:
+        idx2 = idx1 + sample_n * raw_dim_actions
+    else:
+        idx2 = idx1
+    idx3 = idx2 + num_actions * 5 + 3
+    if sample:
+        idx4 = idx3 + sample_n * raw_dim_actions
+    else:
+        idx4 = idx3
+    idx5 = idx4 + 2 + rec_t  
+    tree_rep_map = [
+        ["root_a", 0],
+        ["root_r", num_actions],
+        ["root_d", num_actions+1],
+        ["root_v", num_actions+2],
+        ["root_logits", num_actions+3],
+        ["root_qs_mean", 2*num_actions+3],
+        ["root_qs_max", 3*num_actions+3],
+        ["root_ns", 4*num_actions+3],
+        ["root_trail_r", 5*num_actions+3],
+        ["root_trail_q", 5*num_actions+4],
+        ["root_max_v", 5*num_actions+5],
+        ["root_raw_action", idx1],
+        ["cur_a", idx2],
+        ["cur_r", idx2+num_actions],
+        ["cur_d", idx2+num_actions+1],
+        ["cur_v", idx2+num_actions+2],
+        ["cur_logits", idx2+num_actions+3],
+        ["cur_qs_mean", idx2+2*num_actions+3],
+        ["cur_qs_max", idx2+3*num_actions+3],
+        ["cur_ns", idx2+4*num_actions+3],
+        ["cur_raw_action", idx3],
+        ["reset", idx4],
+        ["k", idx4+1],
+        ["deprec", idx4+1+rec_t],
+        ["action_seq", idx5]
+        ]
+    tree_rep_map_d = {}
+    for n, (k, idx) in enumerate(tree_rep_map):
+        next_idx = tree_rep_map[n+1][1] if n + 1 < len(tree_rep_map) else None
+        tree_rep_map_d[k] = slice(idx, next_idx)    
+    return tree_rep_map_d
 
-def decode_tree_reps(tree_reps, num_actions, rec_t, enc_type=0, f_type=0):
+def decode_tree_reps(tree_reps, num_actions, raw_dim_actions, sample_n, rec_t, enc_type=0, f_type=0):
     nd = [
             "root_r", "root_v", "root_qs_mean", "root_qs_max", 
             "root_trail_r", "root_trail_q", "root_max_v", 
@@ -471,7 +486,7 @@ def decode_tree_reps(tree_reps, num_actions, rec_t, enc_type=0, f_type=0):
     if len(tree_reps.shape) == 3:
         tree_reps = tree_reps[0]
 
-    d = slice_tree_reps(num_actions, rec_t)
+    d = slice_tree_reps(num_actions, raw_dim_actions, sample_n, rec_t)
     return {k: dec_k(tree_reps[:, v], k) for k, v in d.items()}
 
 def mask_tree_rep(tree_reps, num_actions, rec_t):

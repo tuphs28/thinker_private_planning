@@ -100,7 +100,8 @@ class Env(gym.Wrapper):
                 name=name, 
                 grayscale=self.flags.grayscale, 
                 discrete_k=self.flags.discrete_k, 
-                one_to_threed_state=self.flags.one_to_threed_state
+                repeat_action_n=self.flags.repeat_action_n,
+                one_to_threed_state=self.flags.one_to_threed_state,
             )         
 
         # initialize a single env to collect env information
@@ -466,7 +467,16 @@ class Env(gym.Wrapper):
             if self.model_learner.real_step >= self.flags.total_steps:
                 self.model_buffer.set_finish()
         return self.model_buffer.get_status()
-   
+
+    def unnormalize(self, x):
+        if self.flags.wrapper_type == 1:
+            return self.env.unnormalize(x)
+        else:
+            return self.model_net.unnormalize(x)
+
+    def render(self, *args, **kwargs):  
+        return self.env.render(*args, **kwargs)
+
     def close(self):
         if self.parallel:
             self.model_buffer.set_finish.remote()
@@ -474,12 +484,17 @@ class Env(gym.Wrapper):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         self.env.close()
-
-    def unnormalize(self, x):
-        if self.flags.wrapper_type == 1:
-            return self.env.unnormalize(x)
-        else:
-            return self.model_net.unnormalize(x)
+    
+    def decode_tree_reps(self, tree_reps):
+        return util.decode_tree_reps(
+            tree_reps=tree_reps,
+            num_actions=self.num_actions,
+            raw_dim_actions=self.raw_dim_actions,
+            sample_n=self.flags.sample_n,
+            rec_t=self.flags.rec_t,
+            enc_type=self.flags.critic_enc_type,
+            f_type=self.flags.critic_enc_f_type,
+        )
 
 def make(*args, **kwargs):
     return Env(*args, **kwargs)

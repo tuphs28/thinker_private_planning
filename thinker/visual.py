@@ -23,7 +23,7 @@ def plot_gym_env_out(x, ax=None, title=None):
     if ax is None:
         fig, ax = plt.subplots()
     ax.imshow(
-        torch.swapaxes(torch.swapaxes(x[0, -3:].cpu(), 0, 2), 0, 1),
+        x,
         interpolation="nearest",
         aspect="auto",
     )
@@ -44,7 +44,7 @@ def plot_multi_gym_env_out(xs, titles=None, col_n=5):
             if m >= len(xs):
                 axs[y][x].set_axis_off()
             else:
-                axs[y][x].imshow(np.transpose(xs[m][-3:], axes=(1, 2, 0)) / 255)
+                axs[y][x].imshow(xs[m])
                 axs[y][x].set_title(
                     "rollout %d" % (m + 1) if titles is None else titles[m]
                 )
@@ -156,7 +156,6 @@ def plot_im_policies(
     ax.set_ylim(0, 1)
     ax.set_title("Imagainary policy prob")
 
-
 def plot_qn_sa(q_s_a, n_s_a, action_meanings, max_q_s_a=None, ax=None):
     if ax is None:
         fig, ax = plt.subplots()
@@ -187,33 +186,31 @@ def gen_video(video_stats, file_path):
 
     # Generate video
     imgs = []
-    hw = video_stats["real_imgs"][0].shape[1]
+    h, w = video_stats["real_imgs"][0].shape[:2]
     reset = False
 
     for i in range(len(video_stats["real_imgs"])):
-        img = np.zeros(shape=(hw, hw * 2, 3), dtype=np.uint8)
+        img = np.zeros(shape=(h, w * 2, 3), dtype=np.uint8)
         real_img = np.copy(video_stats["real_imgs"][i])
-        real_img = np.swapaxes(np.swapaxes(real_img, 0, 2), 0, 1)
         im_img = np.copy(video_stats["im_imgs"][i])
-        im_img = np.swapaxes(np.swapaxes(im_img, 0, 2), 0, 1)
         if video_stats["status"][i] == 1:
             # reset; yellow tint
-            im_img[:, :, 0] = 255 * 0.3 + im_img[:, :, 0] * 0.7
-            im_img[:, :, 1] = 255 * 0.3 + im_img[:, :, 1] * 0.7
+            im_img[0] = 255 * 0.3 + im_img[0] * 0.7
+            im_img[1] = 255 * 0.3 + im_img[1] * 0.7
         elif video_stats["status"][i] == 3:
             # force reset; red tint
-            im_img[:, :, 0] = 255 * 0.3 + im_img[:, :, 0] * 0.7
+            im_img[0] = 255 * 0.3 + im_img[0] * 0.7
         elif video_stats["status"][i] == 0:
             # real reset; blue tint
-            im_img[:, :, 2] = 255 * 0.3 + im_img[:, :, 2] * 0.7
-        img[:, :hw, :] = real_img
-        img[:, hw:, :] = im_img
+            im_img[2] = 255 * 0.3 + im_img[2] * 0.7
+        img[:, :w, :] = real_img
+        img[:, w:, :] = im_img
         img = np.flip(img, 2)
         imgs.append(img)
 
     enlarge_fcator = 3
-    width = hw * 2 * enlarge_fcator
-    height = hw * enlarge_fcator
+    width = w * 2 * enlarge_fcator
+    height = h * enlarge_fcator
     fps = 5
 
     path = os.path.join(file_path, "video.avi")
@@ -340,12 +337,17 @@ def visualize(
         savedir=savedir,        
         xpid=xpid,
         ckp=True,
-        return_x=True)
+        return_x=True
+        )
+    
+    render = "Safexp" in flags.name
 
     if "Sokoban" in flags.name:
         action_meanings = ["NOOP", "UP", "DOWN", "LEFT", "RIGHT"]
+    elif flags.sample_n > 0:
+        action_meanings = [str(n) for n in range(flags.sample_n)]
     else:
-        action_meanings = gym.make(flags.name).get_action_meanings()
+        action_meanings = env.get_action_meanings()
     num_actions = env.num_actions
 
     env.seed([seed])
@@ -382,15 +384,13 @@ def visualize(
 
     # initalize env
     state = env.reset()
+    root_env_state = env.clone_state([0])
     env_out = init_env_out(state, flags)
     
     # some initial setting
     plt.rcParams.update({"font.size": 15})
 
-    root_state = env_out.real_states
-    tree_reps = util.decode_tree_reps(
-        env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type, flags.model_enc_type
-    )
+    tree_reps = env.decode_tree_reps(env_out.tree_reps)
     end_gym_env_outs, end_titles = [], []
     ini_max_q = tree_reps["root_max_v"][0].item()
 
@@ -404,7 +404,14 @@ def visualize(
     im_dict = {k: [] for k in im_list}
 
     video_stats = {"real_imgs": [], "im_imgs": [], "status": [], "tree_reps": []}
-    video_stats["real_imgs"].append(env_out.real_states[0, 0, -3:].numpy())
+
+    if not render:
+        real_img = env_out.real_states[0, 0, -3:].numpy()
+        real_img = np.transpose(real_img, (2, 0, 1))   
+    else:
+        real_img = env.render(mode='rgb_array', camera_id=0)[0] 
+    
+    video_stats["real_imgs"].append(real_img)
     video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
     video_stats["status"].append(0)  # 0 for real step, 1 for reset, 2 for normal
     video_stats["tree_reps"].append({k: v.cpu().numpy() for k, v in tree_reps.items()})
@@ -423,17 +430,24 @@ def visualize(
         im_dict["pri"].append(actor_out.pri[:,0])
         im_dict["reset"].append(actor_out.reset[:,0])
         
-        tree_reps_ = util.decode_tree_reps(
-            env_out.tree_reps, num_actions, flags.rec_t, flags.model_enc_type, flags.model_enc_type
-        )
-        model_logits.append(tree_reps_["cur_logits"])
-        
+        tree_reps_ = env.decode_tree_reps(env_out.tree_reps)
+        model_logits.append(tree_reps_["cur_logits"])       
+
         state, reward, done, info = env.step(action[0], action[1])
+        if render:
+            if info["step_status"] == 0:
+                root_env_state = env.clone_state([0])
+            else:
+                if flags.sample_n > 0:
+                    cur_raw_action = (tree_reps_["cur_raw_action"].view(flags.sample_n, env.raw_dim_actions)*env.raw_num_actions)[action[0][0]]
+                    cur_raw_action = cur_raw_action.long().unsqueeze(0)
+                else:
+                    cur_raw_action = action[0]
+                env.unwrapped_step(cur_raw_action.numpy())
+
         env_out = create_env_out(action, state, reward, done, info, flags)
 
-        tree_reps = util.decode_tree_reps(
-            env_out.tree_reps, num_actions, flags.model_enc_type, flags.model_enc_type
-        )
+        tree_reps = env.decode_tree_reps(env_out.tree_reps)
         if (
             len(im_dict["reset"]) > 0
             and tree_reps["reset"]
@@ -442,26 +456,34 @@ def visualize(
             im_dict["reset"][-1] = im_dict["reset"][-1].clone()
             im_dict["reset"][-1][:] = 3  # force reset
 
-        xs = (torch.clamp(env_out.xs, 0, 1) * 255).to(torch.uint8)[0, 0]
+        if not render:
+            img = env.unnormalize(torch.clamp(env_out.xs, 0, 1)).to(torch.uint8)
+            img = img[0, 0, -3:].numpy()
+            img = np.transpose(img, (2, 0, 1))
+        else:
+            img = env.render(mode='rgb_array', camera_id=0)[0]   
+
+        if render and (tree_reps["reset"] == 1 or info["step_status"]==2):
+            env.restore_state(root_env_state, [0])      
 
         if env_out.step_status != 0 and (
             tree_reps["reset"] == 1 or env_out.step_status == 2
         ):
             title = "pred v: %.2f" % (tree_reps["cur_v"].item())
             title += " pred g: %.2f" % (tree_reps["root_trail_q"].item())
-            end_gym_env_outs.append(xs.numpy())
+            end_gym_env_outs.append(img)
             end_titles.append(title)
 
         # record data for generating video
         if env_out.step_status == 0:
             # real action
-            video_stats["real_imgs"].append(xs[-3:].numpy())
+            video_stats["real_imgs"].append(img)
             video_stats["status"].append(0)
         else:
             # imagainary action
             video_stats["real_imgs"].append(video_stats["real_imgs"][-1])
             video_stats["status"].append(2)
-        video_stats["im_imgs"].append(xs[-3:].numpy())
+        video_stats["im_imgs"].append(img)
         video_stats["tree_reps"].append(
             {k: v.cpu().numpy() for k, v in tree_reps.items()}
         )
@@ -483,7 +505,7 @@ def visualize(
                     im_dict[k] = torch.concat(im_dict[k], dim=0)
                 else:
                     im_dict[k] = None
-            plot_gym_env_out(root_state[0], axs[0], title="Real State")
+            plot_gym_env_out(real_img, axs[0], title="Real State")
             plot_base_policies(
                 torch.concat(model_logits), action_meanings=action_meanings, ax=axs[1]
             )
@@ -558,12 +580,18 @@ def visualize(
                 buf1.close()
                 buf2.close()
 
-            root_state = env_out.real_states
+            if not render:
+                real_img = env_out.real_states[0, 0, -3:].numpy()
+                real_img = np.transpose(real_img, (2, 0, 1)) 
+            else:
+                real_img = env.render(mode='rgb_array', camera_id=0)[0]
+                   
             im_dict = {k: [] for k in im_list}
             model_logits, end_gym_env_outs, end_titles = [], [], []
             ini_max_q = tree_reps["root_max_v"][0].item()
 
             real_step += 1
+            #if real_step >= 5: break
 
         if torch.any(env_out.real_done):
             step = 0

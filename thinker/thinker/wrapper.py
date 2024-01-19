@@ -124,15 +124,20 @@ class PostWrapper(gym.Wrapper):
         if self.reward_clip > 0.:
             reward = torch.clamp(reward, -self.reward_clip, +self.reward_clip)
         return state, reward, done, info
+    
+    def render(self, *args, **kwargs):  
+        return self.env.render(*args, **kwargs)
 
-def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, one_to_threed_state=False):
+def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_action_n=0, one_to_threed_state=False):
     if discrete_k > 0: env = DiscretizeActionWrapper(env, K=discrete_k)
     if one_to_threed_state: env = TileObservationWrapper(env)
 
     if "Sokoban" in name:
         env = TransposeWrap(env)
+        if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
     elif "Safexp" in name:
         assert discrete_k > 0, "Safeexp require discretizing the action space"
+        if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
     else:
         env = StateWrapper(env)
         env = TimeLimit_(env, max_episode_steps=108000)
@@ -552,7 +557,6 @@ class StateWrapper(gym.Wrapper):
         # self.env.restore_state(state["ale_state"])
         self.env.restore_state(state["ale_state"])
 
-
 class ScaledFloatFrame(gym.ObservationWrapper):
     def __init__(self, env):
         gym.ObservationWrapper.__init__(self, env)
@@ -588,6 +592,53 @@ def wrap_deepmind(
         env = FrameStack(env, 4)
     return env
 
+class RepeatActionWrapper(gym.Wrapper):
+    def __init__(self, env, repeat_action_n):
+        super().__init__(env)
+        self.repeat_action_n = repeat_action_n
+
+        # Adjust observation space for stacked observations
+        orig_obs_space = env.observation_space
+        self.obs_shape = orig_obs_space.shape
+        new_shape = (*self.obs_shape[:-1], self.obs_shape[-1] * repeat_action_n)
+        self.observation_space = gym.spaces.Box(
+            low=np.tile(orig_obs_space.low, repeat_action_n),
+            high=np.tile(orig_obs_space.high, repeat_action_n),
+            shape=new_shape,
+            dtype=orig_obs_space.dtype
+        )
+
+        self.stacked_obs = np.zeros(new_shape, dtype=orig_obs_space.dtype)
+
+    def reset(self):
+        initial_obs = self.env.reset()
+        self.stacked_obs = np.tile(initial_obs, self.repeat_action_n)
+        return self.stacked_obs
+
+    def step(self, action):
+        total_reward = 0.0
+        done = False
+        info = {}
+
+        for i in range(self.repeat_action_n):
+            obs, reward, done, info = self.env.step(action)
+            total_reward += reward
+
+            # Update the stacked observation
+            start_index = i * self.obs_shape[-1]
+            end_index = start_index + self.obs_shape[-1]
+            self.stacked_obs[..., start_index:end_index] = obs
+
+            if done:
+                # Fill the remaining slots with the last observation if done
+                for j in range(i + 1, self.repeat_action_n):
+                    start_index = j * self.obs_shape[-1]
+                    end_index = start_index + self.obs_shape[-1]
+                    self.stacked_obs[..., start_index:end_index] = obs
+                break
+
+        return self.stacked_obs, total_reward, done, info
+
 class DiscretizeActionWrapper(gym.ActionWrapper):
     def __init__(self, env, K=11):
         super().__init__(env)
@@ -608,7 +659,7 @@ class DiscretizeActionWrapper(gym.ActionWrapper):
         action = np.array(action)  # Ensure action is a NumPy array
         discrete_to_cont = (action / (self.K - 1)) * (self.max_action - self.min_action) + self.min_action
         return discrete_to_cont
-
+    
 class TileObservationWrapper(gym.ObservationWrapper):
     def __init__(self, env):
         super(TileObservationWrapper, self).__init__(env)

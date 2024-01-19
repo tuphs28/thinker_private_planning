@@ -1303,7 +1303,7 @@ class Engine(gym.Env, gym.utils.EzPickle):
             self.done = True  # Maximum number of steps in an episode reached
 
         return self.obs(), reward, self.done, info
-
+    
     def reward(self):
         ''' Calculate the dense component of reward.  Call exactly once per step '''
         reward = 0.0
@@ -1503,3 +1503,26 @@ class Engine(gym.Env, gym.utils.EzPickle):
             self.viewer._markers[:] = []
             self.viewer._overlay.clear()
             return data[::-1, :, :]
+        
+    def clone_state(self):
+        state = self.sim.get_state()
+
+        goal_body_id = self.sim.model.body_name2id('goal')
+        safe_rl_state = {
+            "steps": self.steps,
+            "goal_pos": self.world_config_dict['geoms']['goal']['pos'][:2],
+            "sim_goal_pos": self.sim.model.body_pos[goal_body_id][:2],
+        }
+        
+        return {"mojoco_state": state,
+                "safe_rl_state": safe_rl_state,
+                }
+
+    def restore_state(self, state):
+        goal_body_id = self.sim.model.body_name2id('goal')
+        self.sim.set_state(state["mojoco_state"])        
+        safe_rl_state = state["safe_rl_state"]
+        self.steps = safe_rl_state["steps"]
+        self.world_config_dict['geoms']['goal']['pos'][:2] = safe_rl_state["goal_pos"]
+        self.sim.model.body_pos[goal_body_id][:2] = safe_rl_state["sim_goal_pos"]
+        self.sim.forward()        

@@ -272,9 +272,7 @@ class SLogWorker:
                 reset_action=actor_out.action[1])
             env_out = create_env_out(actor_out.action, state, reward, done, info, self.flags)
             if self.wrapper_type != 1:
-                ret_reset = util.decode_tree_reps(
-                    env_out.tree_reps, self.actor_net.num_actions, self.flags.model_enc_type
-                )["reset"]
+                ret_reset = self.env.decode_tree_reps(env_out.tree_reps)["reset"]
             else:
                 ret_reset = False
 

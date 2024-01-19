@@ -161,8 +161,6 @@ class SActorLearner:
         if self.flags.float16:
             self.scaler = GradScaler(init_scale=2**8)
 
-        self.root_logits_slice = util.slice_tree_reps(self.actor_net.num_actions, flags.rec_t)["root_logits"]
-
     def learn_data(self):
         timing = util.Timings() if self.time else None
         data_ptr = self.actor_buffer.read.remote()                    

@@ -33,8 +33,9 @@ class AsyncState(Enum):
     DEFAULT = "default"
     WAITING_RESET = "reset"
     WAITING_STEP = "step"
-    WAITING_CLONE_STATE = "clone_state"
+    WAITING_CLONE_STATE = "clone_state"    
     WAITING_RESTORE_STATE = "restore_state"
+    WAITING_RENDER_STATE = "render_state"
 
 
 class AsyncVectorEnv(VectorEnv):
@@ -321,6 +322,42 @@ class AsyncVectorEnv(VectorEnv):
 
         return results
 
+    def render_async(self, inds=None, *args, **kwargs):
+        self._assert_is_running()
+        if self._state != AsyncState.DEFAULT:
+            raise AlreadyPendingCallError(
+                "Calling `render_state_async` while waiting "
+                "for a pending call to `{0}` to complete.".format(self._state.value),
+                self._state.value,
+            )
+        if inds is None: inds = range(len(self.parent_pipes))
+        for n, ind in enumerate(inds):
+            self.parent_pipes[ind].send(("render", (args, kwargs)))
+        self.inds = inds
+        self._state = AsyncState.WAITING_RENDER_STATE
+
+    def render_wait(self, timeout=None):
+        self._assert_is_running()
+        if self._state != AsyncState.WAITING_RENDER_STATE:
+            raise NoAsyncCallError(
+                "Calling `render_state_wait` without any prior call "
+                "to `render_state_async`.",
+                AsyncState.WAITING_RENDER_STATE.value,
+            )
+
+        if not self._poll(timeout):
+            self._state = AsyncState.DEFAULT
+            raise mp.TimeoutError(
+                "The call to `render_state_wait` has timed out after "
+                "{0} second{1}.".format(timeout, "s" if timeout > 1 else "")
+            )
+        rec_pipes = [self.parent_pipes[i] for i in self.inds]
+        results, successes = zip(*[pipe.recv() for pipe in rec_pipes])
+        self._raise_if_errors(successes)
+        self._state = AsyncState.DEFAULT
+
+        return results
+
     def step_async(self, actions, inds=None):
         """
         Parameters
@@ -532,26 +569,29 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
             command, data = pipe.recv()
             if command == "reset":
                 observation = env.reset()
-                pipe.send((observation, True))
+                pipe.send((observation, 1))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
                 # if done: observation = env.reset()
-                pipe.send(((observation, reward, done, info), True))
+                pipe.send(((observation, reward, done, info), 1))
             elif command == "clone_state":
                 env_state = env.clone_state()
-                pipe.send((env_state, True))
+                pipe.send((env_state, 1))
             elif command == "restore_state":
                 env_state = env.restore_state(data)
-                pipe.send((None, True))
+                pipe.send((None, 1))
+            elif command == "render":
+                env_state = env.render(*data[0], **data[1])
+                pipe.send((env_state, 1))          
             elif command == "seed":
                 env.seed(data)
-                pipe.send((None, True))
+                pipe.send((None, 1))
             elif command == "close":
                 env.close()
-                pipe.send((None, True))
+                pipe.send((None, 1))
                 break
             elif command == "_check_observation_space":
-                pipe.send((data == env.observation_space, True))
+                pipe.send((data == env.observation_space, 1))
             else:
                 raise RuntimeError(
                     "Received unknown command `{0}`. Must "
@@ -564,7 +604,7 @@ def _worker(index, env_fn, pipe, parent_pipe, shared_memory, error_queue):
     except Exception as e:
         logging.error(f"Worker {index}: Unexpected error - {e}")
         error_queue.put((index,) + sys.exc_info()[:2])
-        pipe.send((None, False))
+        pipe.send((None, 0))
     finally:
         env.close()
 
@@ -585,7 +625,7 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 write_to_shared_memory(
                         observation_space, index, observation, shared_memory
                 )
-                pipe.send((None, True))
+                pipe.send((None, 1))
             elif command == "step":
                 observation, reward, done, info = env.step(data)
                 # if done:
@@ -593,21 +633,24 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
                 write_to_shared_memory(
                     observation_space, index, observation, shared_memory
                 )
-                pipe.send(((None, reward, done, info), True))
+                pipe.send(((None, reward, done, info), 1))
             elif command == "clone_state":
                 env_state = env.clone_state()
-                pipe.send((env_state, True))
+                pipe.send((env_state, 1))
             elif command == "restore_state":
                 env_state = env.restore_state(data)
-                pipe.send((None, True))
+                pipe.send((None, 1))
+            elif command == "render":
+                env_state = env.render(*data[0], **data[1])
+                pipe.send((env_state, 1))
             elif command == "seed":
                 env.seed(data)
-                pipe.send((None, True))
+                pipe.send((None, 1))
             elif command == "close":
-                pipe.send((None, True))
+                pipe.send((None, 1))
                 break
             elif command == "_check_observation_space":
-                pipe.send((data == observation_space, True))
+                pipe.send((data == observation_space, 1))
             else:
                 raise RuntimeError(
                     "Received unknown command `{0}`. Must "
@@ -619,6 +662,6 @@ def _worker_shared_memory(index, env_fn, pipe, parent_pipe, shared_memory, error
     except Exception as e:
         logging.error(f"Worker {index}: Unexpected error - {e}")
         error_queue.put((index,) + sys.exc_info()[:2])
-        pipe.send((None, False))
+        pipe.send((None, 0))
     finally:
         env.close()

@@ -512,6 +512,9 @@ cdef class cWrapper():
 
     def step(self, *args, **kwargs):  
         raise NotImplementedError("Subclasses must implement this!")
+
+    def render(self, *args, **kwargs):  
+        return self.env.render(*args, **kwargs)
     
     cdef compute_model_out(self, vector[Node*] nodes, key):
         cdef int i
@@ -650,11 +653,14 @@ cdef class cWrapper():
     def print_time(self):
         print(self.timings.summary())
 
-    def clone_state(self):
-        return self.env.clone_state()
+    def clone_state(self, inds=None):
+        return self.env.clone_state(inds)
 
-    def restore_state(self, state):
-        self.env.restore_state(state)
+    def restore_state(self, state, inds=None):
+        self.env.restore_state(state, inds)
+
+    def unwrapped_step(self, *args, **kwargs):
+        self.env.step(*args, **kwargs)
 
     def get_action_meanings(self):
         return self.env.get_action_meanings()           
