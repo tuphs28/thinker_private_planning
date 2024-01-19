@@ -298,6 +298,7 @@ cdef class cWrapper():
     cdef object baseline_mean_q    
     cdef object initial_per_state   
     cdef object per_state    
+    cdef list model_states_keys
 
     cdef readonly object observation_space
     cdef readonly object action_space
@@ -333,6 +334,7 @@ cdef class cWrapper():
     cdef int[:] step_from_done  
     cdef float[:, :] c_sampled_action
     cdef int internal_counter
+    
 
     def __init__(self, env, env_n, flags, model_net, device=None, time=False):        
            
@@ -710,11 +712,14 @@ cdef class cModelWrapper(cWrapper):
             # compute and update root node and current node
             for i in range(self.env_n):
                 root_node = node_new(pparent=NULL, action=pass_action[i, 0].item(), logit=0., num_actions=self.num_actions, 
-                    discounting=self.discounting, rec_t=self.rec_t, remember_path=True)                
+                    discounting=self.discounting, rec_t=self.rec_t, remember_path=True)   
+                if i == 0: 
+                    self.model_states_keys = [md for md in model_net_out.state.keys() if not md.startswith("per_sr")]
+
                 encoded = {"real_states": obs_py[i],
                            "xs": model_net_out.xs[-1, i] if model_net_out.xs is not None else None,
                            "hs": model_net_out.hs[-1, i] if model_net_out.hs is not None else None,
-                           "model_states": dict({sk:sv[[i]] for sk, sv in model_net_out.state.items()})
+                           "model_states": tuple(model_net_out.state[md][i] for md in self.model_states_keys),    
                           }  
                 if self.sample: encoded["sampled_action"] = sampled_action[i]
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), t=self.total_step[i], done=False,
@@ -759,6 +764,8 @@ cdef class cModelWrapper(cWrapper):
         cdef float[:] vs_4
         cdef float[:,:] logits_4
 
+        cdef str md        
+
         if self.time: self.timings.reset()
 
         assert type(action) is tuple and len(action) == 2, \
@@ -787,7 +794,7 @@ cdef class cModelWrapper(cWrapper):
                 assert (a >= 0).all() and (a < 2).all(), \
                     f"reset action should be in [0, 1], not {a}"  
 
-        pass_model_states, pass_re_model_states = [], []
+        pass_model_states = []
         pass_raw_action, pass_model_raw_action = [], []
         for i in range(self.env_n):            
             # compute the mask of real / imagination step                             
@@ -811,7 +818,7 @@ cdef class cModelWrapper(cWrapper):
                     self.status[i] = 3 # done status
                 else:
                     encoded = <dict> self.cur_nodes[i][0].encoded
-                    pass_model_states.append(encoded["model_states"])
+                    pass_model_states.append(tuple(encoded["model_states"]))
                     pass_model_action.push_back(im_action[i])
                     if self.sample:
                         pass_model_raw_action.append(encoded["sampled_action"][im_action[i]])
@@ -825,7 +832,6 @@ cdef class cModelWrapper(cWrapper):
                 self.baseline_mean_q[i] = (average(self.root_nodes[i][0].prollout_qs[0]) -
                     self.root_nodes[i][0].r) / self.discounting
                 encoded = <dict> self.root_nodes[i][0].encoded
-                pass_re_model_states.append(encoded["model_states"])
                 pass_inds_restore.push_back(i)
                 pass_action.push_back(re_action[i])                
                 if self.sample:
@@ -962,9 +968,8 @@ cdef class cModelWrapper(cWrapper):
         # use model for status 4 transition (imagination transition)
         if pass_model_action.size() > 0:
             with torch.no_grad():
-                pass_model_states = dict({msd: torch.concat([ms[msd] for ms in pass_model_states], dim=0)
-                        for msd in pass_model_states[0].keys()})
-                    # all batch index are in the first index 
+                pass_model_states = dict({md: torch.stack([ms[i] for ms in pass_model_states], dim=0)
+                        for i, md in enumerate(self.model_states_keys)})
                 if not self.sample:
                     pass_model_action_py = torch.tensor(pass_model_action, dtype=long, device=self.device).unsqueeze(-1)
                 else:
@@ -1002,7 +1007,7 @@ cdef class cModelWrapper(cWrapper):
                 encoded = {"real_states": obs_py[j], 
                            "xs": model_net_out_1.xs[-1, j] if self.return_x else None,
                            "hs": model_net_out_1.hs[-1, j] if self.return_h else None,
-                           "model_states": dict({sk:sv[[j]] for sk, sv in model_net_out_1.state.items()})
+                           "model_states": tuple(model_net_out_1.state[md][j] for md in self.model_states_keys),                           
                           } 
                 if self.sample: encoded["sampled_action"] = sampled_action_1[j]        
                 if new_root:
@@ -1045,7 +1050,7 @@ cdef class cModelWrapper(cWrapper):
                 encoded = {"real_states": None, 
                            "xs": model_net_out_4.xs[-1, l] if self.return_x else None,
                            "hs": model_net_out_4.hs[-1, l] if self.return_h else None,
-                           "model_states": dict({sk:sv[[l]] for sk, sv in model_net_out_4.state.items()})
+                           "model_states": tuple(model_net_out_4.state[md][l] for md in self.model_states_keys)
                            }
                 if self.sample: encoded["sampled_action"] = sampled_action_4[l]
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
