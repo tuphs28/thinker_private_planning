@@ -12,6 +12,7 @@ import logging
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
+import torch.nn.functional as F
 import re
 import sys
 
@@ -42,11 +43,13 @@ def process_flags_actor(flags):
         flags.see_h = False
         flags.see_x = False
         flags.see_tree_rep = False
-    flags.return_h = flags.see_h
-    flags.return_x = flags.see_x
-    if flags.wrapper_type == 1:
         flags.im_cost = 0.
         flags.cur_cost = 0.
+        flags.policy_vis_freq = -1
+    if "Safexp" in flags.name:
+        flags.policy_vis_freq = -1
+    flags.return_h = flags.see_h
+    flags.return_x = flags.see_x
     if flags.wrapper_type == 2:
         flags.cur_cost = 0.
     return flags
@@ -426,16 +429,16 @@ def compute_grad_norm(parameters, norm_type=2.0):
     )
     return total_norm
 
-def slice_tree_reps(num_actions, raw_dim_actions, sample_n, rec_t):
+def slice_tree_reps(num_actions, dim_actions, sample_n, rec_t):
     idx1 = num_actions * 5 + 6
     sample = sample_n > 0
     if sample:
-        idx2 = idx1 + sample_n * raw_dim_actions
+        idx2 = idx1 + sample_n * dim_actions
     else:
         idx2 = idx1
     idx3 = idx2 + num_actions * 5 + 3
     if sample:
-        idx4 = idx3 + sample_n * raw_dim_actions
+        idx4 = idx3 + sample_n * dim_actions
     else:
         idx4 = idx3
     idx5 = idx4 + 2 + rec_t  
@@ -472,7 +475,7 @@ def slice_tree_reps(num_actions, raw_dim_actions, sample_n, rec_t):
         tree_rep_map_d[k] = slice(idx, next_idx)    
     return tree_rep_map_d
 
-def decode_tree_reps(tree_reps, num_actions, raw_dim_actions, sample_n, rec_t, enc_type=0, f_type=0):
+def decode_tree_reps(tree_reps, num_actions, dim_actions, sample_n, rec_t, enc_type=0, f_type=0):
     nd = [
             "root_r", "root_v", "root_qs_mean", "root_qs_max", 
             "root_trail_r", "root_trail_q", "root_max_v", 
@@ -487,10 +490,11 @@ def decode_tree_reps(tree_reps, num_actions, raw_dim_actions, sample_n, rec_t, e
     if len(tree_reps.shape) == 3:
         tree_reps = tree_reps[0]
 
-    d = slice_tree_reps(num_actions, raw_dim_actions, sample_n, rec_t)
+    d = slice_tree_reps(num_actions, dim_actions, sample_n, rec_t)
     return {k: dec_k(tree_reps[:, v], k) for k, v in d.items()}
 
 def mask_tree_rep(tree_reps, num_actions, rec_t):
+    # deprecated
     d = slice_tree_reps(num_actions, rec_t)  
     N, C = tree_reps.shape
     act_seq_len = C - (num_actions * 10 + 11 + rec_t)
@@ -502,6 +506,12 @@ def mask_tree_rep(tree_reps, num_actions, rec_t):
     tree_reps_m[:, 4:4+rec_t] = tree_reps[:, d["k"]] # time
     tree_reps_m[:, 4+rec_t:] = tree_reps[:, d["action_seq"]]
     return tree_reps_m
+
+def encode_action(action, dim_actions, num_actions):
+    if dim_actions > 1:
+        return action.float() / num_actions
+    else:
+        return F.one_hot(action.squeeze(-1), num_classes=num_actions).float()
 
 def plot_raw_state(x, ax=None, title=None, savepath=None):
     if ax is None:

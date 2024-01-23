@@ -1075,9 +1075,9 @@ class ModelNet(BaseNet):
         self.dual_net = flags.dual_net
 
         if obs_space.dtype == 'uint8':
-            self.state_dtype = 0
+            self.state_dtype_n = 0
         elif obs_space.dtype == 'float32':
-            self.state_dtype = 1
+            self.state_dtype_n = 1
         else:
             raise Exception(f"Unupported observation sapce", obs_space)
         
@@ -1103,8 +1103,8 @@ class ModelNet(BaseNet):
         return state
 
     def normalize(self, x):
-        if self.state_dtype == 0: assert x.dtype == torch.uint8
-        if self.state_dtype == 1: assert x.dtype == torch.float32
+        if self.state_dtype_n == 0: assert x.dtype == torch.uint8
+        if self.state_dtype_n == 1: assert x.dtype == torch.float32
         if self.need_norm:
             x = (x.float() - self.norm_low) / \
                 (self.norm_high -  self.norm_low)
@@ -1116,7 +1116,7 @@ class ModelNet(BaseNet):
             ch = x.shape[-3]
             x = torch.clamp(x, 0, 1)
             x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
-            if self.state_dtype == 0: x = x.to(torch.uint8)
+            if self.state_dtype_n == 0: x = x.to(torch.uint8)
         return x
 
     def forward(self, x, done, actions, state, one_hot=False, normalize=True, ret_xs=False, ret_zs=False, ret_hs=False, future_xs=None):

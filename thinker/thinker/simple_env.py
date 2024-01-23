@@ -37,9 +37,9 @@ class SimWrapper():
         self.reset_action_shape = (self.env_n,)
         
         if env.observation_space.dtype == 'uint8':
-            self.state_dtype = 0
+            self.state_dtype = torch.uint8
         elif env.observation_space.dtype == 'float32':
-            self.state_dtype = 1
+            self.state_dtype = torch.float32
         else:
             raise Exception(f"Unupported observation sapce", env.observation_space)
 
@@ -88,7 +88,7 @@ class SimWrapper():
     def reset(self, model_net):
         with torch.no_grad():
             real_state = self.env.reset()
-            real_state = torch.tensor(real_state, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
+            real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
             pri_action = torch.zeros(self.env_n, self.dim_actions, dtype=torch.long, device=self.device)
             real_reward = torch.zeros(self.env_n, device=self.device)
             done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
@@ -108,7 +108,7 @@ class SimWrapper():
         self.root_per_state = model_net_out.state
         self.tmp_state = self.root_per_state
 
-        pri_action = self.encode_action(pri_action)
+        pri_action = util.encode_action(pri_action, self.dim_actions, self.num_actions)
 
         self.root_td = real_reward + self.discounting * model_net_out.vs[-1] - self.root_v
         self.root_action = pri_action
@@ -187,7 +187,7 @@ class SimWrapper():
                 self.tmp_state = model_net_out.state
                 self.rollout_done = torch.logical_or(self.rollout_done, model_net_out.dones[-1])                
                 
-                self.cur_action = self.encode_action(pri_action)
+                self.cur_action = util.encode_action(pri_action, self.dim_actions, self.num_actions)
                 self.cur_r = model_net_out.rs[-1]
                 self.cur_r[self.rollout_done] = 0.                
                 self.cur_logits = model_net_out.logits[-1]
@@ -247,7 +247,7 @@ class SimWrapper():
                 baseline = self.sum_rollout_return / self.rec_t 
                 real_state, real_reward, done, info = self.env.step(pri_action.detach().cpu().numpy())
                 if np.any(done): self.env.reset(self.np_batch_idx[done])
-                real_state = torch.tensor(real_state, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
+                real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
                 real_reward = torch.tensor(real_reward, dtype=torch.float, device=self.device)
                 done = torch.tensor(done, dtype=torch.bool, device=self.device)
 
@@ -318,12 +318,6 @@ class SimWrapper():
         if self.return_h:
             state["hs"] = model_net_out.hs[-1]
         return state
-
-    def encode_action(self, action):
-        if self.dim_actions > 1:
-            return action / self.num_actions
-        else:
-            return F.one_hot(action[..., 0], num_classes=self.num_actions).float()
 
     def render(self, *args, **kwargs):  
         return self.env.render(*args, **kwargs)

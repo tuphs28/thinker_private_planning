@@ -12,7 +12,7 @@ from thinker.learn_actor import ActorLearner, SActorLearner
 from thinker.main import Env
 import thinker.util as util
 
-_fields = ("tree_reps", "xs", "hs")
+_fields = ("real_states", "tree_reps", "xs", "hs")
 _fields += ("reward", "episode_return", "episode_step")
 _fields += ("done", "real_done", "truncated_done")
 _fields += ("max_rollout_depth", "step_status")
@@ -228,9 +228,13 @@ class SelfPlayWorker:
                             core_state = actor_state, 
                             greedy = False,
                         )
+        if not self.disable_thinker:
+            primary_action, reset_action = actor_out.action
+        else:
+            primary_action, reset_action = actor_out.action, None
         state, reward, done, info = self.env.step(
-                primary_action=actor_out.action[0], 
-                reset_action=actor_out.action[1], 
+                primary_action=primary_action, 
+                reset_action=reset_action, 
                 action_prob=actor_out.action_prob[-1])
         env_out = self.create_env_out(actor_out.action, state, reward, done, info)
         return actor_out, actor_state, env_out, info
@@ -238,16 +242,13 @@ class SelfPlayWorker:
     def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int):
         # write to local buffer
         if t == 0:            
-            if self.flags.parallel_actor:
-                id = self.actor_id
-            else:
-                id = [self.actor_id[0]]
-            out = {"id": id}
+            out = {}
+            
             for field in TrainActorOut._fields:
-                if field in ["id"]: continue
-                if field == "real_stats" and not self.see_real_state: continue
-                val = getattr(env_out if field in EnvOut._fields else actor_out, field)
                 out[field] = None
+                if field in ["id"]: continue
+                if field == "real_states" and not self.flags.see_real_state: continue
+                val = getattr(env_out if field in EnvOut._fields else actor_out, field)                
                 if val is None: continue
                 if self.flags.parallel_actor:
                     out[field] = torch.empty(
@@ -259,6 +260,13 @@ class SelfPlayWorker:
                 else:
                     out[field] = []
                 # each is in the shape of (T x B xdim_1 x dim_2 ...)
+            
+            if self.flags.parallel_actor:
+                id = self.actor_id
+            else:
+                id = [self.actor_id[0]]
+            out["id"] = id
+
             self.actor_local_buffer = TrainActorOut(**out)
 
         for field in TrainActorOut._fields:
@@ -290,7 +298,7 @@ class SelfPlayWorker:
             self.timing.time("move_actor_buffer_to_cpu")
 
     def init_env_out(self, *args, **kwargs):
-        return init_env_out(*args, **kwargs, flags=self.flags)
+        return init_env_out(*args, **kwargs, flags=self.flags, dim_actions=self.actor_net.dim_actions)
 
     def create_env_out(self, *args, **kwargs):
         return create_env_out(*args, **kwargs, flags=self.flags)
@@ -332,7 +340,7 @@ class SelfPlayWorker:
                 break                
             time.sleep(0.1)  
 
-def init_env_out(state, flags):
+def init_env_out(state, flags, dim_actions):
         # minimum env_out for actor_net
         num_rewards = 1        
         num_rewards += int(flags.im_cost > 0.0)
@@ -342,7 +350,7 @@ def init_env_out(state, flags):
         device = state["real_states"].device
 
         out = {
-            "last_pri": torch.zeros(env_n, dtype=torch.long, device=device),
+            "last_pri": torch.zeros(env_n, dim_actions, dtype=torch.long, device=device),
             "last_reset": torch.zeros(env_n, dtype=torch.long, device=device),
             "reward": torch.zeros((env_n, num_rewards), 
                                 dtype=torch.float, device=device),

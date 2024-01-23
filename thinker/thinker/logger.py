@@ -246,7 +246,7 @@ class SLogWorker:
 
         if True: #not self.env_init:
             state = self.env.reset()
-            env_out = init_env_out(state, self.flags)            
+            env_out = init_env_out(state, self.flags, self.actor_net.dim_actions)            
             self.actor_state = self.actor_net.initial_state(batch_size=1)
         else:
             env_out = self.last_env_out

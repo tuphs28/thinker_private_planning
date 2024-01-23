@@ -18,24 +18,23 @@ class DummyWrapper(gym.Wrapper):
         self.observation_space = spaces.Dict({
             "real_states": self.env.observation_space,
         })        
+        if env.observation_space.dtype == 'uint8':
+            self.state_dtype = torch.uint8
+        elif env.observation_space.dtype == 'float32':
+            self.state_dtype = torch.float32
+        else:
+            raise Exception(f"Unupported observation sapce", env.observation_space)
         self.norm_low = self.env.observation_space.low[0]
         self.norm_high = self.env.observation_space.high[0]
 
     def reset(self, model_net):
         obs = self.env.reset()
-        obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
-        states = {"real_states": obs_py,
-                  }       
-        if self.flags.return_x:
-            with torch.set_grad_enabled(False):
-                states["xs"] = (obs_py.float() - self.norm_low) / \
-                            (self.norm_high -  self.norm_low)
+        obs_py = torch.tensor(obs, dtype=self.state_dtype, device=self.device)        
+        states = {"real_states": obs_py}       
         return states 
 
     def step(self, action, model_net):  
         # action in shape (B, *) or (B,)
-        if len(action.shape) > 1:
-            action = action[:, 0]
         if torch.is_tensor(action):
             action = action.detach().cpu().numpy()
 
@@ -46,9 +45,9 @@ class DummyWrapper(gym.Wrapper):
             
         real_done = [m["real_done"] if "real_done" in m else done[n] for n, m in enumerate(info)]
         truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
-        obs_py = torch.tensor(obs, dtype=torch.uint8, device=self.device)
+        obs_py = torch.tensor(obs, dtype=self.state_dtype, device=self.device)
         if np.any(done):
-            obs_py[done] = torch.tensor(obs_reset, dtype=torch.uint8, device=self.device)
+            obs_py[done] = torch.tensor(obs_reset, dtype=self.state_dtype, device=self.device)
 
         states = {
             "real_states": obs_py,
@@ -58,10 +57,6 @@ class DummyWrapper(gym.Wrapper):
                 "truncated_done": torch.tensor(truncated_done, dtype=torch.bool, device=self.device),                
                 "step_status": torch.zeros(self.env_n, dtype=torch.long, device=self.device),
                 }
-        if self.flags.return_x:
-            with torch.set_grad_enabled(False):
-                states["xs"] = (obs_py.float() - self.norm_low) / \
-                            (self.norm_high -  self.norm_low)
         
         return (states, 
                 torch.tensor(reward, dtype=torch.float32, device=self.device), 

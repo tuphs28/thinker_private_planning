@@ -121,17 +121,22 @@ class Env(gym.Wrapper):
         self.real_state_shape = env.observation_space.shape
 
         if type(env.action_space) == gym.spaces.discrete.Discrete:            
-            self.raw_num_actions = env.action_space.n
-            self.raw_dim_actions = 1
+            self.num_actions = env.action_space.n
+            self.dim_actions = 1
+            self.tuple_action = False
         else:
-            self.raw_num_actions = env.action_space[0].n
-            self.raw_dim_actions = len(env.action_space)
+            self.num_actions = env.action_space[0].n
+            self.dim_actions = len(env.action_space)
+            self.tuple_action = True
         
         self.sample = self.flags.sample_n > 0
-        if self.sample:
-            self.num_actions = self.flags.sample_n
+        self.sample_n = self.flags.sample_n
+
+        if not self.sample and self.tuple_action:
+            self.pri_action_shape = (self.env_n, self.dim_actions)
         else:
-            self.num_actions = self.raw_num_actions
+            self.pri_action_shape = (self.env_n,)
+        self.action_prob_shape = self.pri_action_shape + (self.num_actions if not self.sample else self.sample_n,)
 
         self.frame_stack_n = env.frame_stack_n if hasattr(env, "frame_stack_n") else 1
         self.model_mem_unroll_len = self.flags.model_mem_unroll_len
@@ -150,8 +155,8 @@ class Env(gym.Wrapper):
         if self.has_model:
             model_param = {
                 "obs_space": self.real_state_space,                
-                "num_actions": self.raw_num_actions, 
-                "dim_actions": self.raw_dim_actions, 
+                "num_actions": self.num_actions, 
+                "dim_actions": self.dim_actions, 
                 "flags": self.flags,
                 "frame_stack_n": self.frame_stack_n
             }
@@ -304,11 +309,11 @@ class Env(gym.Wrapper):
                 device=self.device,
             ),
             action_prob=torch.zeros(
-                pre_shape + (self.raw_dim_actions, self.raw_num_actions,),
+                pre_shape + (self.dim_actions, self.num_actions,),
                 dtype=torch.float32,
                 device=self.device,
             ),
-            action=torch.zeros(pre_shape + (self.raw_dim_actions,), dtype=torch.long, device=self.device),
+            action=torch.zeros(pre_shape + (self.dim_actions,), dtype=torch.long, device=self.device),
             reward=torch.full(pre_shape, fill_value=float('nan'), dtype=torch.float, device=self.device),
             done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
             truncated_done=torch.ones(pre_shape, dtype=torch.bool, device=self.device),
@@ -349,8 +354,9 @@ class Env(gym.Wrapper):
         if self.sample:
             action, action_prob = self.to_raw_action(self.sampled_action, action, action_prob)
         else:
-            action = action.unsqueeze(-1)
-            action_prob = action_prob.unsqueeze(-2)
+            if not self.tuple_action:
+                action = action.unsqueeze(-1)
+                action_prob = action_prob.unsqueeze(-2)
 
         self._write_single_model_buffer(n, t, state, reward, done, info, action, action_prob)
 
@@ -387,22 +393,19 @@ class Env(gym.Wrapper):
 
     def step(self, primary_action, reset_action=None, action_prob=None, ignore=False):        
 
-        assert primary_action.shape == (self.env_n,), \
-                    f"primary_action should have shape f{(self.env_n,)}"        
+        assert primary_action.shape == self.pri_action_shape, \
+                    f"primary_action should have shape {self.pri_action_shape} not {primary_action.shape}"  
         if self.flags.wrapper_type == 1:
             action = primary_action                
         else:
             assert reset_action.shape == (self.env_n,), \
-                    f"reset should have shape f{(self.env_n,)}"
+                    f"reset should have shape {(self.env_n,)} not {reset_action.shape}"
             action = (primary_action, reset_action)            
                 
         if self.require_prob and not ignore: 
-            if not self.sample:
-                action_prob_shape =  (self.env_n, self.num_actions)
-            else:
-                action_prob_shape =  (self.env_n, self.flags.sample_n)
-            assert action_prob is not None and action_prob.shape == action_prob_shape, \
-                    f"action_prob should have shape f{action_prob_shape}"
+            assert action_prob is not None
+            assert action_prob.shape == self.action_prob_shape, \
+                    f"action_prob should have shape {self.action_prob_shape} not {action_prob.shape}"
         
         with torch.set_grad_enabled(False):
             state, reward, done, info = self.env.step(action, self.model_net)  
@@ -424,15 +427,15 @@ class Env(gym.Wrapper):
     
     def to_raw_action(self, sampled_raw_action, action, action_prob):
         B, M, D = sampled_raw_action.shape
-        assert M == self.num_actions
-        assert D == self.raw_dim_actions
+        assert M == self.sample_n
+        assert D == self.dim_actions
 
         # Get the selected raw action for each batch instance
         raw_action = sampled_raw_action[torch.arange(B, device=self.device), action] # shape (B, D)
         if action_prob is not None:
             # Compute the probability of selecting each raw action
-            raw_action_prob = torch.zeros(B, self.raw_dim_actions, self.raw_num_actions, device=self.device)
-            for n in range(self.raw_num_actions):
+            raw_action_prob = torch.zeros(B, self.dim_actions, self.num_actions, device=self.device)
+            for n in range(self.num_actions):
                 mask = (sampled_raw_action == n).float()  # Create a mask where the raw action is n; shape (B, M, D)
                 # action_prob has shape (B, M)
                 # raw_action_prob has shape (B, D, N)
@@ -493,8 +496,8 @@ class Env(gym.Wrapper):
             return self.env.decode_tree_reps(tree_reps)
         return util.decode_tree_reps(
             tree_reps=tree_reps,
-            num_actions=self.num_actions,
-            raw_dim_actions=self.raw_dim_actions,
+            num_actions=self.num_actions if not self.sample else self.sample_n,
+            dim_actions=self.dim_actions,
             sample_n=self.flags.sample_n,
             rec_t=self.flags.rec_t,
             enc_type=self.flags.critic_enc_type,

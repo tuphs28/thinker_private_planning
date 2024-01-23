@@ -5,8 +5,9 @@ from torch.nn import functional as F
 from torch.cuda.amp import autocast
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM
-from thinker.core.module import MLP
+from thinker.core.module import MLP, OneDResBlock
 from thinker.model_net import BaseNet, RVTran
+from gym import spaces
 
 ActorOut = namedtuple(
     "ActorOut",
@@ -25,19 +26,26 @@ ActorOut = namedtuple(
 )
 
 def compute_action_log_prob(logits, actions):
-    return -torch.nn.CrossEntropyLoss(reduction="none")(
-        input=torch.flatten(logits, 0, 1), target=torch.flatten(actions, 0, 1)
-    ).view_as(actions)
+    assert len(logits.shape) == len(actions.shape) + 1
+    has_dim = len(actions.shape) == 3    
+    end_dim = 2 if has_dim else 1
+    log_prob = -torch.nn.CrossEntropyLoss(reduction="none")(
+            input=torch.flatten(logits, 0, end_dim), target=torch.flatten(actions, 0, end_dim)
+    )
+    log_prob = log_prob.view_as(actions)
+    if has_dim:
+        log_prob = torch.sum(log_prob, dim=-1)
+    return log_prob
 
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h, w))
 
-class ShallowThreeDEncoder(nn.Module):
+class ShallowAFrameEncoder(nn.Module):
     # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
     def __init__(self, 
                  input_shape, 
                  out_size=256):
-        super(ShallowThreeDEncoder, self).__init__()
+        super(ShallowAFrameEncoder, self).__init__()
         self.input_shape = input_shape
         self.out_size = out_size
 
@@ -68,7 +76,7 @@ class ShallowThreeDEncoder(nn.Module):
         x = self.fc(x)
         return x
 
-class ThreeDEncoder(nn.Module):
+class AFrameEncoder(nn.Module):
     # processor for 3d inputs; can be applied to model's hidden state or predicted real state
     def __init__(self, 
                  input_shape, 
@@ -76,7 +84,7 @@ class ThreeDEncoder(nn.Module):
                  firstpool=False,    
                  out_size=256,
                  see_double=False):
-        super(ThreeDEncoder, self).__init__()
+        super(AFrameEncoder, self).__init__()
         if see_double:
             input_shape = (input_shape[0] // 2,) + tuple(input_shape[1:])
         self.input_shape = input_shape        
@@ -85,80 +93,95 @@ class ThreeDEncoder(nn.Module):
         self.out_size = out_size
         self.see_double = see_double        
 
-        # following code is from Torchbeast, which is the same as Impala deep model
+        self.oned_input = len(self.input_shape) == 1
         in_channels = input_shape[0]
-        conv_out_h = input_shape[1]
-        conv_out_w = input_shape[2]
+        if not self.oned_input:
+            # following code is from Torchbeast, which is the same as Impala deep model            
+            conv_out_h = input_shape[1]
+            conv_out_w = input_shape[2]
 
-        self.feat_convs = []
-        self.resnet1 = []
-        self.resnet2 = []
-        self.convs = []
+            self.feat_convs = []
+            self.resnet1 = []
+            self.resnet2 = []
+            self.convs = []
 
-        if firstpool:
-            self.down_pool_conv = nn.Conv2d(
-                    in_channels=in_channels,
-                    out_channels=16,
-                    kernel_size=3,
-                    stride=2,
-                    padding=1,
-                )
-            in_channels = 16
-            conv_out_h = (conv_out_h - 1) // 2 + 1
-            conv_out_w = (conv_out_w - 1) // 2 + 1
-
-        num_chs = [16, 32, 32] if downpool else [64, 64, 32]
-        for num_ch in num_chs:
-            feats_convs = []
-            feats_convs.append(
-                nn.Conv2d(
-                    in_channels=in_channels,
-                    out_channels=num_ch,
-                    kernel_size=3,
-                    stride=1,
-                    padding=1,
-                )
-            )
-            if downpool:
-                feats_convs.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+            if firstpool:
+                self.down_pool_conv = nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=16,
+                        kernel_size=3,
+                        stride=2,
+                        padding=1,
+                    )
+                in_channels = 16
                 conv_out_h = (conv_out_h - 1) // 2 + 1
                 conv_out_w = (conv_out_w - 1) // 2 + 1
-            self.feat_convs.append(nn.Sequential(*feats_convs))
-            in_channels = num_ch
-            for i in range(2):
-                resnet_block = []
-                resnet_block.append(nn.ReLU())
-                resnet_block.append(
-                    nn.Conv2d(
-                        in_channels=in_channels,
-                        out_channels=num_ch,
-                        kernel_size=3,
-                        stride=1,
-                        padding=1,
-                    )
-                )
-                resnet_block.append(nn.ReLU())
-                resnet_block.append(
-                    nn.Conv2d(
-                        in_channels=in_channels,
-                        out_channels=num_ch,
-                        kernel_size=3,
-                        stride=1,
-                        padding=1,
-                    )
-                )
-                if i == 0:
-                    self.resnet1.append(nn.Sequential(*resnet_block))
-                else:
-                    self.resnet2.append(nn.Sequential(*resnet_block))
-        self.feat_convs = nn.ModuleList(self.feat_convs)
-        self.resnet1 = nn.ModuleList(self.resnet1)
-        self.resnet2 = nn.ModuleList(self.resnet2)
 
-        # out shape after conv is: (num_ch, input_shape[1], input_shape[2])
-        core_out_size = num_ch * conv_out_h * conv_out_w
+            num_chs = [16, 32, 32] if downpool else [64, 64, 32]
+            for num_ch in num_chs:
+                feats_convs = []
+                feats_convs.append(
+                    nn.Conv2d(
+                        in_channels=in_channels,
+                        out_channels=num_ch,
+                        kernel_size=3,
+                        stride=1,
+                        padding=1,
+                    )
+                )
+                if downpool:
+                    feats_convs.append(nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+                    conv_out_h = (conv_out_h - 1) // 2 + 1
+                    conv_out_w = (conv_out_w - 1) // 2 + 1
+                self.feat_convs.append(nn.Sequential(*feats_convs))
+                in_channels = num_ch
+                for i in range(2):
+                    resnet_block = []
+                    resnet_block.append(nn.ReLU())
+                    resnet_block.append(
+                        nn.Conv2d(
+                            in_channels=in_channels,
+                            out_channels=num_ch,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                        )
+                    )
+                    resnet_block.append(nn.ReLU())
+                    resnet_block.append(
+                        nn.Conv2d(
+                            in_channels=in_channels,
+                            out_channels=num_ch,
+                            kernel_size=3,
+                            stride=1,
+                            padding=1,
+                        )
+                    )
+                    if i == 0:
+                        self.resnet1.append(nn.Sequential(*resnet_block))
+                    else:
+                        self.resnet2.append(nn.Sequential(*resnet_block))
+            self.feat_convs = nn.ModuleList(self.feat_convs)
+            self.resnet1 = nn.ModuleList(self.resnet1)
+            self.resnet2 = nn.ModuleList(self.resnet2)
+
+            # out shape after conv is: (num_ch, input_shape[1], input_shape[2])
+            core_out_size = num_ch * conv_out_h * conv_out_w
+        else:
+            n_block = 2 
+            hidden_size = 256
+            self.hidden_size = hidden_size
+            self.input_block = nn.Sequential(
+                nn.Linear(in_channels, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.Tanh()
+            )            
+            self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+            core_out_size = hidden_size
+        
         mlp_out_size = self.out_size if not self.see_double else self.out_size // 2
         self.fc = nn.Sequential(nn.Linear(core_out_size, mlp_out_size), nn.ReLU())
+            
 
     def forward(self, x):
         if not self.see_double:
@@ -175,17 +198,21 @@ class ThreeDEncoder(nn.Module):
         return:
             output: output tensor of shape (B, self.out_size)"""
         assert x.dtype in [torch.float, torch.float16]
-        if self.firstpool:
-            x = self.down_pool_conv(x)
-        for i, fconv in enumerate(self.feat_convs):
-            x = fconv(x)
-            res_input = x
-            x = self.resnet1[i](x)
-            x += res_input
-            res_input = x
-            x = self.resnet2[i](x)
-            x += res_input
-        x = torch.flatten(x, start_dim=1)
+        if not self.oned_input:
+            if self.firstpool:
+                x = self.down_pool_conv(x)
+            for i, fconv in enumerate(self.feat_convs):
+                x = fconv(x)
+                res_input = x
+                x = self.resnet1[i](x)
+                x += res_input
+                res_input = x
+                x = self.resnet2[i](x)
+                x += res_input
+            x = torch.flatten(x, start_dim=1)
+        else:
+            x = self.input_block(x)
+            x = self.res(x)
         x = self.fc(F.relu(x))
         return x
 
@@ -248,25 +275,45 @@ class ActorNetBase(BaseNet):
         self.see_h = flags.see_h and not self.disable_thinker
         if self.see_h:
             self.hs_shape = obs_space["hs"].shape[1:]
-            self.oned_h = len(self.hs_shape) == 1
         self.see_x = flags.see_x
         if self.see_x and not self.disable_thinker:
             self.xs_shape = obs_space["xs"].shape[1:]
-            self.oned_x = len(self.xs_shape) == 1
         self.see_real_state = flags.see_real_state        
         if flags.see_real_state:
-            self.real_states_shape = obs_space["real_states"].shape[1:]  
-            self.register_buffer("norm_low", torch.tensor(obs_space["real_states"].low[0,]))
-            self.register_buffer("norm_high", torch.tensor(obs_space["real_states"].high[0,]))     
+            if obs_space["real_states"].dtype == 'uint8':
+                self.state_dtype_n = 0
+            elif obs_space["real_states"].dtype == 'float32':
+                self.state_dtype_n = 1
+            else:
+                raise Exception(f"Unupported observation sapce", obs_space["real_states"])            
+            low = torch.tensor(obs_space["real_states"].low)
+            high = torch.tensor(obs_space["real_states"].high)
+            self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()            
+            if self.need_norm:
+                self.register_buffer("norm_low", low)
+                self.register_buffer("norm_high", high)
+            self.real_states_shape = obs_space["real_states"].shape[1:]
 
         if not self.disable_thinker:
-            self.num_actions = action_space[0][0].n
+            pri_action_space = action_space[0][0]            
         else:
-            self.num_actions = action_space[0].n
+            pri_action_space = action_space[0]
+
+        if type(pri_action_space) == spaces.discrete.Discrete:    
+            self.tuple_action = False                
+            self.num_actions = pri_action_space.n    
+            self.dim_actions = 1
+            self.dim_rep_actions = self.num_actions
+        else:
+            self.tuple_action = True
+            self.num_actions = pri_action_space[0].n    
+            self.dim_actions = len(pri_action_space)    
+            self.dim_rep_actions = self.dim_actions
 
         self.tran_dim = flags.tran_dim 
         self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep 
         self.x_rnn = flags.x_rnn and flags.see_x  
+        self.real_state_rnn = flags.real_state_rnn and flags.see_real_state 
 
         self.num_rewards = 1
         self.num_rewards += int(flags.im_cost > 0.0)
@@ -281,70 +328,52 @@ class ActorNetBase(BaseNet):
         self.float16 = flags.float16
         self.flags = flags        
 
-        aux_info_size = flags.max_depth * self.num_actions + 4 + flags.rec_t
-
         # encoder for state or encoding output
-        last_out_size = self.num_actions + self.num_rewards
+        last_out_size = self.dim_rep_actions + self.num_rewards
         if not self.disable_thinker:
             last_out_size += 2
 
         if self.see_h:
-            if not self.oned_h:
-                self.h_encoder = ThreeDEncoder(
-                    input_shape=self.hs_shape,                                 
-                    see_double=self.see_double
-                )
-                h_out_size = self.h_encoder.out_size
-            else:
-                self.h_encoder = MLP(
-                    input_size=self.hs_shape[0],
-                    layer_sizes=[200, 200, 200],
-                    output_size=100,
-                    norm=False,
-                    skip_connection=True,
-                )
-                h_out_size = 100
+            self.h_encoder = AFrameEncoder(
+                input_shape=self.hs_shape,                                 
+                see_double=self.see_double
+            )
+            h_out_size = self.h_encoder.out_size
             last_out_size += h_out_size
         
         if self.see_x:
-            if not self.oned_x:
-                self.x_encoder_pre = ThreeDEncoder(
-                    input_shape=self.xs_shape, 
-                    downpool=True,
-                    firstpool=flags.x_enc_first_pool,
-                    see_double=self.see_double
-                )
-                x_out_size = self.x_encoder_pre.out_size
-            else:
-                self.x_encoder_pre = MLP(
-                    input_size=self.xs_shape[0],
-                    layer_sizes=[200, 200, 200],
-                    output_size=100,
-                    norm=False,
-                    skip_connection=True,
-                )
-                x_out_size = 100
-
-            if self.x_rnn:
-                x_rnn_in_size = x_out_size
-                x_rnn_in_size += aux_info_size
-                self.x_encoder_rnn = RNNEncoder(
-                    in_size=x_rnn_in_size,
-                    flags=flags,
-                )
-                x_out_size = flags.tran_dim
-            
-            last_out_size += x_out_size
-
-        if self.see_real_state:
-            self.real_state_encoder =  ThreeDEncoder(
+            self.x_encoder_pre = AFrameEncoder(
                 input_shape=self.xs_shape, 
-                num_actions=self.num_actions, 
                 downpool=True,
                 firstpool=flags.x_enc_first_pool,
                 see_double=self.see_double
             )
-            last_out_size += self.real_state_encoder.out_size
+            x_out_size = self.x_encoder_pre.out_size
+            if self.x_rnn:
+                rnn_in_size = x_out_size
+                self.x_encoder_rnn = RNNEncoder(
+                    in_size=rnn_in_size,
+                    flags=flags,
+                )
+                x_out_size = flags.tran_dim            
+            last_out_size += x_out_size
+
+        if self.see_real_state:
+            self.real_state_encoder =  AFrameEncoder(
+                input_shape=self.real_states_shape, 
+                downpool=True,
+                firstpool=flags.x_enc_first_pool,
+                see_double=self.see_double
+            )
+            r_out_size = self.real_state_encoder.out_size
+            if self.real_state_rnn:
+                rnn_in_size = r_out_size
+                self.r_encoder_rnn = RNNEncoder(
+                    in_size=rnn_in_size,
+                    flags=flags,
+                )
+                r_out_size = flags.tran_dim   
+            last_out_size += r_out_size         
                     
         if self.see_tree_rep:            
             if self.tree_rep_rnn:
@@ -373,11 +402,11 @@ class ActorNetBase(BaseNet):
             )
             last_out_size = 100
 
-        self.policy = nn.Linear(last_out_size, self.num_actions)
+        self.policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
 
         if not self.disable_thinker:
             if self.sep_im_head:
-                self.im_policy = nn.Linear(last_out_size, self.num_actions)
+                self.im_policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
             self.reset = nn.Linear(last_out_size, 2)
 
         self.rv_tran = None
@@ -410,6 +439,12 @@ class ActorNetBase(BaseNet):
             core_state = self.x_encoder_rnn.initial_state(batch_size, device=device)
             initial_state = initial_state + core_state
             self.state_idx["x"] = slice(idx, idx+len(core_state))
+            idx += len(core_state)
+
+        if self.real_state_rnn:
+            core_state = self.r_encoder_rnn.initial_state(batch_size, device=device)
+            initial_state = initial_state + core_state
+            self.state_idx["r"] = slice(idx, idx+len(core_state))
             idx += len(core_state)
         
         if self.tree_rep_rnn:
@@ -465,7 +500,7 @@ class ActorNetBase(BaseNet):
         final_out = []
 
         last_pri = torch.flatten(env_out.last_pri, 0, 1)
-        last_pri = F.one_hot(last_pri, self.num_actions)
+        last_pri = util.encode_action(last_pri, self.dim_actions, self.num_actions)
         final_out.append(last_pri)
 
         if not self.disable_thinker:
@@ -502,8 +537,6 @@ class ActorNetBase(BaseNet):
                 
             if self.x_rnn:
                 core_state_ = core_state[self.state_idx['x']]
-                aux_info = util.mask_tree_rep(tree_rep, self.num_actions, self.flags.rec_t)
-                encoded_x = torch.concat([encoded_x, aux_info], dim=1)
                 encoded_x, core_state_ = self.x_encoder_rnn(
                     encoded_x, done, core_state_)
                 new_core_state[self.state_idx['x']] = core_state_
@@ -511,13 +544,18 @@ class ActorNetBase(BaseNet):
             final_out.append(encoded_x)
 
         if self.see_real_state:
-            real_states = torch.flatten(env_out.real_states, 0, 1)            
-            assert real_states.dtype == torch.uint8
-            encoded_real_state = (real_states.float() - self.norm_low) / \
-                    (self.norm_high -  self.norm_low)
+            real_states = torch.flatten(env_out.real_states, 0, 1)   
+            real_states = self.normalize(real_states)
             with autocast(enabled=self.float16):      
-                encoded_real_state = self.real_state_encoder(encoded_real_state)
+                encoded_real_state = self.real_state_encoder(real_states)
             if self.float16: encoded_real_state = encoded_real_state.float()
+
+            if self.real_state_rnn:
+                core_state_ = core_state[self.state_idx['r']]
+                encoded_real_state, core_state_ = self.r_encoder_rnn(
+                    encoded_real_state, done, core_state_)
+                new_core_state[self.state_idx['r']] = core_state_
+
             final_out.append(encoded_real_state)
 
         final_out = torch.concat(final_out, dim=-1)   
@@ -527,11 +565,14 @@ class ActorNetBase(BaseNet):
 
         # compute logits
         pri_logits = self.policy(final_out)    
+        pri_logits = pri_logits.view(T*B, self.dim_actions, self.num_actions)
+
         if not self.disable_thinker:
             if self.sep_im_head:
                 im_logits = self.im_policy(final_out)
+                im_logits = im_logits.view(T*B, self.dim_actions, self.num_actions)
                 im_mask = env_out.step_status <= 1 # imagainary action will be taken next
-                im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1)
+                im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1).unsqueeze(-1)
                 pri_logits = torch.where(im_mask, im_logits, pri_logits)
             reset_logits = self.reset(final_out)
         else:   
@@ -542,6 +583,7 @@ class ActorNetBase(BaseNet):
             entropy_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
                 input=pri_logits, target=F.softmax(pri_logits, dim=-1)
             )
+            entropy_loss = torch.sum(entropy_loss, dim=-1)
             entropy_loss = entropy_loss.view(T, B)
             if not self.disable_thinker:
                 ent_reset_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
@@ -553,11 +595,11 @@ class ActorNetBase(BaseNet):
             entropy_loss = None
 
         # sample action
-        pri = self.sample(pri_logits, greedy=greedy, dim=1)
-        pri_logits = pri_logits.view(T, B, self.num_actions)
-        pri = pri.view(T, B)
+        pri = self.sample(pri_logits, greedy=greedy, dim=-1)
+        pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
+        pri = pri.view(T, B, self.dim_actions)        
         if not self.disable_thinker:
-            reset = self.sample(reset_logits, greedy=greedy, dim=1)
+            reset = self.sample(reset_logits, greedy=greedy, dim=-1)
             reset_logits = reset_logits.view(T, B, 2)
             reset = reset.view(T, B)    
         else:
@@ -579,12 +621,14 @@ class ActorNetBase(BaseNet):
             # if next action is real action, reset will never be used
             c_action_log_prob += c_reset_log_prob
 
-        # pack last step's action and action prob
+        # pack last step's action and action prob        
+        pri_env = pri[-1, :, 0] if not self.tuple_action else pri[-1]        
         if not self.disable_thinker:
-            action = (pri[-1], reset[-1])
+            action = (pri_env, reset[-1])            
         else:
-            action = pri[-1]            
-        action_prob = F.softmax(pri_logits, dim=-1)        
+            action = pri_env           
+        action_prob = F.softmax(pri_logits, dim=-1)    
+        if not self.tuple_action: action_prob = action_prob[:, :, 0]    
 
         # compute baseline
         if self.enc_type == 0:
@@ -615,7 +659,7 @@ class ActorNetBase(BaseNet):
 
         if compute_loss:
             reg_loss = (
-                1e-3 * torch.sum(pri_logits**2, dim=-1) / 2
+                1e-3 * torch.sum(pri_logits**2, dim=(-2,-1)) / 2
                 + 1e-6 * torch.sum(final_out**2, dim=-1).view(T, B) / 2
             )
             if not self.disable_thinker:
@@ -629,7 +673,6 @@ class ActorNetBase(BaseNet):
             "pri_logits": pri_logits,
             "reset_logits": reset_logits,
         }
-
         actor_out = ActorOut(
             pri=pri,
             reset=reset,
@@ -653,6 +696,14 @@ class ActorNetBase(BaseNet):
             return sampled_action.detach()
         else:
             return torch.argmax(logits, dim=dim)
+    
+    def normalize(self, x):
+        if self.state_dtype_n == 0: assert x.dtype == torch.uint8
+        if self.state_dtype_n == 1: assert x.dtype == torch.float32
+        if self.need_norm:
+            x = (x.float() - self.norm_low) / \
+                (self.norm_high -  self.norm_low)
+        return x
 
 class DRCNet(BaseNet):
     # Deprecated, not yet updated

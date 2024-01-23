@@ -35,6 +35,7 @@ see_x: false # whether to see the model's predicted state
 drc: false # whether to use the drc baseline
 tree_rep_rnn: true # whether to use rnn in processing tree representation
 x_rnn: false # whether to use rnn in processing x, model's predicted state
+real_state_rnn: false # whether to use rnn in processing real state
 x_enc_first_pool: true # whether to reduce frame encoder size by first applying a 3x3 conv with 2 sride
 tran_t: 1 # internal transition step for rnn
 tran_mem_n: 40 # memory slot size for the attention module in lstm-attn
