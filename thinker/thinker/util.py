@@ -460,7 +460,7 @@ def slice_tree_reps(num_actions, raw_dim_actions, sample_n, rec_t):
         ["cur_qs_max", idx2+3*num_actions+3],
         ["cur_ns", idx2+4*num_actions+3],
         ["cur_raw_action", idx3],
-        ["reset", idx4],
+        ["cur_reset", idx4],
         ["k", idx4+1],
         ["deprec", idx4+1+rec_t],
         ["action_seq", idx5]

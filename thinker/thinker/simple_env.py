@@ -125,6 +125,7 @@ class SimWrapper():
         self.cur_action = self.root_action
         self.cur_r = self.root_r
         self.cur_v = self.root_v
+        self.last_v = self.cur_v
         self.cur_logits = self.root_logits            
 
         self.cur_reset = torch.zeros(self.env_n, device=self.device)
@@ -184,16 +185,17 @@ class SimWrapper():
                         ret_zs=False,
                         ret_hs=True)  
                 self.tmp_state = model_net_out.state
-                self.rollout_done = torch.logical_or(self.rollout_done, model_net_out.dones[-1])
+                self.rollout_done = torch.logical_or(self.rollout_done, model_net_out.dones[-1])                
                 
-                self.cur_td = self.cur_r + self.discounting * model_net_out.vs[-1] * model_net_out.dones[-1].float() - self.cur_v
                 self.cur_action = self.encode_action(pri_action)
                 self.cur_r = model_net_out.rs[-1]
-                self.cur_r[self.rollout_done] = 0.
+                self.cur_r[self.rollout_done] = 0.                
                 self.cur_logits = model_net_out.logits[-1]
                 self.cur_v = model_net_out.vs[-1]
                 self.cur_v[self.rollout_done] = 0.
                 self.cur_reset = reset_action
+                self.cur_td = self.cur_r + self.discounting * self.cur_v * (1 - model_net_out.dones[-1].float()) - self.last_v
+                self.last_v = self.cur_v
 
                 self.action_seq[self.batch_idx, self.rollout_depth-1] = self.cur_action
                 self.trail_r = self.trail_r + self.trail_discount * self.cur_r
@@ -223,8 +225,10 @@ class SimWrapper():
                     self.trail_discount[reset_bool] = 1
                     self.trail_lambda[reset_bool] = 1
                     self.root_td_table[reset_bool, 1:] = self.root_td_table[reset_bool, :-1]
+                    self.root_td_table[reset_bool, 0] = 0
                     self.root_action_table[reset_bool, 1:] = self.root_action_table[reset_bool, :-1]
                     self.rollout_done[reset_bool] = 0
+                    self.last_v[reset_bool] = self.root_v[reset_bool]
                     for k in self.tmp_state.keys():
                         self.tmp_state[k][reset_bool] = self.root_per_state[k][reset_bool]
 
