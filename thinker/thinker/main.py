@@ -11,6 +11,7 @@ from thinker.model_net import ModelNet
 from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
 from thinker.wrapper import PreWrapper, DummyWrapper, PostWrapper
 from thinker.cenv import cModelWrapper, cPerfectWrapper
+from thinker.simple_env import SimWrapper
 import gym
 TrainModelOut = namedtuple(
     "TrainModelOut",
@@ -199,6 +200,8 @@ class Env(gym.Wrapper):
             core_wrapper = DummyWrapper
         elif self.flags.wrapper_type == 2:
             core_wrapper = cPerfectWrapper
+        elif self.flags.wrapper_type == 3:
+            core_wrapper = SimWrapper
         else:
             raise Exception(
                 f"wrapper_type can only be [0, 1, 2], not {self.flags.wrapper_type}")
@@ -486,6 +489,8 @@ class Env(gym.Wrapper):
         self.env.close()
     
     def decode_tree_reps(self, tree_reps):
+        if self.flags.wrapper_type == 3:
+            return self.env.decode_tree_reps(tree_reps)
         return util.decode_tree_reps(
             tree_reps=tree_reps,
             num_actions=self.num_actions,

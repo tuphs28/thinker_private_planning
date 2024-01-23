@@ -12,7 +12,7 @@ from thinker.learn_actor import ActorLearner, SActorLearner
 from thinker.main import Env
 import thinker.util as util
 
-_fields = ("tree_reps", "real_states", "xs", "hs")
+_fields = ("tree_reps", "xs", "hs")
 _fields += ("reward", "episode_return", "episode_step")
 _fields += ("done", "real_done", "truncated_done")
 _fields += ("max_rollout_depth", "step_status")
@@ -263,10 +263,12 @@ class SelfPlayWorker:
 
         for field in TrainActorOut._fields:
             v = getattr(self.actor_local_buffer, field)
-            if v is not None and field not in ["id"]:
+            if v is not None and field not in ["id"]:                
                 new_val = getattr(
                     env_out if field in EnvOut._fields else actor_out, field
-                )[0]
+                )
+                assert new_val is not None, f"{field} cannot be None"
+                new_val = new_val[0]
                 if self.flags.parallel_actor:
                     v[t] = new_val
                 else:

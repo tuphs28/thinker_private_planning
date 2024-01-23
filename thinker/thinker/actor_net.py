@@ -289,7 +289,7 @@ class ActorNetBase(BaseNet):
             last_out_size += 2
 
         if self.see_h:
-            if not self.oned_x:
+            if not self.oned_h:
                 self.h_encoder = ThreeDEncoder(
                     input_shape=self.hs_shape,                                 
                     see_double=self.see_double

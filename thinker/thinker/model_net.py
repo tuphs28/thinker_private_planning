@@ -833,7 +833,7 @@ class SRNet(nn.Module):
     def convert_action(self, action, one_hot):        
         if not one_hot:
             assert action.dtype == torch.long
-            action = F.one_hot(action, self.num_actions)
+            action = F.one_hot(action, self.num_actions).float()
         else:
             assert action.dtype in [torch.float16, torch.float32]
         if self.dim_actions <= 1:
@@ -1053,7 +1053,7 @@ class VPNet(nn.Module):
     
     def convert_action(self, action, one_hot):        
         if not one_hot:
-            action = F.one_hot(action, self.num_actions)
+            action = F.one_hot(action, self.num_actions).float()
         if self.dim_actions <= 1:
             action = action[..., 0, :]
         else:

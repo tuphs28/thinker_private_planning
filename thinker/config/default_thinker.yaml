@@ -39,7 +39,7 @@ model_ordinal: false # whether to use ordinal representation in model's policy
 model_img_type: 1 # type of model's state loss: 0 for L2 loss, 1 for feature loss
 # wrapper to be used
 require_prob: false # whether to use prob to train model instead of sampled action
-wrapper_type: 0 # 0: default Thinker; 1: raw env; 2: Thinker w/ perfect model; 
+wrapper_type: 0 # 0: default Thinker; 1: raw env; 2: Thinker w/ perfect model; 3: simple env
 rec_t: 20 # stage length
 test_rec_t: -1 # stage length for testing; non-positive for being the same as rec_t
 max_depth: 5 # maximum search depth before forceful reset
@@ -51,6 +51,8 @@ return_double: false # whether to return both root node and current node's h / r
 grayscale: false # whether to apply grayscale for atari
 has_action_seq: true # whether tree rep contains action sequence
 one_to_threed_state: false # if enabled, one-dim observation state space will be converted to three-dim
+se_query_size: 5 # size of query table in wrapper_type 3
+se_td_lambda: 0.9 # lambda for discounting td err in wrapper_type 3
 # sampled-based search
 sample_n: -1 # number of sampled action; <0 for disabling sample mode
 sample_temp: 4 # whether to use sampled action in imagination
