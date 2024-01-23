@@ -91,6 +91,7 @@ float16: false # whether to use mixed precision
 base_seed: 1 # base seed for the gym environment
 discrete_k: -1 # bin used to discretize the action space; -1 for no discretizing
 repeat_action_n: 0 # custom frame stacking (only for non-Atari envrionment)
+project: ''
 # ray resources
 ray_mem: -1 # default initialized ray memory
 ray_gpu: -1 # number of initial gpu (set to -1 for auto detect)

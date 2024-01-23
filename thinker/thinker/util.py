@@ -153,7 +153,8 @@ def create_flags(filename, save_flags=True, post_fn=None, **kwargs):
     flags = argparse.Namespace(**config)    
 
     # additional info
-    flags.savedir = flags.savedir.replace("__project__", __project__)    
+    if not flags.project: flags.project = __project__
+    flags.savedir = flags.savedir.replace("__project__", flags.project)    
     flags.__version__ = __version__
     flags.cmd = " ".join(sys.argv) 
 
@@ -176,7 +177,7 @@ def create_flags(filename, save_flags=True, post_fn=None, **kwargs):
         print("Loaded config from %s" % config_path)
 
     if not flags.xpid:        
-        flags.xpid = "%s-%s" % (__project__, time.strftime("%Y%m%d-%H%M%S"))
+        flags.xpid = "%s-%s" % (flags.project, time.strftime("%Y%m%d-%H%M%S"))
 
     flags.ckpdir = os.path.join(flags.savedir, flags.xpid,)     
 
@@ -401,7 +402,7 @@ class Wandb:
         if m:
             tags.append(m[0])
         self.wandb.init(
-            project=__project__,
+            project=flags.project,
             config=flags,
             entity=os.getenv("WANDB_USER", ""),
             reinit=True,

@@ -209,7 +209,7 @@ class SimWrapper():
                 self.root_td_table = torch.clone(self.root_td_table)
                 self.root_action_table = torch.clone(self.root_action_table)
 
-                self.root_td_table[:, 0] = self.root_td_table[:, 0] + self.trail_lambda * self.cur_td
+                self.root_td_table[:, 0] = self.root_td_table[:, 0] + self.trail_lambda * self.discounting * self.cur_td
                 self.trail_lambda = self.trail_lambda * self.td_lambda
                 one_depth_mask = self.rollout_depth == 1
                 self.root_action_table[one_depth_mask, 0] = self.cur_action[one_depth_mask]
