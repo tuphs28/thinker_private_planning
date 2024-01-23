@@ -58,6 +58,7 @@ class SimWrapper():
         
         self.root_v = torch.zeros(self.env_n, device=self.device)
         self.batch_idx = torch.arange(self.env_n, device=self.device)
+        self.np_batch_idx = np.arange(self.env_n)
 
         self.tree_rep_meaning = None
         self.obs_n = self.reset(model_net)["tree_reps"].shape[1]
@@ -241,6 +242,7 @@ class SimWrapper():
                 # real step
                 baseline = self.sum_rollout_return / self.rec_t 
                 real_state, real_reward, done, info = self.env.step(pri_action.detach().cpu().numpy())
+                if np.any(done): self.env.reset(self.np_batch_idx[done])
                 real_state = torch.tensor(real_state, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
                 real_reward = torch.tensor(real_reward, dtype=torch.float, device=self.device)
                 done = torch.tensor(done, dtype=torch.bool, device=self.device)
