@@ -443,7 +443,7 @@ def slice_tree_reps(num_actions, dim_actions, sample_n, rec_t):
         idx4 = idx3
     idx5 = idx4 + 2 + rec_t  
     tree_rep_map = [
-        ["root_a", 0],
+        ["root_action", 0],
         ["root_r", num_actions],
         ["root_d", num_actions+1],
         ["root_v", num_actions+2],
@@ -453,9 +453,9 @@ def slice_tree_reps(num_actions, dim_actions, sample_n, rec_t):
         ["root_ns", 4*num_actions+3],
         ["root_trail_r", 5*num_actions+3],
         ["root_trail_q", 5*num_actions+4],
-        ["root_max_v", 5*num_actions+5],
+        ["max_rollout_return", 5*num_actions+5],
         ["root_raw_action", idx1],
-        ["cur_a", idx2],
+        ["cur_action", idx2],
         ["cur_r", idx2+num_actions],
         ["cur_d", idx2+num_actions+1],
         ["cur_v", idx2+num_actions+2],

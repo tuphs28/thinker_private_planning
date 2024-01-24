@@ -187,7 +187,7 @@ cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type
         child = pnode[0].ppchildren[0][i][0]
         if not mask_type in [2]: 
             result[pnode[0].num_actions+3+i] = child.logit # child_logits
-        if not mask_type in [1, 2]: 
+        if not mask_type in [1, 2] and not (mask_type == 5 and not detailed): 
             result[pnode[0].num_actions*2+3+i] = f(average(child.prollout_qs[0])) # child_rollout_qs_mean
             if not mask_type in [3, 4]:
                 result[pnode[0].num_actions*3+3+i] = f(maximum(child.prollout_qs[0])) # child_rollout_qs_max
