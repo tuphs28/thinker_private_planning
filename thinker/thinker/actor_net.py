@@ -428,6 +428,13 @@ class ActorNetBase(BaseNet):
             nn.init.constant_(self.baseline.weight, 0.0)
             nn.init.constant_(self.baseline.bias, 0.0)
 
+        self.ordinal = flags.actor_ordinal
+        if self.ordinal:
+            indices = torch.arange(self.num_actions).view(-1, 1)
+            ordinal_mask = (indices + indices.T) <= (self.num_actions - 1)
+            ordinal_mask = ordinal_mask.float()
+            self.register_buffer("ordinal_mask", ordinal_mask)
+
         self.initial_state(batch_size=1) # initialize self.state_idx
 
 
@@ -566,11 +573,13 @@ class ActorNetBase(BaseNet):
         # compute logits
         pri_logits = self.policy(final_out)    
         pri_logits = pri_logits.view(T*B, self.dim_actions, self.num_actions)
+        if self.ordinal: pri_logits = self.ordinal_encode(pri_logits)
 
         if not self.disable_thinker:
             if self.sep_im_head:
-                im_logits = self.im_policy(final_out)
+                im_logits = self.im_policy(final_out)                
                 im_logits = im_logits.view(T*B, self.dim_actions, self.num_actions)
+                if self.ordinal: im_logits = self.ordinal_encode(im_logits)
                 im_mask = env_out.step_status <= 1 # imagainary action will be taken next
                 im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1).unsqueeze(-1)
                 pri_logits = torch.where(im_mask, im_logits, pri_logits)
@@ -704,6 +713,11 @@ class ActorNetBase(BaseNet):
             x = (x.float() - self.norm_low) / \
                 (self.norm_high -  self.norm_low)
         return x
+    
+    def ordinal_encode(self, logits):
+        norm_softm = F.sigmoid(logits)
+        norm_softm_tiled = torch.tile(norm_softm.unsqueeze(-1), [1,1,1,self.num_actions])
+        return torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
 
 class DRCNet(BaseNet):
     # Deprecated, not yet updated
