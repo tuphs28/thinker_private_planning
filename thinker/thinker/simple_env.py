@@ -100,6 +100,7 @@ class SimWrapper():
             per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
             model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)
             
+            self.last_max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
             return self.prepare_state(model_net_out, real_state)
         
     def real_step_model(self, real_state, pri_action, real_reward, done, model_net, per_state):
@@ -206,6 +207,7 @@ class SimWrapper():
                 self.k += 1
                 self.rollout_depth += 1
                 self.max_rollout_depth = torch.maximum(self.rollout_depth, self.max_rollout_depth)
+                self.last_max_rollout_depth = self.max_rollout_depth
                 if self.max_depth > 0:
                     force_reset = self.rollout_depth >= self.max_depth
                     reset_action[force_reset] = 1
@@ -347,7 +349,7 @@ class SimWrapper():
                 "real_done": real_done,
                 "truncated_done": truncated_done,
                 "step_status": step_status,
-                "max_rollout_depth": self.max_rollout_depth,
+                "max_rollout_depth": self.last_max_rollout_depth,
                 "baseline": baseline,
                 "initial_per_state": initial_per_state,
                 "im_reward": self.im_reward,
