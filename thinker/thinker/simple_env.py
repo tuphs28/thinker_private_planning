@@ -103,14 +103,6 @@ class SimWrapper():
             return self.prepare_state(model_net_out, real_state)
         
     def real_step_model(self, real_state, pri_action, real_reward, done, model_net, per_state):
-        if self.query_cur and self.node_key is None:
-            key_shape = model_net_out.zs.shape[1:]
-            self.node_key = torch.zeros((self.env_n, self.buffer_n, )+key_shape, device=self.device)
-            self.node_td = torch.zeros(self.env_n, self.buffer_n, device=self.device)
-            self.node_action = torch.zeros(self.env_n, self.buffer_n, self.dim_rep_actions, device=self.device)
-            self.node_mask = torch.zeros(self.env_n, self.buffer_n, dtype=torch.bool, device=self.device)         
-            self.node_lambda = torch.zeros(self.env_n, self.buffer_n, device=self.device)   
-
         if torch.any(done):
             pri_action = pri_action.clone()
             pri_action[done] = 0
@@ -137,7 +129,7 @@ class SimWrapper():
             self.root_r = self.root_r.clone()
             self.root_td[done] = 0.
             self.root_r[done] = 0.
-            self.node_mask[done, :-1] = 1 
+            if self.query_cur: self.node_mask[done, :-1] = 1 
 
         self.cur_td = self.root_td
         self.cur_action = self.root_action
@@ -165,7 +157,14 @@ class SimWrapper():
         self.im_reward = torch.zeros(self.env_n, device=self.device)
         self.k = 0
 
-        if self.query_cur:   
+        if self.query_cur:
+            if self.node_key is None:
+                key_shape = model_net_out.zs.shape[1:]
+                self.node_key = torch.zeros((self.env_n, self.buffer_n, )+key_shape, device=self.device)
+                self.node_td = torch.zeros(self.env_n, self.buffer_n, device=self.device)
+                self.node_action = torch.zeros(self.env_n, self.buffer_n, self.dim_rep_actions, device=self.device)
+                self.node_mask = torch.zeros(self.env_n, self.buffer_n, dtype=torch.bool, device=self.device)         
+                self.node_lambda = torch.zeros(self.env_n, self.buffer_n, device=self.device)         
             self.node_key[:, -1] = model_net_out.zs[-1]
             self.root_key = model_net_out.zs[-1].clone()
             if self.query_cur == 1:
