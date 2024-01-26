@@ -452,7 +452,7 @@ def slice_tree_reps(num_actions, dim_actions, sample_n, rec_t):
         ["root_qs_max", 3*num_actions+3],
         ["root_ns", 4*num_actions+3],
         ["root_trail_r", 5*num_actions+3],
-        ["root_trail_q", 5*num_actions+4],
+        ["rollout_return", 5*num_actions+4],
         ["max_rollout_return", 5*num_actions+5],
         ["root_raw_action", idx1],
         ["cur_action", idx2],

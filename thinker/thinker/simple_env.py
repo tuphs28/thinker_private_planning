@@ -261,10 +261,10 @@ class SimWrapper():
 
                     query = model_net_out.zs[-1]
                     # let do a search using key
-                    self.topk_simiarlity, self.topk_action, self.topk_td = self.make_query(query)                    
+                    self.topk_similarity, self.topk_action, self.topk_td = self.make_query(query)                    
 
                     if self.query_cur == 2:
-                        self.root_topk_simiarlity, self.root_topk_action, self.root_topk_td = self.make_query(self.root_key)                    
+                        self.root_topk_similarity, self.root_topk_action, self.root_topk_td = self.make_query(self.root_key)                    
 
 
                 state = self.prepare_state(model_net_out, None)

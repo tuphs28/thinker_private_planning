@@ -67,7 +67,7 @@ def plot_policies(logits, labels, action_meanings, ax=None, title="Real policy p
     xs = np.arange(len(probs[0]))
     for n, (prob, label) in enumerate(zip(probs, labels)):
         ax.bar(xs + 0.1 * (n - len(logits) // 2), prob, width=0.1, label=label)
-    ax.xaxis.set_major_locator(mticker.FixedLocator(np.arange(len(probs[0]))))
+    ax.xaxis.set_major_locator(mticker.FixedLocator(np.arange(logits[0].shape[-1])))
     ax.set_xticklabels(action_meanings, rotation=90)
     plt.subplots_adjust(bottom=0.2)
     ax.set_ylim(0, 1)
@@ -105,7 +105,7 @@ def plot_im_policies(
     pri_logits,
     reset_logits,
     pri,
-    reset,
+    cur_reset,
     action_meanings,
     one_hot=True,
     reset_ind=0,
@@ -114,7 +114,10 @@ def plot_im_policies(
     if ax is None:
         fig, ax = plt.subplots()
 
-    rec_t, num_actions = pri_logits.shape
+    rec_t, dim_actions, num_actions = pri_logits.shape
+    pri_logits = pri_logits[:, 0]
+    pri = pri[:, 0]    
+
     num_actions += 1
     rec_t -= 1
 
@@ -130,12 +133,12 @@ def plot_im_policies(
     if not one_hot:
         pri = F.one_hot(pri, num_actions - 1)
     pri = pri.detach().cpu().numpy()
-    reset = reset.unsqueeze(-1).detach().cpu().numpy()
-    full_action = np.concatenate([pri, reset], axis=-1)
+    cur_reset = cur_reset.unsqueeze(-1).detach().cpu().numpy()
+    full_action = np.concatenate([pri, cur_reset], axis=-1)
 
     xs = np.arange(rec_t + 1)
     labels = action_meanings.copy()
-    labels.append("RESET")
+    labels.append("cur_reset")
 
     for i in range(num_actions):
         c = ax.bar(
@@ -232,10 +235,10 @@ def print_im_actions(im_dict, action_meanings, print_stat=False):
     print_strs = []
     n, s = 1, ""
     reset = False
-    for im, reset in zip(im_dict["pri"][:-1], im_dict["reset"][:-1]):
+    for im, reset in zip(im_dict["pri"][:-1], im_dict["cur_reset"][:-1]):
         s += lookup_dict[im.item()] + ", "
         if reset:
-            s += "Reset" if reset == 1 else "FReset"
+            s += "cur_reset" if reset == 1 else "FReset"
             print_strs.append("%d: %s" % (n, s))
             s = ""
             n += 1
@@ -385,14 +388,14 @@ def visualize(
     # initalize env
     state = env.reset()
     root_env_state = env.clone_state([0])
-    env_out = init_env_out(state, flags)
+    env_out = init_env_out(state, flags, actor_net.dim_actions, actor_net.tuple_action)
     
     # some initial setting
     plt.rcParams.update({"font.size": 15})
 
     tree_reps = env.decode_tree_reps(env_out.tree_reps)
     end_gym_env_outs, end_titles = [], []
-    ini_max_q = tree_reps["root_max_v"][0].item()
+    ini_max_q = tree_reps["max_rollout_return"][0].item()
 
     step = 0
     real_step = 0
@@ -400,7 +403,7 @@ def visualize(
         [],
         [],
     )
-    im_list = ["pri_logits", "reset_logits", "pri", "reset"]
+    im_list = ["pri_logits", "reset_logits", "pri", "cur_reset"]
     im_dict = {k: [] for k in im_list}
     im_done = False
 
@@ -408,7 +411,7 @@ def visualize(
 
     if not render:
         real_img = env_out.real_states[0, 0, -3:].numpy()
-        real_img = np.transpose(real_img, (2, 0, 1))   
+        real_img = np.transpose(real_img, (1, 2, 0))   
     else:
         real_img = env.render(mode='rgb_array', camera_id=0)[0] 
     
@@ -429,7 +432,7 @@ def visualize(
         im_dict["pri_logits"].append(actor_out.misc["pri_logits"][:,0])
         im_dict["reset_logits"].append(actor_out.misc["reset_logits"][:,0])
         im_dict["pri"].append(actor_out.pri[:,0])
-        im_dict["reset"].append(actor_out.reset[:,0])
+        im_dict["cur_reset"].append(actor_out.reset[:,0])
         
         tree_reps_ = env.decode_tree_reps(env_out.tree_reps)
         model_logits.append(tree_reps_["cur_logits"])       
@@ -450,29 +453,29 @@ def visualize(
 
         tree_reps = env.decode_tree_reps(env_out.tree_reps)
         if (
-            len(im_dict["reset"]) > 0
-            and tree_reps["reset"]
+            len(im_dict["cur_reset"]) > 0
+            and tree_reps["cur_reset"]
             and not actor_out.reset
         ):
-            im_dict["reset"][-1] = im_dict["reset"][-1].clone()
-            im_dict["reset"][-1][:] = 3  # force reset
+            im_dict["cur_reset"][-1] = im_dict["cur_reset"][-1].clone()
+            im_dict["cur_reset"][-1][:] = 3  # force reset
 
         if not render:
             img = env.unnormalize(torch.clamp(env_out.xs, 0, 1)).to(torch.uint8)
             img = img[0, 0, -3:].numpy()
-            img = np.transpose(img, (2, 0, 1))
+            img = np.transpose(img, (1, 2, 0))        
         else:
             img = env.render(mode='rgb_array', camera_id=0)[0]   
 
-        if render and (tree_reps["reset"] == 1 or info["step_status"]==2):
+        if render and (tree_reps["cur_reset"] == 1 or info["step_status"]==2):
             env.restore_state(root_env_state, [0])   
             im_done = False   
 
         if env_out.step_status != 0 and (
-            tree_reps["reset"] == 1 or env_out.step_status == 2
+            tree_reps["cur_reset"] == 1 or env_out.step_status == 2
         ):
             title = "pred v: %.2f" % (tree_reps["cur_v"].item())
-            title += " pred g: %.2f" % (tree_reps["root_trail_q"].item())
+            title += " pred g: %.2f" % (tree_reps["rollout_return"].item())
             end_gym_env_outs.append(img)
             end_titles.append(title)
 
@@ -490,11 +493,11 @@ def visualize(
             {k: v.cpu().numpy() for k, v in tree_reps.items()}
         )
 
-        if im_dict["reset"][-1] in [1, 3]:
+        if im_dict["cur_reset"][-1] in [1, 3]:
             # reset / force reset
             video_stats["real_imgs"].append(video_stats["real_imgs"][-1])
             video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
-            video_stats["status"].append(im_dict["reset"][-1].item())
+            video_stats["status"].append(im_dict["cur_reset"][-1].item())
             video_stats["tree_reps"].append(
                 {k: v.cpu().numpy() for k, v in tree_reps.items()}
             )
@@ -518,20 +521,21 @@ def visualize(
                 reset_ind=1,
                 ax=axs[2],
             )
-            plot_qn_sa(
-                q_s_a=tree_reps_["root_qs_mean"][0],
-                n_s_a=tree_reps_["root_ns"][0],
-                action_meanings=action_meanings,
-                max_q_s_a=tree_reps_["root_qs_max"][0],
-                ax=axs[3],
-            )
-            model_policy_logits = tree_reps_["root_logits"][0]
+            if "root_qs_mean" in tree_reps_.keys():
+                plot_qn_sa(
+                    q_s_a=tree_reps_["root_qs_mean"][0],
+                    n_s_a=tree_reps_["root_ns"][0],
+                    action_meanings=action_meanings,
+                    max_q_s_a=tree_reps_["root_qs_max"][0],
+                    ax=axs[3],
+                )
+            model_policy_logits = tree_reps_["root_logits"][0].view(actor_net.dim_actions, actor_net.num_actions)
             agent_policy_logits = actor_out.misc["pri_logits"][0, 0]
             action = torch.nn.functional.one_hot(
                 actor_out.pri[0, 0], env.num_actions
             )
             plot_policies(
-                [model_policy_logits, agent_policy_logits, action],
+                [model_policy_logits[0], agent_policy_logits[0], action[0]],
                 ["model policy", "agent policy", "action"],
                 action_meanings=action_meanings,
                 ax=axs[4],
@@ -563,7 +567,7 @@ def visualize(
             print(log_str)
 
             stat = f"Real Step: {real_step} Root v: {tree_reps_['root_v'][0].item():.2f} Actor v: {agent_v:.2f}"
-            stat += f" Root Max Q: {tree_reps_['root_max_v'][0].item():.2f} Init. Root Max Q: {ini_max_q:.2f}"
+            stat += f" Root Max Q: {tree_reps_['max_rollout_return'][0].item():.2f} Init. Root Max Q: {ini_max_q:.2f}"
             stat += f" Root Mean Q: {info['baseline'][0].item():.2f}"
 
             if flags.im_cost > 0.0:
@@ -584,13 +588,13 @@ def visualize(
 
             if not render:
                 real_img = env_out.real_states[0, 0, -3:].numpy()
-                real_img = np.transpose(real_img, (2, 0, 1)) 
+                real_img = np.transpose(real_img, (1, 2, 0)) 
             else:
                 real_img = env.render(mode='rgb_array', camera_id=0)[0]
                    
             im_dict = {k: [] for k in im_list}
             model_logits, end_gym_env_outs, end_titles = [], [], []
-            ini_max_q = tree_reps["root_max_v"][0].item()
+            ini_max_q = tree_reps["max_rollout_return"][0].item()
 
             real_step += 1
             #if real_step >= 5: break
@@ -628,14 +632,16 @@ if __name__ == "__main__":
     parser.add_argument("--savedir", default="../logs/__project__", 
                         help="Checkpoint directory.")
     parser.add_argument("--xpid", default="latest", help="id of the run.")    
+    parser.add_argument("--project", default="", help="project of the run.")  
     parser.add_argument("--seed", default="-1", type=int, help="Base seed.")
     parser.add_argument(
         "--max_frames",
         default="-1",
         type=int,
         help="Max number of real frames to record",
-    )
-    flags = parser.parse_args()
+    )    
+    flags = parser.parse_args()    
+    if flags.project: flags.savedir=flags.savedir.replace("__project__", flags.project)
 
     visualize(
         savedir=flags.savedir,
