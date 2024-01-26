@@ -97,7 +97,8 @@ class SLogWorker:
             actor_param = {
                         "obs_space":obs_space,
                         "action_space":action_space,
-                        "flags":flags
+                        "flags":flags,
+                        "tree_rep_meaning": self.env.get_tree_rep_meaning(),
                     }
 
             self.actor_net = ActorNet(**actor_param)

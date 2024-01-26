@@ -503,6 +503,14 @@ class Env(gym.Wrapper):
             enc_type=self.flags.critic_enc_type,
             f_type=self.flags.critic_enc_f_type,
         )
+    
+    def get_tree_rep_meaning(self):
+        if self.tree_rep_meaning is None:
+            if self.flags.wrapper_type == 3:
+                self.tree_rep_meaning = self.env.tree_rep_meaning
+            elif self.flags.wrapper_type == 1:
+                self.tree_rep_meaning = util.slice_tree_reps(self.num_actions, self.dim_actions, self.flags.sample_n, self.flags.rec_t)        
+        return self.tree_rep_meaning
 
 def make(*args, **kwargs):
     return Env(*args, **kwargs)

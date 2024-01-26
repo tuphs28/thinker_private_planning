@@ -4,7 +4,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.cuda.amp import autocast
 from thinker import util
-from thinker.core.rnn import ConvAttnLSTM
+from thinker.core.rnn import ConvAttnLSTM, LSTMReset
 from thinker.core.module import MLP, OneDResBlock
 from thinker.model_net import BaseNet, RVTran
 from gym import spaces
@@ -264,7 +264,7 @@ class RNNEncoder(nn.Module):
         return d, core_state
 
 class ActorNetBase(BaseNet):
-    def __init__(self, obs_space, action_space, flags):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
         super(ActorNetBase, self).__init__()
 
         self.disable_thinker = flags.wrapper_type == 1
@@ -311,7 +311,8 @@ class ActorNetBase(BaseNet):
             self.dim_rep_actions = self.dim_actions
 
         self.tran_dim = flags.tran_dim 
-        self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep 
+        self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep         
+        self.se_lstm_table = flags.se_lstm_table and flags.see_tree_rep    
         self.x_rnn = flags.x_rnn and flags.see_x  
         self.real_state_rnn = flags.real_state_rnn and flags.see_real_state 
 
@@ -376,15 +377,33 @@ class ActorNetBase(BaseNet):
             last_out_size += r_out_size         
                     
         if self.see_tree_rep:            
+            self.tree_rep_meaning = tree_rep_meaning
+            in_size = self.tree_reps_shape[0]
+            if self.se_lstm_table:
+                assert flags.se_query_cur == 2
+                self.tree_rep_table_lstm = nn.LSTM(input_size=(2+self.dim_rep_actions), hidden_size=64, num_layers=3, batch_first=True)
+                root_table_mask = torch.zeros(in_size, dtype=torch.bool)
+                for i in ["root_topk_similarity", "root_topk_td", "root_topk_action"]:
+                    root_table_mask[self.tree_rep_meaning[i]] = 1
+                cur_table_mask = torch.zeros(in_size, dtype=torch.bool)
+                for i in ["topk_similarity", "topk_td", "topk_action"]:
+                    cur_table_mask[self.tree_rep_meaning[i]] = 1
+                non_table_mask = torch.logical_or(root_table_mask, cur_table_mask)
+                non_table_mask = torch.logical_not(non_table_mask)
+                self.register_buffer("root_table_mask", root_table_mask)
+                self.register_buffer("cur_table_mask", cur_table_mask)
+                self.register_buffer("non_table_mask", non_table_mask)
+                in_size = torch.sum(non_table_mask).long() + 64 * 2
+
             if self.tree_rep_rnn:
                 self.tree_rep_encoder = RNNEncoder(
-                    in_size=self.tree_reps_shape[0],
+                    in_size=in_size,
                     flags=flags
                 )
                 last_out_size += flags.tran_dim
             else:
                 self.tree_rep_encoder = MLP(
-                    input_size=self.tree_reps_shape[0],
+                    input_size=in_size,
                     layer_sizes=[200, 200, 200],
                     output_size=100,
                     norm=False,
@@ -442,23 +461,17 @@ class ActorNetBase(BaseNet):
         self.state_idx = {}
         idx = 0
         initial_state = ()
-        if self.x_rnn:
-            core_state = self.x_encoder_rnn.initial_state(batch_size, device=device)
-            initial_state = initial_state + core_state
-            self.state_idx["x"] = slice(idx, idx+len(core_state))
-            idx += len(core_state)
-
-        if self.real_state_rnn:
-            core_state = self.r_encoder_rnn.initial_state(batch_size, device=device)
-            initial_state = initial_state + core_state
-            self.state_idx["r"] = slice(idx, idx+len(core_state))
-            idx += len(core_state)
         
-        if self.tree_rep_rnn:
-            core_state = self.tree_rep_encoder.initial_state(batch_size, device=device)
-            initial_state = initial_state + core_state
-            self.state_idx["tree_rep"] = slice(idx, idx+len(core_state))
-            idx += len(core_state)
+        conditions = [self.x_rnn, self.real_state_rnn, self.tree_rep_rnn]
+        rnn_names = ["x_encoder_rnn", "r_encoder_rnn", "tree_rep_encoder"]
+        state_names = ["x", "r", "tree_rep", "root_table"]
+
+        for condition, rnn_name, state_name in zip(conditions, rnn_names, state_names):
+            if condition:
+                core_state = getattr(self, rnn_name).initial_state(batch_size, device=device)
+                initial_state = initial_state + core_state
+                self.state_idx[state_name] = slice(idx, idx+len(core_state))
+                idx += len(core_state)
 
         self.state_len = idx
         return initial_state
@@ -521,8 +534,21 @@ class ActorNetBase(BaseNet):
         last_reward = torch.clamp(torch.flatten(reward, 0, 1), -1, +1)
         final_out.append(last_reward)
 
-        if self.see_tree_rep:            
-            tree_rep = torch.flatten(env_out.tree_reps, 0, 1)
+        if self.see_tree_rep:                
+            tree_rep = env_out.tree_reps               
+            tree_rep = torch.flatten(tree_rep, 0, 1)     
+
+            if self.se_lstm_table:
+                root_table = tree_rep[:, self.root_table_mask]
+                root_table = torch.flip(root_table.view(T*B, self.flags.se_query_size, -1), dims=[1])
+                root_table_rep, _ = self.tree_rep_table_lstm(root_table)
+                root_table_rep = root_table_rep[:, -1]
+                cur_table = tree_rep[:, self.cur_table_mask]
+                cur_table = torch.flip(cur_table.view(T*B, self.flags.se_query_size, -1), dims=[1])
+                cur_table_rep, _ = self.tree_rep_table_lstm(cur_table)
+                cur_table_rep = cur_table_rep[:, -1]
+                tree_rep = torch.concat([tree_rep[:, self.non_table_mask], root_table_rep, cur_table_rep], dim=-1)
+
             if self.tree_rep_rnn:
                 core_state_ = core_state[self.state_idx['tree_rep']]
                 encoded_tree_rep, core_state_ = self.tree_rep_encoder(
