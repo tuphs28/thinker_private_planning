@@ -55,6 +55,8 @@ class SimWrapper():
 
         self.query_size = flags.se_query_size
         self.td_lambda = flags.se_td_lambda
+        self.query_cur = flags.se_query_cur # 0 for no query for current; 1 for query based on predicted z
+        self.buffer_n = flags.se_buffer_n
         
         self.root_v = torch.zeros(self.env_n, device=self.device)
         self.batch_idx = torch.arange(self.env_n, device=self.device)
@@ -86,7 +88,10 @@ class SimWrapper():
 
 
     def reset(self, model_net):
-        with torch.no_grad():
+        with torch.no_grad():            
+            if self.query_cur:
+                self.node_key, self.node_td, self.node_action, self.node_mask = None, None, None, None
+
             real_state = self.env.reset()
             real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
             pri_action = torch.zeros(self.env_n, self.dim_actions, dtype=torch.long, device=self.device)
@@ -94,6 +99,7 @@ class SimWrapper():
             done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
             per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
             model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)
+            
             return self.prepare_state(model_net_out, real_state)
         
     def real_step_model(self, real_state, pri_action, real_reward, done, model_net, per_state):
@@ -106,7 +112,7 @@ class SimWrapper():
                                   state=per_state,
                                   one_hot=False,
                                   ret_xs=self.return_x,
-                                  ret_zs=False,
+                                  ret_zs=True,
                                   ret_hs=True)       
         self.root_per_state = model_net_out.state
         self.tmp_state = self.root_per_state
@@ -123,6 +129,7 @@ class SimWrapper():
             self.root_r = self.root_r.clone()
             self.root_td[done] = 0.
             self.root_r[done] = 0.
+            self.node_mask[done, :-1] = 1 
 
         self.cur_td = self.root_td
         self.cur_action = self.root_action
@@ -149,6 +156,30 @@ class SimWrapper():
         self.max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
         self.im_reward = torch.zeros(self.env_n, device=self.device)
         self.k = 0
+
+        if self.query_cur:
+            if self.node_key is None:
+                key_shape = model_net_out.zs.shape[1:]
+                self.node_key = torch.zeros((self.env_n, self.buffer_n, )+key_shape, device=self.device)
+                self.node_td = torch.zeros(self.env_n, self.buffer_n, device=self.device)
+                self.node_action = torch.zeros(self.env_n, self.buffer_n, self.dim_rep_actions, device=self.device)
+                self.node_mask = torch.zeros(self.env_n, self.buffer_n, dtype=torch.bool, device=self.device)         
+                self.node_lambda = torch.zeros(self.env_n, self.buffer_n, device=self.device)         
+            self.node_key[:, -1] = model_net_out.zs[-1]
+            self.root_key = model_net_out.zs[-1].clone()
+            if self.query_cur == 1:
+                self.node_mask[:, :-1] = 1 
+                # allow tree carry for query_cur mode 2
+            self.node_lambda[:, -1] = 1
+
+            if self.query_cur == 1:
+                self.topk_similarity = -torch.ones(self.env_n, self.query_size, device=self.device)         
+                self.topk_td = torch.zeros(self.env_n, self.query_size, device=self.device)         
+                self.topk_action = torch.zeros(self.env_n, self.query_size, self.dim_rep_actions, device=self.device)         
+            else:
+                self.topk_similarity, self.topk_action, self.topk_td = self.make_query(self.root_key, ignore_last=True)
+                self.root_topk_similarity, self.root_topk_action, self.root_topk_td = self.topk_similarity, self.topk_action, self.topk_td 
+
         return model_net_out
         
     def step(self, action, model_net):  
@@ -185,7 +216,7 @@ class SimWrapper():
                         action=pri_action,                     
                         one_hot=False,
                         ret_xs=self.return_x,
-                        ret_zs=False,
+                        ret_zs=True,
                         ret_hs=True)  
                 self.tmp_state = model_net_out.state
                 
@@ -217,13 +248,26 @@ class SimWrapper():
                 self.root_td_table = torch.clone(self.root_td_table)
                 self.root_action_table = torch.clone(self.root_action_table)
 
-                self.root_td_table[:, 0] = self.root_td_table[:, 0] + self.trail_lambda * self.discounting * self.cur_td
-                self.trail_lambda = self.trail_lambda * self.td_lambda
+                self.root_td_table[:, 0] = self.root_td_table[:, 0] + self.trail_lambda * self.cur_td
+                self.trail_lambda = self.trail_lambda * self.td_lambda * self.discounting
                 one_depth_mask = self.rollout_depth == 1
                 self.root_action_table[one_depth_mask, 0] = self.cur_action[one_depth_mask]
 
-                state = self.prepare_state(model_net_out, None)
+                if self.query_cur:
+                    # fill the previous node
+                    self.node_action[:, -1] = self.cur_action
+                    self.node_td = self.node_td + self.node_lambda * self.cur_td.unsqueeze(-1)
+                    self.node_lambda = self.node_lambda * self.td_lambda * self.discounting
 
+                    query = model_net_out.zs[-1]
+                    # let do a search using key
+                    self.topk_simiarlity, self.topk_action, self.topk_td = self.make_query(query)                    
+
+                    if self.query_cur == 2:
+                        self.root_topk_simiarlity, self.root_topk_action, self.root_topk_td = self.make_query(self.root_key)                    
+
+
+                state = self.prepare_state(model_net_out, None)
                 # reset processing
                 reset_bool = reset_action.bool()
                 if torch.any(reset_bool):
@@ -242,6 +286,23 @@ class SimWrapper():
 
                     self.im_reward[reset_bool] = 0
                     # todo - test if gating planning reward is necessary
+
+                if self.query_cur:                    
+                    # shift table
+                    self.node_action[:, :-1] = self.node_action[:, 1:].clone()
+                    self.node_action[:, -1] = 0 # to be filled on the next step
+                    self.node_td[:, :-1] = self.node_td[:, 1:].clone()
+                    self.node_td[:, -1] = 0 # to be filled on the next step
+                    self.node_mask[:, :-1] = self.node_mask[:, 1:].clone()
+                    self.node_mask[:, -1] = 0 
+                    self.node_lambda[:, :-1] = self.node_lambda[:, 1:].clone()
+                    self.node_lambda[:, -1] = 1
+                    if torch.any(reset_bool):
+                        self.node_lambda[reset_bool, :-1] = 0
+                    self.node_key[:, :-1] = self.node_key[:, 1:].clone()
+                    self.node_key[:, -1] = query
+                    if torch.any(reset_bool):
+                        self.node_key[reset_bool, -1] = self.root_key[reset_bool]
 
                 real_reward =  torch.zeros(self.env_n, device=self.device)
                 done = torch.zeros(self.env_n, device=self.device, dtype=torch.bool)
@@ -301,10 +362,18 @@ class SimWrapper():
         cur_stat = ["cur_td", "cur_action", "cur_r", "cur_v", "cur_logits"]
         misc = ["cur_reset", "one_hot_k", "rollout_return", "max_rollout_return", "rollout_done"]
         root_tables = ["root_action_table", "root_td_table"]
-        action_seq = ["action_seq"]
+        action_seq = ["action_seq"]   
+        cur_topk = ["topk_similarity", "topk_td", "topk_action"]
+        root_topk = ["root_topk_similarity", "root_topk_td", "root_topk_action"]
 
         tree_reps = []
-        tree_rep_keys = root_stat + cur_stat + misc + root_tables + action_seq
+        tree_rep_keys = root_stat + cur_stat + misc + action_seq
+        if self.query_cur == 1: 
+            tree_rep_keys += root_tables + cur_topk
+        elif self.query_cur == 2: 
+            tree_rep_keys += root_topk + cur_topk
+        else:
+            tree_rep_keys += root_tables 
         for k in tree_rep_keys:
             v = getattr(self, k)
             if len(v.shape) == 1:
@@ -331,6 +400,24 @@ class SimWrapper():
         if self.return_h:
             state["hs"] = model_net_out.hs[-1]
         return state
+    
+    def make_query(self, query, ignore_last=False):
+        expanded_query = query.unsqueeze(1).expand_as(self.node_key)
+        # Compute cosine similarity
+        similarity = F.cosine_similarity(
+            torch.flatten(self.node_key, 2), 
+            torch.flatten(expanded_query, 2), 
+            dim=-1)  # size (env_n, buffer_n)
+        similarity[self.node_mask] = -1. # previous episode / stage similarity is all set to minimum
+        if ignore_last: similarity[:, -1] = -1
+        topk_similarity, topk_indicies = torch.topk(similarity, k=self.query_size, dim=-1)
+        # get top k indicies and collect respective action and td
+        topk_action = torch.gather(self.node_action, dim=1, index=topk_indicies.unsqueeze(-1).expand(-1, -1, self.dim_rep_actions))
+        topk_td = torch.gather(self.node_td, dim=1, index=topk_indicies)
+        # set masked encoding to 0
+        topk_action[topk_similarity==-1] = 0
+        topk_td[topk_similarity==-1] = 0
+        return topk_similarity, topk_action, topk_td
 
     def render(self, *args, **kwargs):  
         return self.env.render(*args, **kwargs)

@@ -246,7 +246,7 @@ class SLogWorker:
 
         if True: #not self.env_init:
             state = self.env.reset()
-            env_out = init_env_out(state, self.flags, self.actor_net.dim_actions)            
+            env_out = init_env_out(state, self.flags, self.actor_net.dim_actions, self.actor_net.tuple_action)            
             self.actor_state = self.actor_net.initial_state(batch_size=1)
         else:
             env_out = self.last_env_out
@@ -266,10 +266,11 @@ class SLogWorker:
 
         while step < max_steps:
             step += 1
-            actor_out, self.actor_state = self.actor_net(env_out, self.actor_state)           
+            actor_out, self.actor_state = self.actor_net(env_out, self.actor_state)     
+            primary_action, reset_action = actor_out.action      
             state, reward, done, info = self.env.step(
-                primary_action=actor_out.action[0], 
-                reset_action=actor_out.action[1])
+                primary_action=primary_action, 
+                reset_action=reset_action)
             env_out = create_env_out(actor_out.action, state, reward, done, info, self.flags)
             if self.wrapper_type != 1:
                 ret_reset = self.env.decode_tree_reps(env_out.tree_reps)["cur_reset"]

@@ -298,7 +298,7 @@ class SelfPlayWorker:
             self.timing.time("move_actor_buffer_to_cpu")
 
     def init_env_out(self, *args, **kwargs):
-        return init_env_out(*args, **kwargs, flags=self.flags, dim_actions=self.actor_net.dim_actions)
+        return init_env_out(*args, **kwargs, flags=self.flags, dim_actions=self.actor_net.dim_actions, tuple_action=self.actor_net.tuple_action)
 
     def create_env_out(self, *args, **kwargs):
         return create_env_out(*args, **kwargs, flags=self.flags)
@@ -340,7 +340,7 @@ class SelfPlayWorker:
                 break                
             time.sleep(0.1)  
 
-def init_env_out(state, flags, dim_actions):
+def init_env_out(state, flags, dim_actions, tuple_action):
         # minimum env_out for actor_net
         num_rewards = 1        
         num_rewards += int(flags.im_cost > 0.0)
@@ -349,8 +349,9 @@ def init_env_out(state, flags, dim_actions):
         env_n = state["real_states"].shape[0]
         device = state["real_states"].device
 
+        last_pri_shape = (env_n, dim_actions) if tuple_action else (env_n)
         out = {
-            "last_pri": torch.zeros(env_n, dim_actions, dtype=torch.long, device=device),
+            "last_pri": torch.zeros(last_pri_shape, dtype=torch.long, device=device),
             "last_reset": torch.zeros(env_n, dtype=torch.long, device=device),
             "reward": torch.zeros((env_n, num_rewards), 
                                 dtype=torch.float, device=device),

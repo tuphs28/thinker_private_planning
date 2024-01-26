@@ -505,9 +505,10 @@ class ActorNetBase(BaseNet):
         new_core_state = [None] * self.state_len
 
         final_out = []
-
+        
         last_pri = torch.flatten(env_out.last_pri, 0, 1)
-        last_pri = util.encode_action(last_pri, self.dim_actions, self.num_actions)
+        if not self.tuple_action: last_pri = last_pri.unsqueeze(-1)
+        last_pri = util.encode_action(last_pri, self.dim_actions, self.num_actions)   
         final_out.append(last_pri)
 
         if not self.disable_thinker:
