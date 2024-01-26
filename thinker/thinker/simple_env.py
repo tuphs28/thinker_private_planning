@@ -159,7 +159,7 @@ class SimWrapper():
 
         if self.query_cur:
             if self.node_key is None:
-                key_shape = model_net_out.zs.shape[1:]
+                key_shape = model_net_out.zs.shape[2:]
                 self.node_key = torch.zeros((self.env_n, self.buffer_n, )+key_shape, device=self.device)
                 self.node_td = torch.zeros(self.env_n, self.buffer_n, device=self.device)
                 self.node_action = torch.zeros(self.env_n, self.buffer_n, self.dim_rep_actions, device=self.device)
