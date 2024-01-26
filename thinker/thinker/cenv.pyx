@@ -329,6 +329,7 @@ cdef class cWrapper():
     cdef bool[:] full_im_done
     cdef bool[:] full_real_done
     cdef bool[:] full_truncated_done
+    cdef bool[:] full_cost
     cdef int[:] step_status
     cdef int[:] total_step  
     cdef int[:] step_from_done  
@@ -457,6 +458,7 @@ cdef class cWrapper():
         self.full_im_done = np.zeros(self.env_n, dtype=np.bool_)
         self.full_real_done = np.zeros(self.env_n, dtype=np.bool_)
         self.full_truncated_done = np.zeros(self.env_n, dtype=np.bool_)
+        self.full_cost = np.zeros(self.env_n, dtype=np.bool_)
         self.total_step = np.zeros(self.env_n, dtype=np.intc)
         self.step_status = np.zeros(self.env_n, dtype=np.intc)  
         self.step_from_done = np.zeros(self.env_n, dtype=np.intc)  
@@ -849,6 +851,7 @@ cdef class cModelWrapper(cWrapper):
             obs, reward, done, info = self.env.step(pass_action_in, inds=pass_inds_step) 
             real_done = [m["real_done"] if "real_done" in m else done[n] for n, m in enumerate(info)]
             truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
+            cost = [m["cost"] if "cost" in m else False for n, m in enumerate(info)]
         if self.time: self.timings.time("step_state")
         # env reset needed?
         for i, j in enumerate(pass_inds_step):
@@ -1117,8 +1120,9 @@ cdef class cModelWrapper(cWrapper):
             if self.status[i] == 1:
                 self.full_done[i] = done[j]
                 self.full_real_done[i] = real_done[j]
-                self.full_truncated_done[i] = truncated_done[j]
+                self.full_truncated_done[i] = truncated_done[j]                
                 self.full_im_done[i] = False
+                self.full_cost[i] = cost[j]
                 if done[j]:
                     self.step_from_done[i] = 0
                 else:
@@ -1126,8 +1130,9 @@ cdef class cModelWrapper(cWrapper):
             else:
                 self.full_done[i] = False
                 self.full_real_done[i] = False
-                self.full_truncated_done[i] = False
+                self.full_truncated_done[i] = False                
                 self.full_im_done[i] = self.cur_nodes[i][0].done
+                self.full_cost[i] = False
             if self.status[i] == 1:
                 j += 1        
             if self.reset_mode == 0 and reset[i]:
@@ -1149,10 +1154,11 @@ cdef class cModelWrapper(cWrapper):
                 "real_done": torch.tensor(self.full_real_done, dtype=torch.float, device=self.device).bool(),
                 "truncated_done": torch.tensor(self.full_truncated_done, dtype=torch.float, device=self.device).bool(),
                 #"im_done": torch.tensor(self.full_im_done, dtype=torch.float, device=self.device).bool(),
+                "cost": torch.tensor(self.full_cost, dtype=torch.float, device=self.device).bool(),
                 "step_status": torch.tensor(self.step_status, device=self.device),
                 "max_rollout_depth":  torch.tensor(self.max_rollout_depth_, dtype=torch.long, device=self.device),
                 "baseline": self.baseline_mean_q,    
-                "initial_per_state": self.initial_per_state,
+                "initial_per_state": self.initial_per_state,                
                 }
         if self.im_enable:
             info["im_reward"] = torch.tensor(self.full_im_reward, dtype=torch.float, device=self.device)

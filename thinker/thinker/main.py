@@ -96,8 +96,12 @@ class Env(gym.Wrapper):
         if env_fn is None:
             if name == "Sokoban-v0": import gym_sokoban
             if "Safexp" in name: import mujoco_py, safety_gym
+            gym_make_args = {"id": name}
+            if name == "Sokoban-v0" and self.flags.detect_dan_num > 0:
+                gym_make_args["dan_num"] = self.flags.detect_dan_num
+
             env_fn = lambda: PreWrapper(
-                gym.make(name), 
+                gym.make(**gym_make_args), 
                 name=name, 
                 grayscale=self.flags.grayscale, 
                 discrete_k=self.flags.discrete_k, 

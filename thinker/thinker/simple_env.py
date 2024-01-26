@@ -310,6 +310,7 @@ class SimWrapper():
                 done = torch.zeros(self.env_n, device=self.device, dtype=torch.bool)
                 truncated_done = done
                 real_done = done
+                cost = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
 
                 if self.k < self.rec_t - 1:
                     step_status = torch.ones(self.env_n, dtype=torch.long, device=self.device)
@@ -343,6 +344,12 @@ class SimWrapper():
                 else:
                     truncated_done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
 
+                if "cost" in info[0].keys():
+                    cost = [m["cost"] for m in info]
+                    cost = torch.tensor(cost, dtype=torch.bool, device=self.device)
+                else:
+                    cost = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
+
                 step_status = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
 
             info = {
@@ -353,6 +360,7 @@ class SimWrapper():
                 "baseline": baseline,
                 "initial_per_state": initial_per_state,
                 "im_reward": self.im_reward,
+                "cost": cost,
             }
 
             return state, real_reward, done, info

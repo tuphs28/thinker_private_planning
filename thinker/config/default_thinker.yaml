@@ -74,6 +74,8 @@ cur_x_cost: 0.0 # coefficient for curiosity loss based on image prediction loss
 cur_sup_cost: 0.0 # coefficient for curiosity loss based on SimSiam loss
 cur_done_gate: true # whehter to give no curiosity reward when episode ends or is predicted to end
 cur_done_elapse: 0 # number of step after episode done that receives no curisoity reward; 0 for disabling
+# danger-related env setting
+detect_dan_num: 0 # number of dangerous location in Sokoban
 # stochasic model
 noise_enable: false # enable vae model
 noise_n: 16 # number of catogorical variable
