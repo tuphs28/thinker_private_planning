@@ -55,6 +55,8 @@ se_query_size: 5 # size of query table in wrapper_type 3
 se_td_lambda: 0.9 # lambda for discounting td err in wrapper_type 3
 se_query_cur: 0 # 0 for no query on current nodes; 1 for query on current nodes; 2 for query on both current & root nodes & enable node carry
 se_buffer_n: 10 # buffer size of the keys
+se_tree_carry: false # whether to enable tree carry
+se_manual_stat: false # manual summing to compute n(s,a) and q(s,a) for discrete only
 # sampled-based search
 sample_n: -1 # number of sampled action; <0 for disabling sample mode
 sample_temp: 4 # whether to use sampled action in imagination

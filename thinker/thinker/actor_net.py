@@ -380,19 +380,24 @@ class ActorNetBase(BaseNet):
             self.tree_rep_meaning = tree_rep_meaning
             in_size = self.tree_reps_shape[0]
             if self.se_lstm_table:
-                assert flags.se_query_cur == 2
-                self.tree_rep_table_lstm = nn.LSTM(input_size=(2+self.dim_rep_actions), hidden_size=64, num_layers=3, batch_first=True)
+                assert flags.se_query_cur == 2                
                 root_table_mask = torch.zeros(in_size, dtype=torch.bool)
-                for i in ["root_topk_similarity", "root_topk_td", "root_topk_action"]:
-                    root_table_mask[self.tree_rep_meaning[i]] = 1
+                root_query_keys = [k for k in tree_rep_meaning if k.startswith("root_query_results")]
+                for i in root_query_keys:
+                    root_table_mask[self.tree_rep_meaning[i]] = 1        
+                # print("root_query_size: ", sum(root_table_mask).long().item())        
                 cur_table_mask = torch.zeros(in_size, dtype=torch.bool)
-                for i in ["topk_similarity", "topk_td", "topk_action"]:
+                cur_query_keys = [k for k in tree_rep_meaning if k.startswith("cur_query_results")]
+                for i in cur_query_keys:
                     cur_table_mask[self.tree_rep_meaning[i]] = 1
+                # print("cur_query_size: ", sum(cur_table_mask).long().item())        
                 non_table_mask = torch.logical_or(root_table_mask, cur_table_mask)
                 non_table_mask = torch.logical_not(non_table_mask)
                 self.register_buffer("root_table_mask", root_table_mask)
                 self.register_buffer("cur_table_mask", cur_table_mask)
                 self.register_buffer("non_table_mask", non_table_mask)
+                input_size = (sum(root_table_mask) / flags.se_query_size).long().item()
+                self.tree_rep_table_lstm = nn.LSTM(input_size=input_size, hidden_size=64, num_layers=3, batch_first=True)
                 in_size = torch.sum(non_table_mask).long() + 64 * 2
 
             if self.tree_rep_rnn:
