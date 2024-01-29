@@ -96,7 +96,7 @@ class SModelLearner:
         util.optimizer_to(self.optimizer_p, self.device)        
         
         self.timing = util.Timings() if self.time else None
-        self.perfect_model = flags.wrapper_type == 2
+        self.perfect_model = flags.wrapper_type in [2, 4, 5]
 
         # other init. variables for consume_data
         self.last_psteps = 0
@@ -499,12 +499,14 @@ class SModelLearner:
         if self.perfect_model:
             out = self.model_net.vp_net.forward(
                 xs=xs[:k].view((k * b,) + xs.shape[2:]),
-                actions=train_model_out.action[:k].view(1, k * b),
+                done=train_model_out.done[:k].view(1, k * b,),
+                actions=train_model_out.action[:k].view(1, k * b, -1),
+                state={},
                 one_hot=False,
             )
             vs = out.vs.view(k, b)
             v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
-            logits = out.logits.view((k, b) + out.logits.shape[1:])
+            logits = out.logits.view((k, b) + out.logits.shape[2:])
         else:
             out = self.model_net.vp_net.forward(
                 xs=xs[: k + 1],  # s_0, ..., s_k

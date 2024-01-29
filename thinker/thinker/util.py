@@ -29,12 +29,14 @@ def process_flags(flags):
     if flags.sample_n > 0:
         assert flags.wrapper_type == 0, "sampled-based mode only supported on wrapper_type 0"
 
-    if flags.wrapper_type == 2:
+    if flags.wrapper_type in [2, 4, 5]:
         flags.dual_net = False
         flags.cur_enable = False
         flags.model_rs_loss_cost = 0
         flags.model_img_loss_cost = 0
         flags.model_done_loss_cost = 0
+
+    assert flags.wrapper_type != 5, "wrapper-type 5 (meta-learning) not yet supported"
 
     return flags
 
@@ -50,8 +52,9 @@ def process_flags_actor(flags):
         flags.policy_vis_freq = -1
     flags.return_h = flags.see_h
     flags.return_x = flags.see_x
-    if flags.wrapper_type == 2:
+    if flags.wrapper_type in [2, 4, 5]:
         flags.cur_cost = 0.
+        flags.cur_enable = False
     return flags
 
 def alloc_res(flags, gpu_n):

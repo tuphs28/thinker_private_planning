@@ -59,6 +59,8 @@ class SimWrapper():
         self.buffer_n = flags.se_buffer_n
         self.tree_carry = flags.se_tree_carry
         self.manual_stat = flags.se_manual_stat
+        self.perfect_model = flags.wrapper_type in [4, 5]
+        self.wrapper_type = flags.wrapper_type
         
         self.root_v = torch.zeros(self.env_n, device=self.device)
         self.batch_idx = torch.arange(self.env_n, device=self.device)
@@ -100,9 +102,9 @@ class SimWrapper():
             real_reward = torch.zeros(self.env_n, device=self.device)
             done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
             per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
-            model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)
-            
+            model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)            
             self.last_max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
+            self.k = 0
             return self.prepare_state(model_net_out, real_state)
         
     def real_step_model(self, real_state, pri_action, real_reward, done, model_net, per_state):
@@ -119,6 +121,9 @@ class SimWrapper():
                                   ret_hs=True)       
         self.root_per_state = model_net_out.state
         self.tmp_state = self.root_per_state
+
+        if self.perfect_model:
+            self.root_env_state = self.env.clone_state()
 
         pri_action = util.encode_action(pri_action, self.dim_actions, self.num_actions)
 
@@ -217,32 +222,54 @@ class SimWrapper():
                 self.last_max_rollout_depth = self.max_rollout_depth
                 if self.max_depth > 0:
                     force_reset = self.rollout_depth >= self.max_depth
-                    reset_action[force_reset] = 1
+                    reset_action[force_reset] = 1                
                 
                 initial_per_state = None
-                model_net_out = model_net.forward_single(
-                        state=self.tmp_state,
-                        action=pri_action,                     
-                        one_hot=False,
-                        ret_xs=self.return_x,
-                        ret_zs=True,
-                        ret_hs=True)  
-                self.tmp_state = model_net_out.state
+                if not self.perfect_model:
+                    model_net_out = model_net.forward_single(
+                            state=self.tmp_state,
+                            action=pri_action,                     
+                            one_hot=False,
+                            ret_xs=self.return_x,
+                            ret_zs=True,
+                            ret_hs=True)  
+                    im_r = model_net_out.rs[-1] 
+                    im_done = model_net_out.dones[-1]           
+                else:
+                    im_x, im_r, im_done, _ = self.env.step(
+                        pri_action.detach().cpu().numpy()
+                    )
+                    im_x = torch.tensor(im_x, dtype=self.state_dtype, device=self.device)
+                    im_r = torch.tensor(im_r, dtype=torch.float, device=self.device)
+                    im_done = torch.tensor(im_done, dtype=torch.bool, device=self.device)
+                    model_net_out = model_net(x=im_x, 
+                                              done=None,
+                                              actions=pri_action.unsqueeze(0), 
+                                              state=self.tmp_state,
+                                              one_hot=False,
+                                              ret_xs=self.return_x,
+                                              ret_zs=True,
+                                              ret_hs=True
+                                              )                    
+                    reset_action[im_done] = 1  
+                self.tmp_state = model_net_out.state    
+                im_logits = model_net_out.logits[-1]
+                im_v = model_net_out.vs[-1]
                 
                 self.cur_action = util.encode_action(pri_action, self.dim_actions, self.num_actions)
-                self.cur_r = model_net_out.rs[-1]
+                self.cur_r = im_r
                 self.cur_r[self.rollout_done] = 0.                  
                 if torch.any(self.rollout_done):
-                    self.cur_logits = torch.where(self.rollout_done.unsqueeze(-1).unsqueeze(-1), self.cur_logits, model_net_out.logits[-1])
+                    self.cur_logits = torch.where(self.rollout_done.unsqueeze(-1).unsqueeze(-1), self.cur_logits, im_logits)
                 else:
-                    self.cur_logits = model_net_out.logits[-1]
+                    self.cur_logits = im_logits
                 # todo - test if this should be done after updating rollout_done
                 
-                self.rollout_done = torch.logical_or(self.rollout_done, model_net_out.dones[-1]) # cur_r should not be masked when just done
-                self.cur_v = model_net_out.vs[-1]
+                self.rollout_done = torch.logical_or(self.rollout_done, im_done) # cur_r should not be masked when just done
+                self.cur_v = im_v
                 self.cur_v[self.rollout_done] = 0.
                 self.cur_reset = reset_action
-                self.cur_td = self.cur_r + self.discounting * self.cur_v * (1 - model_net_out.dones[-1].float()) - self.last_v
+                self.cur_td = self.cur_r + self.discounting * self.cur_v * (1 - im_done.float()) - self.last_v
                 self.last_v = self.cur_v
 
                 self.action_seq[self.batch_idx, self.rollout_depth-1] = self.cur_action
@@ -298,8 +325,10 @@ class SimWrapper():
                     self.last_v[reset_bool] = self.root_v[reset_bool]
                     for k in self.tmp_state.keys():
                         self.tmp_state[k][reset_bool] = self.root_per_state[k][reset_bool]
-
                     self.im_reward[reset_bool] = 0
+                    if self.perfect_model:
+                        inds = np.arange(self.env_n)[reset_bool.cpu().numpy()]
+                        self.env.restore_state([self.root_env_state[i] for i in inds], inds=inds)
                     # todo - test if gating planning reward is necessary
 
                 if self.query_cur:                    
@@ -339,6 +368,7 @@ class SimWrapper():
             else:
                 # real step
                 baseline = self.sum_rollout_return / self.rec_t 
+                if self.perfect_model: self.env.restore_state(self.root_env_state)
                 real_state, real_reward, done, info = self.env.step(pri_action.detach().cpu().numpy())
                 if np.any(done): 
                     new_real_state = self.env.reset(self.np_batch_idx[done])

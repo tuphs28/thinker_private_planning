@@ -230,13 +230,21 @@ def gen_video(video_stats, file_path):
     video.release()
 
 
-def print_im_actions(im_dict, action_meanings, print_stat=False):
+def print_im_actions(im_dict, action_meanings, real_action, print_stat=False):
     lookup_dict = {k: v for k, v in enumerate(action_meanings)}
     print_strs = []
     n, s = 1, ""
     reset = False
-    for im, reset in zip(im_dict["pri"][:-1], im_dict["cur_reset"][:-1]):
-        s += lookup_dict[im.item()] + ", "
+
+    def a_to_str(a):
+        if len(a) > 1:
+            a = a.tolist()
+            return "(" + ",".join([f"{num:.2f}" for num in im]) + ")"
+        else:
+            return lookup_dict[im.item()]
+        
+    for im, reset in zip(im_dict["pri"][:-1], im_dict["cur_reset"][:-1]):        
+        s += a_to_str(im) + ", "
         if reset:
             s += "cur_reset" if reset == 1 else "FReset"
             print_strs.append("%d: %s" % (n, s))
@@ -244,6 +252,7 @@ def print_im_actions(im_dict, action_meanings, print_stat=False):
             n += 1
     if not reset:
         print_strs.append("%d: %s" % (n, s[:-2]))
+    print_strs.append("Real action: %s" % a_to_str(real_action))
     if print_stat:
         for s in print_strs:
             print(s)
@@ -350,7 +359,7 @@ def visualize(
     elif flags.sample_n > 0:
         action_meanings = [str(n) for n in range(flags.sample_n)]
     else:
-        action_meanings = env.get_action_meanings()
+        action_meanings = [str(n) for n in range(env.num_actions)]
     num_actions = env.num_actions
 
     env.seed([seed])
@@ -513,7 +522,7 @@ def visualize(
                     im_dict[k] = None
             plot_gym_env_out(real_img, axs[0], title="Real State")
             plot_base_policies(
-                torch.concat(model_logits), action_meanings=action_meanings, ax=axs[1]
+                torch.concat(model_logits)[:, :num_actions], action_meanings=action_meanings, ax=axs[1]
             )
             plot_im_policies(
                 **im_dict,
@@ -576,7 +585,7 @@ def visualize(
 
             if saveimg:
                 im_action_strs = print_im_actions(
-                    im_dict, action_meanings, print_stat=plot
+                    im_dict, action_meanings, actor_out.action[0][0], print_stat=plot
                 )
                 save_concatenated_image(
                     buf1,

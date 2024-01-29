@@ -252,7 +252,7 @@ class AsyncVectorEnv(VectorEnv):
                 ret_observations = deepcopy(ret_observations)
         return ret_observations
 
-    def clone_state_async(self, inds):
+    def clone_state_async(self, inds=None):
         self._assert_is_running()
         if self._state != AsyncState.DEFAULT:
             raise AlreadyPendingCallError(
@@ -260,6 +260,7 @@ class AsyncVectorEnv(VectorEnv):
                 "for a pending call to `{0}` to complete.".format(self._state.value),
                 self._state.value,
             )
+        if inds is None: inds = np.arange(len(self.parent_pipes))
         for n, ind in enumerate(inds):
             self.parent_pipes[ind].send(("clone_state", None))
         self.inds = inds
@@ -287,8 +288,9 @@ class AsyncVectorEnv(VectorEnv):
 
         return results
 
-    def restore_state_async(self, env_states, inds):
+    def restore_state_async(self, env_states, inds=None):
         self._assert_is_running()
+        if inds is None: inds = np.arange(len(self.parent_pipes))
         if self._state != AsyncState.DEFAULT:
             raise AlreadyPendingCallError(
                 "Calling `restore_state_async` while waiting "

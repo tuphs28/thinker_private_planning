@@ -93,11 +93,11 @@ class VectorEnv(gym.Env):
         self.step_async(actions, inds)
         return self.step_wait()
 
-    def clone_state(self, inds):
+    def clone_state(self, inds=None):
         self.clone_state_async(inds)
         return self.clone_state_wait()
 
-    def restore_state(self, data, inds):
+    def restore_state(self, data, inds=None):
         self.restore_state_async(data, inds)
         return self.restore_state_wait()
     

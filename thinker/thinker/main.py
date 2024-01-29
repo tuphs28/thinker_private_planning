@@ -209,11 +209,11 @@ class Env(gym.Wrapper):
             core_wrapper = DummyWrapper
         elif self.flags.wrapper_type == 2:
             core_wrapper = cPerfectWrapper
-        elif self.flags.wrapper_type == 3:
+        elif self.flags.wrapper_type in [3, 4, 5]:
             core_wrapper = SimWrapper
         else:
             raise Exception(
-                f"wrapper_type can only be [0, 1, 2], not {self.flags.wrapper_type}")
+                f"wrapper_type can only be [0, 1, 2, 3, 4], not {self.flags.wrapper_type}")
 
         # wrap the env with core Cython wrapper that runs
         # the core Thinker algorithm
@@ -496,7 +496,7 @@ class Env(gym.Wrapper):
         self.env.close()
     
     def decode_tree_reps(self, tree_reps):
-        if self.flags.wrapper_type == 3:
+        if self.flags.wrapper_type in [3, 4, 5]:
             return self.env.decode_tree_reps(tree_reps)
         return util.decode_tree_reps(
             tree_reps=tree_reps,
@@ -510,7 +510,7 @@ class Env(gym.Wrapper):
     
     def get_tree_rep_meaning(self):
         if self.tree_rep_meaning is None:
-            if self.flags.wrapper_type == 3:
+            if self.flags.wrapper_type in [3, 4, 5]:
                 self.tree_rep_meaning = self.env.tree_rep_meaning
             elif self.flags.wrapper_type == 1:
                 self.tree_rep_meaning = util.slice_tree_reps(self.num_actions, self.dim_actions, self.flags.sample_n, self.flags.rec_t)        
