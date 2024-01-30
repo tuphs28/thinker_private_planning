@@ -110,13 +110,14 @@ def plot_im_policies(
     one_hot=True,
     reset_ind=0,
     ax=None,
+    c_dim_action=0,
 ):
     if ax is None:
         fig, ax = plt.subplots()
 
     rec_t, dim_actions, num_actions = pri_logits.shape
-    pri_logits = pri_logits[:, 0]
-    pri = pri[:, 0]    
+    pri_logits = pri_logits[:, c_dim_action]
+    pri = pri[:, c_dim_action]    
 
     num_actions += 1
     rec_t -= 1
@@ -239,7 +240,7 @@ def print_im_actions(im_dict, action_meanings, real_action, print_stat=False):
     def a_to_str(a):
         if len(a) > 1:
             a = a.tolist()
-            return "(" + ",".join([f"{num:.2f}" for num in im]) + ")"
+            return "(" + ",".join([f"{num:.2f}" for num in a]) + ")"
         else:
             return lookup_dict[im.item()]
         
@@ -327,6 +328,7 @@ def visualize(
     savevideo=True,
     seed=-1,
     max_frames=-1,
+    c_dim_action=0,
 ):        
     savedir = savedir.replace("__project__", __project__)
     ckpdir = os.path.join(savedir, xpid)      
@@ -521,8 +523,9 @@ def visualize(
                 else:
                     im_dict[k] = None
             plot_gym_env_out(real_img, axs[0], title="Real State")
+            model_logits = torch.concat(model_logits).view(-1, actor_net.dim_actions, actor_net.num_actions)[:, c_dim_action]
             plot_base_policies(
-                torch.concat(model_logits)[:, :num_actions], action_meanings=action_meanings, ax=axs[1]
+                model_logits, action_meanings=action_meanings, ax=axs[1]
             )
             plot_im_policies(
                 **im_dict,
@@ -530,6 +533,7 @@ def visualize(
                 one_hot=False,
                 reset_ind=1,
                 ax=axs[2],
+                c_dim_action=c_dim_action,
             )
             if "root_qs_mean" in tree_reps_.keys():
                 plot_qn_sa(
@@ -545,7 +549,7 @@ def visualize(
                 actor_out.pri[0, 0], env.num_actions
             )
             plot_policies(
-                [model_policy_logits[0], agent_policy_logits[0], action[0]],
+                [model_policy_logits[c_dim_action], agent_policy_logits[c_dim_action], action[c_dim_action]],
                 ["model policy", "agent policy", "action"],
                 action_meanings=action_meanings,
                 ax=axs[4],
@@ -582,7 +586,7 @@ def visualize(
 
             if flags.im_cost > 0.0:
                 title += " im_return: %.4f" % env_out.episode_return[..., 1]
-
+            
             if saveimg:
                 im_action_strs = print_im_actions(
                     im_dict, action_meanings, actor_out.action[0][0], print_stat=plot
@@ -644,6 +648,8 @@ if __name__ == "__main__":
     parser.add_argument("--xpid", default="latest", help="id of the run.")    
     parser.add_argument("--project", default="", help="project of the run.")  
     parser.add_argument("--seed", default="-1", type=int, help="Base seed.")
+    parser.add_argument("--c_dim_action", default="0", type=int, help="Action dim to be visualized.")
+
     parser.add_argument(
         "--max_frames",
         default="-1",
@@ -662,4 +668,5 @@ if __name__ == "__main__":
         savevideo=True,
         seed=flags.seed,
         max_frames=flags.max_frames,
+        c_dim_action=flags.c_dim_action,
     )

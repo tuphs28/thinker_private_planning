@@ -856,7 +856,7 @@ class VPNet(nn.Module):
         self.has_memory = flags.model_has_memory
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net
         self.downscale_c = flags.model_downscale_c # downscale_c: int to downscale number of channels; default=2
-        self.use_rnn = flags.wrapper_type in [2, 4, 5] # dont use rnn if we have perfect dynamic
+        self.use_rnn = flags.wrapper_type not in [2, 4, 5] # dont use rnn if we have perfect dynamic
         self.receive_z = flags.dual_net # rnn receives z only when we are using dual net
         self.predict_rd = (
             not flags.dual_net and not self.use_rnn
