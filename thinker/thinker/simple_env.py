@@ -60,9 +60,8 @@ class SimWrapper():
         self.tree_carry = flags.se_tree_carry
         self.manual_stat = flags.se_manual_stat
         self.perfect_model = flags.wrapper_type in [4, 5]
-        self.wrapper_type = flags.wrapper_type
+        self.wrapper_type = flags.wrapper_type        
         
-        self.root_v = torch.zeros(self.env_n, device=self.device)
         self.batch_idx = torch.arange(self.env_n, device=self.device)
         self.np_batch_idx = np.arange(self.env_n)
 
@@ -102,6 +101,7 @@ class SimWrapper():
             real_reward = torch.zeros(self.env_n, device=self.device)
             done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
             per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
+            self.root_v = torch.zeros(self.env_n, device=self.device)
             model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)            
             self.last_max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
             self.k = 0
@@ -360,10 +360,6 @@ class SimWrapper():
                 real_done = done
                 cost = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
 
-                if self.k < self.rec_t - 1:
-                    step_status = torch.ones(self.env_n, dtype=torch.long, device=self.device)
-                else:
-                    step_status = torch.ones(self.env_n, dtype=torch.long, device=self.device) * 2            
                 baseline = None
             else:
                 # real step
@@ -399,7 +395,12 @@ class SimWrapper():
                 else:
                     cost = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
 
-                step_status = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
+            last_step_real = self.k == 0
+            next_step_real = self.k >= self.rec_t - 1
+            step_status = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
+            if not last_step_real and not next_step_real: step_status[:] = 1
+            if not last_step_real and next_step_real: step_status[:] = 2
+            if last_step_real and next_step_real: step_status[:] = 3      
 
             info = {
                 "real_done": real_done,

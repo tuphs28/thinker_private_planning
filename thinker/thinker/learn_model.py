@@ -96,7 +96,7 @@ class SModelLearner:
         util.optimizer_to(self.optimizer_p, self.device)        
         
         self.timing = util.Timings() if self.time else None
-        self.perfect_model = flags.wrapper_type in [2, 4, 5]
+        self.perfect_model = util.check_perfect_model(flags.wrapper_type)
 
         # other init. variables for consume_data
         self.last_psteps = 0

@@ -277,6 +277,8 @@ class SLogWorker:
                 ret_reset = self.env.decode_tree_reps(env_out.tree_reps)["cur_reset"]
             else:
                 ret_reset = False
+                
+            last_step_real = (env_out.step_status == 0) | (env_out.step_status == 3)
 
             if start_record:                
                 # record data for generating video
@@ -284,7 +286,7 @@ class SLogWorker:
                     video_stats["real_imgs"].append(video_stats["real_imgs"][-1])
                     video_stats["im_imgs"].append(video_stats["real_imgs"][-1])
                     video_stats["status"].append(1)
-                if env_out.step_status == 0:
+                if last_step_real:
                     video_stats["real_imgs"].append(
                         env_out.xs[0, 0, -copy_n:]
                     )
@@ -296,7 +298,7 @@ class SLogWorker:
 
             if (
                 step >= max_steps - record_steps
-                and env_out.step_status == 0
+                and last_step_real
                 and not start_record
             ):
                 video_stats["real_imgs"].append(

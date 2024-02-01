@@ -110,14 +110,15 @@ def plot_im_policies(
     one_hot=True,
     reset_ind=0,
     ax=None,
-    c_dim_action=0,
 ):
     if ax is None:
         fig, ax = plt.subplots()
 
     rec_t, dim_actions, num_actions = pri_logits.shape
-    pri_logits = pri_logits[:, c_dim_action]
-    pri = pri[:, c_dim_action]    
+    pri_logits = pri_logits[:10, 0]
+    pri = pri[:10, 0]    
+    reset_logits = reset_logits[:10]
+    cur_reset = cur_reset[:10]
 
     num_actions += 1
     rec_t -= 1
@@ -137,7 +138,7 @@ def plot_im_policies(
     cur_reset = cur_reset.unsqueeze(-1).detach().cpu().numpy()
     full_action = np.concatenate([pri, cur_reset], axis=-1)
 
-    xs = np.arange(rec_t + 1)
+    xs = np.arange(pri_logits.shape[0])
     labels = action_meanings.copy()
     labels.append("cur_reset")
 
@@ -238,12 +239,11 @@ def print_im_actions(im_dict, action_meanings, real_action, print_stat=False):
     reset = False
 
     def a_to_str(a):
-        if len(a) > 1:
+        if a.dim() > 1:
             a = a.tolist()
             return "(" + ",".join([f"{num:.2f}" for num in a]) + ")"
         else:
-            return lookup_dict[im.item()]
-        
+            return lookup_dict[a.item()]
     for im, reset in zip(im_dict["pri"][:-1], im_dict["cur_reset"][:-1]):        
         s += a_to_str(im) + ", "
         if reset:
@@ -253,6 +253,7 @@ def print_im_actions(im_dict, action_meanings, real_action, print_stat=False):
             n += 1
     if not reset:
         print_strs.append("%d: %s" % (n, s[:-2]))
+    
     print_strs.append("Real action: %s" % a_to_str(real_action))
     if print_stat:
         for s in print_strs:
@@ -328,7 +329,6 @@ def visualize(
     savevideo=True,
     seed=-1,
     max_frames=-1,
-    c_dim_action=0,
 ):        
     savedir = savedir.replace("__project__", __project__)
     ckpdir = os.path.join(savedir, xpid)      
@@ -437,7 +437,9 @@ def visualize(
         actor_out, actor_state = actor_net(env_out, actor_state, dbg_mode=1)        
         action = actor_out.action
 
-        if env_out.step_status == 0:
+        last_real_step = (env_out.step_status == 0) | (env_out.step_status == 3)
+
+        if last_real_step:
             agent_v = actor_out.baseline[0, 0, 0]
 
         # additional stat record
@@ -450,8 +452,11 @@ def visualize(
         model_logits.append(tree_reps_["cur_logits"])       
 
         state, reward, done, info = env.step(action[0], action[1])
+        last_real_step = (info["step_status"] == 0) | (info["step_status"] == 3)
+        next_real_step = (info["step_status"] == 2) | (info["step_status"] == 3)
+
         if render:
-            if info["step_status"] == 0:
+            if last_real_step:
                 root_env_state = env.clone_state([0])
             else:
                 if flags.sample_n > 0:
@@ -479,12 +484,12 @@ def visualize(
         else:
             img = env.render(mode='rgb_array', camera_id=0)[0]   
 
-        if render and (tree_reps["cur_reset"] == 1 or info["step_status"]==2):
+        if render and (tree_reps["cur_reset"] == 1 or next_real_step):
             env.restore_state(root_env_state, [0])   
             im_done = False   
 
-        if env_out.step_status != 0 and (
-            tree_reps["cur_reset"] == 1 or env_out.step_status == 2
+        if ~last_real_step and (
+            tree_reps["cur_reset"] == 1 or next_real_step
         ):
             title = "pred v: %.2f" % (tree_reps["cur_v"].item())
             title += " pred g: %.2f" % (tree_reps["rollout_return"].item())
@@ -492,7 +497,7 @@ def visualize(
             end_titles.append(title)
 
         # record data for generating video
-        if env_out.step_status == 0:
+        if last_real_step:
             # real action
             video_stats["real_imgs"].append(img)
             video_stats["status"].append(0)
@@ -515,7 +520,7 @@ def visualize(
             )
 
         # visualize when a real step is made
-        if (saveimg or plot) and env_out.step_status == 0:
+        if (saveimg or plot) and last_real_step:
             fig, axs = plt.subplots(1, 5, figsize=(50, 10))
             for k in im_list:
                 if im_dict[k][0] is not None:
@@ -523,9 +528,8 @@ def visualize(
                 else:
                     im_dict[k] = None
             plot_gym_env_out(real_img, axs[0], title="Real State")
-            model_logits = torch.concat(model_logits).view(-1, actor_net.dim_actions, actor_net.num_actions)[:, c_dim_action]
             plot_base_policies(
-                model_logits, action_meanings=action_meanings, ax=axs[1]
+                torch.concat(model_logits)[:, :num_actions], action_meanings=action_meanings, ax=axs[1]
             )
             plot_im_policies(
                 **im_dict,
@@ -533,7 +537,6 @@ def visualize(
                 one_hot=False,
                 reset_ind=1,
                 ax=axs[2],
-                c_dim_action=c_dim_action,
             )
             if "root_qs_mean" in tree_reps_.keys():
                 plot_qn_sa(
@@ -549,7 +552,7 @@ def visualize(
                 actor_out.pri[0, 0], env.num_actions
             )
             plot_policies(
-                [model_policy_logits[c_dim_action], agent_policy_logits[c_dim_action], action[c_dim_action]],
+                [model_policy_logits[0], agent_policy_logits[0], action[0]],
                 ["model policy", "agent policy", "action"],
                 action_meanings=action_meanings,
                 ax=axs[4],
@@ -562,7 +565,8 @@ def visualize(
                 plt.show()
             plt.close()
 
-            plot_multi_gym_env_out(end_gym_env_outs[:10], end_titles)
+            if len(end_gym_env_outs) > 0:
+                plot_multi_gym_env_out(end_gym_env_outs[:10], end_titles)
             if saveimg:
                 buf2 = BytesIO()
                 plt.savefig(buf2, format="png")
@@ -586,7 +590,7 @@ def visualize(
 
             if flags.im_cost > 0.0:
                 title += " im_return: %.4f" % env_out.episode_return[..., 1]
-            
+
             if saveimg:
                 im_action_strs = print_im_actions(
                     im_dict, action_meanings, actor_out.action[0][0], print_stat=plot
@@ -648,8 +652,6 @@ if __name__ == "__main__":
     parser.add_argument("--xpid", default="latest", help="id of the run.")    
     parser.add_argument("--project", default="", help="project of the run.")  
     parser.add_argument("--seed", default="-1", type=int, help="Base seed.")
-    parser.add_argument("--c_dim_action", default="0", type=int, help="Action dim to be visualized.")
-
     parser.add_argument(
         "--max_frames",
         default="-1",
@@ -668,5 +670,4 @@ if __name__ == "__main__":
         savevideo=True,
         seed=flags.seed,
         max_frames=flags.max_frames,
-        c_dim_action=flags.c_dim_action,
     )

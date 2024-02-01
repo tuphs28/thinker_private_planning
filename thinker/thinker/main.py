@@ -413,7 +413,8 @@ class Env(gym.Wrapper):
         
         with torch.set_grad_enabled(False):
             state, reward, done, info = self.env.step(action, self.model_net)  
-        if self.train_model and info["step_status"][0] == 0 and not ignore: # assume all transition in same step within a stage
+        last_step_real = (info["step_status"] == 0) | (info["step_status"] == 3)
+        if self.train_model and torch.any(last_step_real) and not ignore: 
             self._write_send_model_buffer(state, reward, done, info, primary_action, action_prob)        
         if self.sample: self.sampled_action = state["sampled_action"] # should refresh sampled_action only after sending model buffer
         if self.train_model:

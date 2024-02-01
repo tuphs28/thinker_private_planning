@@ -29,7 +29,7 @@ def process_flags(flags):
     if flags.sample_n > 0:
         assert flags.wrapper_type == 0, "sampled-based mode only supported on wrapper_type 0"
 
-    if flags.wrapper_type in [2, 4, 5]:
+    if check_perfect_model(flags.wrapper_type):
         flags.dual_net = False
         flags.cur_enable = False
         flags.model_rs_loss_cost = 0
@@ -52,7 +52,7 @@ def process_flags_actor(flags):
         flags.policy_vis_freq = -1
     flags.return_h = flags.see_h
     flags.return_x = flags.see_x
-    if flags.wrapper_type in [2, 4, 5]:
+    if check_perfect_model(flags.wrapper_type):
         flags.cur_cost = 0.
         flags.cur_enable = False
     return flags
@@ -245,11 +245,14 @@ def full_path(path):
         path = os.readlink(path)
     return path
 
-def tuple_map(x, f):
+def tuple_map(x, f, skip_dict=False):
     def process_element(y):
         # Apply function to dictionary items
         if isinstance(y, dict):
-            return {k: f(v) if v is not None else None for k, v in y.items()}
+            if not skip_dict:
+                return {k: f(v) if v is not None else None for k, v in y.items()}
+            else:
+                return {}
         return f(y) if y is not None else None
 
     if type(x) == tuple:
@@ -530,3 +533,6 @@ def plot_raw_state(x, ax=None, title=None, savepath=None):
     if savepath is not None:
         plt.savefig(os.path.join(savepath, title + ".png"))
         plt.close()
+
+def check_perfect_model(wrapper_type):
+    return wrapper_type in [2, 4, 5]        

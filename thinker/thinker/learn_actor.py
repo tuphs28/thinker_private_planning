@@ -359,9 +359,13 @@ class SActorLearner:
         baseline_losses = []
         discounts = [(~train_actor_out.done).float() * self.im_discounting]
         masks = [None]
+
+        last_step_real = (train_actor_out.step_status == 0) | (train_actor_out.step_status == 3)
+        next_step_real = (train_actor_out.step_status == 2) | (train_actor_out.step_status == 3)
+
         if self.flags.im_cost > 0.:
-            discounts.append((~(train_actor_out.step_status == 2)).float() * self.im_discounting)            
-            masks.append((~(train_actor_out.step_status == 0)).float())
+            discounts.append((~next_step_real).float() * self.im_discounting)            
+            masks.append((~last_step_real).float())
         if self.flags.cur_cost > 0.:
             discounts.append((~train_actor_out.done).float() * self.im_discounting)            
             masks.append(None)
@@ -435,13 +439,13 @@ class SActorLearner:
         # process entropy loss
 
         f_entropy_loss = new_actor_out.entropy_loss
-        entropy_loss = f_entropy_loss * (train_actor_out.step_status == 0).float()
+        entropy_loss = f_entropy_loss * last_step_real.float()
         entropy_loss = torch.sum(entropy_loss)        
         losses["entropy_loss"] = entropy_loss
         total_loss += self.flags.entropy_cost * entropy_loss
 
         if not self.disable_thinker:
-            im_entropy_loss = f_entropy_loss * (train_actor_out.step_status != 0).float()
+            im_entropy_loss = f_entropy_loss * (~last_step_real).float()
             im_entropy_loss = torch.sum(im_entropy_loss)
             total_loss += self.flags.im_entropy_cost * im_entropy_loss
             losses["im_entropy_loss"] = im_entropy_loss
@@ -457,6 +461,8 @@ class SActorLearner:
         """Update step, real_step and tot_eps; return training stat for printing"""
         stats = {}
         T, B, *_ = train_actor_out.episode_return.shape
+        last_step_real = (train_actor_out.step_status == 0) | (train_actor_out.step_status == 3)
+        next_step_real = (train_actor_out.step_status == 2) | (train_actor_out.step_status == 3)
 
         # extract episode_returns
         if torch.any(train_actor_out.real_done):            
@@ -478,7 +484,7 @@ class SActorLearner:
 
         for prefix in ["im", "cur"]:            
             if prefix == "im":
-                done = train_actor_out.step_status == 2
+                done = next_step_real
             elif prefix == "cur":
                 done = train_actor_out.real_done
             
@@ -495,7 +501,7 @@ class SActorLearner:
 
         if not self.disable_thinker:
             max_rollout_depth = (
-                (train_actor_out.max_rollout_depth[train_actor_out.step_status==0])
+                (train_actor_out.max_rollout_depth[last_step_real & ~next_step_real])
                 .detach()
                 .cpu()
                 .numpy()
@@ -506,7 +512,7 @@ class SActorLearner:
             stats["max_rollout_depth"] = max_rollout_depth
 
         self.step += self.flags.actor_unroll_len * self.flags.actor_batch_size
-        self.real_step += torch.sum(train_actor_out.step_status == 0).item()
+        self.real_step += torch.sum(last_step_real).item()
         self.tot_eps += torch.sum(train_actor_out.real_done).item()
         mean_abs_v = torch.mean(torch.abs(train_actor_out.baseline)).item()
 
