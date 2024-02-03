@@ -875,7 +875,7 @@ class DRCNet(BaseNet):
 
         if compute_loss:
             reg_loss = (
-                1e-3 * torch.sum(pri_logits, dim=(-2, -1))
+                1e-3 * torch.sum(torch.square(pri_logits), dim=(-2, -1))
                 + 1e-5 * torch.sum(torch.square(self.baseline.weight)) / T / B
                 + 1e-5 * torch.sum(torch.square(self.policy.weight)) / T / B
             )
