@@ -632,10 +632,11 @@ class ActorNetBase(BaseNet):
         # compute entropy loss
         if compute_loss:
             entropy_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
-                input=pri_logits, target=F.softmax(pri_logits, dim=-1)
+                input=torch.flatten(pri_logits, 0, 1), 
+                target=torch.flatten(F.softmax(pri_logits, dim=-1), 0, 1),                
             )
+            entropy_loss = entropy_loss.view(T, B, self.dim_actions)
             entropy_loss = torch.sum(entropy_loss, dim=-1)
-            entropy_loss = entropy_loss.view(T, B)
             if not self.disable_thinker:
                 ent_reset_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
                     input=reset_logits, target=F.softmax(reset_logits, dim=-1)
@@ -843,10 +844,11 @@ class DRCNet(BaseNet):
         # compute entropy loss
         if compute_loss:
             entropy_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
-                input=pri_logits, target=F.softmax(pri_logits, dim=-1)
+                input=torch.flatten(pri_logits, 0, 1), 
+                target=torch.flatten(F.softmax(pri_logits, dim=-1), 0, 1),
             )
+            entropy_loss = entropy_loss.view(T, B, self.dim_actions)            
             entropy_loss = torch.sum(entropy_loss, dim=-1)
-            entropy_loss = entropy_loss.view(T, B)
         else:
             entropy_loss = None
 
@@ -873,9 +875,9 @@ class DRCNet(BaseNet):
 
         if compute_loss:
             reg_loss = (
-                1e-3 * torch.sum(pri_logits)
-                + 1e-5 * torch.sum(torch.square(self.baseline.weight))
-                + 1e-5 * torch.sum(torch.square(self.policy.weight))
+                1e-3 * torch.sum(pri_logits, dim=(-2, -1))
+                + 1e-5 * torch.sum(torch.square(self.baseline.weight)) / T / B
+                + 1e-5 * torch.sum(torch.square(self.policy.weight)) / T / B
             )
         else:
             reg_loss = None
