@@ -390,6 +390,7 @@ class SActorLearner:
                 bootstrap_value=bootstrap_value[:, i],
                 return_norm_type=return_norm_type,
                 norm_stat=self.norm_stats[i], 
+                lamb=self.flags.v_trace_lamb,
             )
             self.norm_stats[i] = v_trace.norm_stat
             pg_loss = compute_pg_loss(

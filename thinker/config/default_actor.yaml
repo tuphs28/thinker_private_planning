@@ -17,6 +17,7 @@ actor_grad_norm_clipping: 1200 # gradient clipping norm; non-positive for no cli
 actor_adam_eps: 0.00000001 # eps for Adam optimizer
 return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
 cur_return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
+v_trace_lamb: 1. # lambda used in v-trace
 # cost setting
 im_cost: 1. # cost for imaginary rewards
 im_cost_anneal: true # whether to anneal the imaginary cost to 0

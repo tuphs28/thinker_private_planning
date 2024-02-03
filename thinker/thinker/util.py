@@ -41,20 +41,28 @@ def process_flags(flags):
     return flags
 
 def process_flags_actor(flags):    
+    if flags.drc:
+        flags.wrapper_type = 1
+
     if flags.wrapper_type == 1:
         flags.see_h = False
         flags.see_x = False
         flags.see_tree_rep = False
+        flags.see_real_state = True
         flags.im_cost = 0.
         flags.cur_cost = 0.
         flags.policy_vis_freq = -1
+
     if "Safexp" in flags.name:
         flags.policy_vis_freq = -1
+
     flags.return_h = flags.see_h
     flags.return_x = flags.see_x
+
     if check_perfect_model(flags.wrapper_type):
         flags.cur_cost = 0.
-        flags.cur_enable = False
+        flags.cur_enable = False    
+    
     return flags
 
 def alloc_res(flags, gpu_n):

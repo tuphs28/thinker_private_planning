@@ -87,7 +87,7 @@ class SelfPlayWorker:
                 "obs_space":obs_space,
                 "action_space":action_space,
                 "flags":flags,
-                "tree_rep_meaning": self.env.get_tree_rep_meaning(),
+                "tree_rep_meaning": self.env.get_tree_rep_meaning() if self.flags.wrapper_type != 1 else None,
             }
             self.actor_net = ActorNet(**actor_param)
             if self.rank == 0:

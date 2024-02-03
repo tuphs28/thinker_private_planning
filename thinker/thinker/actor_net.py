@@ -37,8 +37,18 @@ def compute_action_log_prob(logits, actions):
         log_prob = torch.sum(log_prob, dim=-1)
     return log_prob
 
+
+def sample(logits, greedy, dim=-1):
+    if not greedy:
+        gumbel_noise = torch.empty_like(logits).uniform_().clamp(1e-10, 1).log().neg_().clamp(1e-10, 1).log().neg_()
+        sampled_action = (logits + gumbel_noise).argmax(dim=dim)
+        return sampled_action.detach()
+    else:
+        return torch.argmax(logits, dim=dim)
+
 def add_hw(x, h, w):
     return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h, w))
+
 
 class ShallowAFrameEncoder(nn.Module):
     # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
@@ -636,11 +646,11 @@ class ActorNetBase(BaseNet):
             entropy_loss = None
 
         # sample action
-        pri = self.sample(pri_logits, greedy=greedy, dim=-1)
+        pri = sample(pri_logits, greedy=greedy, dim=-1)
         pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
         pri = pri.view(T, B, self.dim_actions)        
         if not self.disable_thinker:
-            reset = self.sample(reset_logits, greedy=greedy, dim=-1)
+            reset = sample(reset_logits, greedy=greedy, dim=-1)
             reset_logits = reset_logits.view(T, B, 2)
             reset = reset.view(T, B)    
         else:
@@ -730,14 +740,6 @@ class ActorNetBase(BaseNet):
 
         return actor_out, core_state
     
-    def sample(self, logits, greedy, dim=-1):
-        if not greedy:
-            gumbel_noise = torch.empty_like(logits).uniform_().clamp(1e-10, 1).log().neg_().clamp(1e-10, 1).log().neg_()
-            sampled_action = (logits + gumbel_noise).argmax(dim=dim)
-            return sampled_action.detach()
-        else:
-            return torch.argmax(logits, dim=dim)
-    
     def normalize(self, x):
         if self.state_dtype_n == 0: assert x.dtype == torch.uint8
         if self.state_dtype_n == 1: assert x.dtype == torch.float32
@@ -752,15 +754,26 @@ class ActorNetBase(BaseNet):
         return torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
 
 class DRCNet(BaseNet):
-    # Deprecated, not yet updated
-    def __init__(self, obs_shape, gym_obs_shape, num_actions, flags):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
         super(DRCNet, self).__init__()
-        assert flags.disable_model
+        assert flags.wrapper_type == 1
         assert flags.critic_enc_type == 0
 
-        self.obs_shape = obs_shape
-        self.gym_obs_shape = gym_obs_shape
-        self.num_actions = num_actions
+        self.obs_space = obs_space
+        self.real_state_shape = obs_space["real_states"].shape[1:]
+        self.action_space = action_space
+
+        pri_action_space = action_space[0]
+        if type(pri_action_space) == spaces.discrete.Discrete:    
+            self.tuple_action = False                
+            self.num_actions = pri_action_space.n    
+            self.dim_actions = 1
+            self.dim_rep_actions = self.num_actions
+        else:
+            self.tuple_action = True
+            self.num_actions = pri_action_space[0].n    
+            self.dim_actions = len(pri_action_space)    
+            self.dim_rep_actions = self.dim_actions
 
         self.encoder = nn.Sequential(
             nn.Conv2d(
@@ -775,77 +788,113 @@ class DRCNet(BaseNet):
             ((w + 2 * padding - kernel) // stride + 1),
         )
 
-        h, w = output_shape(gym_obs_shape[1], gym_obs_shape[2], 8, 4, 2)
+        h, w = output_shape(self.real_state_shape[1], self.real_state_shape[2], 8, 4, 2)
         h, w = output_shape(h, w, 4, 2, 1)
 
-        self.drc_depth = 3
-        self.drc_n = 3
-        self.core = ConvAttnLSTM(
-            h=h,
-            w=w,
+        self.core = ConvAttnLSTM(            
             input_dim=32,
             hidden_dim=32,
-            kernel_size=3,
             num_layers=3,
-            num_heads=8,
-            mem_n=None,
             attn=False,
+            h=h,
+            w=w,            
+            kernel_size=3,
+            mem_n=None,            
+            num_heads=8,            
             attn_mask_b=None,
+            tran_t=3,
             pool_inject=True,
         )
         last_out_size = 32 * h * w * 2
         self.final_layer = nn.Linear(last_out_size, 256)
-        self.policy = nn.Linear(256, self.num_actions)
+        self.policy = nn.Linear(256, self.num_actions * self.dim_actions)
         self.baseline = nn.Linear(256, 1)
 
     def initial_state(self, batch_size, device=None):
         return self.core.initial_state(batch_size, device=device)
 
-    def forward(self, obs, core_state=(), greedy=False):
-        done = obs.done
+    def forward(self, 
+                env_out, 
+                core_state=(), 
+                clamp_action=None, 
+                compute_loss=False,
+                greedy=False,
+                dbg_mode=0,
+                ):
+        done = env_out.done
         assert (
             len(done.shape) == 2
         ), f"done shape should be (T, B) instead of {done.shape}"
         T, B = done.shape
-        model_enc = obs.gym_env_out.float() / 255.0
-        model_enc = torch.flatten(model_enc, 0, 1)
-        model_enc = self.encoder(model_enc)
-        core_input = model_enc.view(*((T, B) + model_enc.shape[1:]))
-        core_output_list = []
-        notdone = ~(done.bool())
-        for n, (input, nd) in enumerate(zip(core_input.unbind(), notdone.unbind())):
-            for t in range(self.drc_n):
-                if t > 0:
-                    nd = torch.ones_like(nd)
-                nd = nd.view(-1)
-                output, core_state = self.core(input, core_state, nd, nd)
-            core_output_list.append(output)
-        core_output = torch.cat(core_output_list)
+
+        x = env_out.real_states.float() / 255.0
+        x = torch.flatten(x, 0, 1)
+        x_enc = self.encoder(x)
+        core_input = x_enc.view(*((T, B) + x_enc.shape[1:]))
+        core_output, core_state = self.core(core_input, done, core_state)
         core_output = torch.flatten(core_output, 0, 1)
-        core_output = torch.cat([model_enc, core_output], dim=1)
+        core_output = torch.cat([x_enc, core_output], dim=1)
         core_output = torch.flatten(core_output, 1)
         final_out = F.relu(self.final_layer(core_output))
-        policy_logits = self.policy(final_out)
-        if not greedy:
-            action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
+
+        pri_logits = self.policy(final_out)
+        pri_logits = pri_logits.view(T*B, self.dim_actions, self.num_actions)
+
+        # compute entropy loss
+        if compute_loss:
+            entropy_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
+                input=pri_logits, target=F.softmax(pri_logits, dim=-1)
+            )
+            entropy_loss = torch.sum(entropy_loss, dim=-1)
+            entropy_loss = entropy_loss.view(T, B)
         else:
-            action = torch.argmax(policy_logits, dim=1)
-        policy_logits = policy_logits.view(T, B, self.num_actions)
-        action = action.view(T, B)
+            entropy_loss = None
+
+        # sample_action
+        pri = sample(pri_logits, greedy=greedy, dim=-1)
+        pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
+        pri = pri.view(T, B, self.dim_actions)      
+        reset = None
+
+        # clamp the action to clamp_action
+        if clamp_action is not None:
+            pri[:clamp_action.shape[0]] = clamp_action
+
+        # compute chosen log porb
+        c_action_log_prob = compute_action_log_prob(pri_logits, pri)    
+
+        # pack last step's action and action prob        
+        pri_env = pri[-1, :, 0] if not self.tuple_action else pri[-1]   
+        action = pri_env  
+        action_prob = F.softmax(pri_logits, dim=-1)
+        if not self.tuple_action: action_prob = action_prob[:, :, 0]    
+
         baseline = self.baseline(final_out).view(T, B, 1)
-        reg_loss = (
-            1e-3 * torch.sum(policy_logits**2, dim=-1)
-            + 1e-5 * torch.sum(torch.square(self.baseline.weight))
-            + 1e-5 * torch.sum(torch.square(self.policy.weight))
-        )
+
+        if compute_loss:
+            reg_loss = (
+                1e-3 * torch.sum(pri_logits**2, dim=-1)
+                + 1e-5 * torch.sum(torch.square(self.baseline.weight))
+                + 1e-5 * torch.sum(torch.square(self.policy.weight))
+            )
+        else:
+            reg_loss = None
+
+        misc = {
+            "pri_logits": pri_logits,
+        }
+
         actor_out = ActorOut(
-            policy_logits=policy_logits,
-            reset_policy_logits=None,
+            pri=pri,
+            reset=reset,
             action=action,
-            reset=None,
-            baseline_enc=None,
+            action_prob=action_prob,
+            c_action_log_prob=c_action_log_prob,            
             baseline=baseline,
+            baseline_enc=None,
+            entropy_loss=entropy_loss,
             reg_loss=reg_loss,
+            misc=misc,
         )
         return actor_out, core_state
 
