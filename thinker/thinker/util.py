@@ -411,7 +411,8 @@ class Wandb:
         import wandb
 
         self.wandb = wandb
-        exp_name = flags.xpid + subname
+        xpid = flags.full_xpid if hasattr(flags, "full_xpid") else flags.xpid
+        exp_name = xpid + subname
         tags = []
         if subname == "_model":
             tags.append("model")
