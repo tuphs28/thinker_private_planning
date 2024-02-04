@@ -281,7 +281,7 @@ class ConvAttnLSTM(nn.Module):
             )
         return core_state
     
-    def forward(self, x, done, core_state, record_state):
+    def forward(self, x, done, core_state, record_state=False):
         assert len(x.shape) == 5
         core_output_list = []
         reset = done.float()
