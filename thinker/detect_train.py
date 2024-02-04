@@ -316,7 +316,6 @@ def detect_train(flags):
         flags_data = yaml.safe_load(file)
     flags_data = argparse.Namespace(**flags_data)
     flags = argparse.Namespace(**{**vars(flags), **vars(flags_data)}) # merge the two flags
-    flags.full_xpid = flags.dxpid + "_" + flags.txpid
 
     plogger = FileWriter(
         xpid=flags.txpid,
@@ -325,7 +324,7 @@ def detect_train(flags):
         overwrite=not flags.ckp,
     )
 
-    if flags.use_wandb: wlogger = util.Wandb(flags)
+    if flags.use_wandb: wlogger = util.Wandb(flags, group=flags.dxpid)
 
     # initalize net
     device = torch.device("cuda")
