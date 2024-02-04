@@ -321,7 +321,7 @@ def detect_train(flags):
     plogger = FileWriter(
         xpid=flags.txpid,
         xp_args=flags.__dict__,
-        rootdir=flags.tckpdir,
+        rootdir=flags.datadir,
         overwrite=not flags.ckp,
     )
 
