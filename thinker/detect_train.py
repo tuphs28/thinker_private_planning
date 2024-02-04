@@ -307,7 +307,7 @@ def detect_train(flags):
     dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=flags.data_n)
     dataloader = DataLoader(dataset, batch_size=flags.batch_size, shuffle=True)
 
-    val_dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=2000, prefix="val")
+    val_dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=5000, prefix="val")
     val_dataloader = DataLoader(val_dataset, batch_size=flags.batch_size, shuffle=True)
 
     # load setting
