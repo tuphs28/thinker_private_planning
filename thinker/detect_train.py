@@ -334,8 +334,9 @@ def detect_train(flags):
         rootdir=flags.datadir,
         overwrite=not flags.ckp,
     )
+    flags.full_xpid = flags.dxpid + "_" + flags.txpid
 
-    if flags.use_wandb: wlogger = util.Wandb(flags, group=flags.dxpid)
+    if flags.use_wandb: wlogger = util.Wandb(flags)
 
     # initalize net
     device = torch.device("cuda")

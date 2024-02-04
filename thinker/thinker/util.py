@@ -407,11 +407,11 @@ class Timings:
         return result
 
 class Wandb:
-    def __init__(self, flags, subname="", group=None):
+    def __init__(self, flags, subname=""):
         import wandb
 
         self.wandb = wandb
-        xpid = flags.xpid
+        xpid = flags.full_xpid if hasattr(flags, "full_xpid") else flags.xpid
         exp_name = xpid + subname
         tags = []
         if subname == "_model":
@@ -421,7 +421,6 @@ class Wandb:
             tags.append(m[0])
         self.wandb.init(
             project=flags.project,
-            group=group,
             config=flags,
             entity=os.getenv("WANDB_USER", ""),
             reinit=True,
