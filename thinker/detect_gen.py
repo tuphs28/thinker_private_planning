@@ -128,7 +128,7 @@ class DetectBuffer:
             target_y = target_y | (not_done_cum[m] & y[m+1:m+1+t])
         return target_y
 
-def detect_gen(total_n, env_n, delay_n, savedir, outdir, xpid):
+def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
     _logger = util.logger()
     _logger.info(f"Initializing {xpid} from {savedir}")
@@ -229,7 +229,7 @@ def detect_gen(total_n, env_n, delay_n, savedir, outdir, xpid):
         
         while(True):
 
-            actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=False)
+            actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)
             if not disable_thinker:
                 primary_action, reset_action = actor_out.action
             else:
@@ -288,6 +288,7 @@ if __name__ == "__main__":
     parser.add_argument("--total_n", default=100000, type=int, help="Number of real steps.")
     parser.add_argument("--env_n", default=128, type=int, help="Batch size in generation.")
     parser.add_argument("--delay_n", default=5, type=int, help="Delay step in predicting danger.")
+    parser.add_argument("--greedy", action="store_true", help="Use greedy policy.")
 
     flags = parser.parse_args()    
     project = flags.project if flags.project else __project__
@@ -299,6 +300,7 @@ if __name__ == "__main__":
         total_n=flags.total_n,
         env_n=flags.env_n,
         delay_n=flags.env_n,
+        greedy=flags.greedy,
         savedir=flags.savedir,
         outdir=flags.outdir,
         xpid=flags.xpid,
