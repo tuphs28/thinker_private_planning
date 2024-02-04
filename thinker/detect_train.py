@@ -380,8 +380,8 @@ def detect_train(flags):
                 "optimizer_state_dict": optimizer.state_dict(),
                 "net_state_dict": detect_net.state_dict(),
             }
-            torch.save(d, flags.ckp_path)
-            print(f"Checkpoint saved to {flags.ckp_path}")
+            torch.save(d, flags.tckp_path)
+            print(f"Checkpoint saved to {flags.tckp_path}")
 
         if epoch % 10 == 0 or epoch >= flags.num_epochs:
             wlogger.wandb.save(
