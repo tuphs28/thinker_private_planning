@@ -26,7 +26,7 @@ class CustomDataset(Dataset):
     def _preload_data(self, datadir):
         # Preload all .pt files
         file_list = [f for f in os.listdir(datadir) if f.endswith('.pt') and f.startswith(self.prefix)]
-        file_list = sorted(file_list, key=lambda x: int(re.search(r'\d+', x).group()))
+        file_list = sorted(file_list, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
         for file_name in file_list:
             print(f"Starting to preload {file_name}")
             xs, y = torch.load(os.path.join(datadir, file_name))
