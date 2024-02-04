@@ -195,9 +195,6 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
     file_n = total_n // (env_n * detect_buffer.t) + 1
     _logger.info(f"Data output directory: {outdir}")
     _logger.info(f"Number of file to be generated: {file_n}")
-
-    rescale = "Sokoban" in flags.name
-
     
     with torch.set_grad_enabled(False):
         
@@ -221,7 +218,6 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             "env_state_shape": list(env_state_shape),
             "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
             "hidden_state_shape": list(hidden_state_shape) if disable_thinker else None,
-            "rescale": rescale,
             "rec_t": flags.rec_t,
             "ckpdir": ckpdir,
             "xpid": xpid,        
@@ -256,11 +252,11 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             # write to detect buffer
             if not disable_thinker:
                 env_state = env_out.xs[0] 
-                if rescale:
-                    #env_state = F.interpolate(env_state , size=(40, 40), mode='bilinear', align_corners=False)
-                    env_state = (env_state * 255).to(torch.uint8)
             else:
                 env_state = env_out.real_states[0]
+                env_state = env.normalize(env_state)
+            
+            env_state = env_state.half()
             xs = {
                 "env_state": env_state,
                 "pri_action": primary_action,            

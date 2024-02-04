@@ -479,6 +479,12 @@ class Env(gym.Wrapper):
                 self.model_buffer.set_finish()
         return self.model_buffer.get_status()
 
+    def normalize(self, x):
+        if self.flags.wrapper_type == 1:
+            return self.env.normalize(x)
+        else:
+            return self.model_net.normalize(x)
+
     def unnormalize(self, x):
         if self.flags.wrapper_type == 1:
             return self.env.unnormalize(x)

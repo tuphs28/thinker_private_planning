@@ -226,8 +226,7 @@ def transform_data(xs, device, flags):
     xs_ = {}
 
     env_state = xs["env_state"]
-    if flags.rescale:
-        env_state = env_state.float() / 255
+    env_state = env_state.float()
     xs_["env_state"] = env_state.to(device)
 
     xs_["tree_rep"] = xs["tree_rep"].to(device) if "tree_rep" in xs else None

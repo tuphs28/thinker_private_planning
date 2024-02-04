@@ -24,8 +24,12 @@ class DummyWrapper(gym.Wrapper):
             self.state_dtype = torch.float32
         else:
             raise Exception(f"Unupported observation sapce", env.observation_space)
-        self.norm_low = self.env.observation_space.low[0]
-        self.norm_high = self.env.observation_space.high[0]
+
+        low = torch.tensor(self.env.observation_space.low[0])
+        high = torch.tensor(self.env.observation_space.high[0])
+        self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()
+        self.norm_low = low
+        self.norm_high = high
 
     def reset(self, model_net):
         obs = self.env.reset()
@@ -67,9 +71,16 @@ class DummyWrapper(gym.Wrapper):
     
     def unnormalize(self, x):
         assert x.dtype == torch.float or x.dtype == torch.float32
-        ch = x.shape[-3]
-        x = torch.clamp(x, 0, 1)
-        x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
+        if self.need_norm:
+            ch = x.shape[-3]
+            x = torch.clamp(x, 0, 1)
+            x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
+        return x
+    
+    def normalize(self, x):
+        if self.need_norm:
+            x = (x.float() - self.norm_low) / \
+                (self.norm_high -  self.norm_low)
         return x
     
 class PostWrapper(gym.Wrapper):
