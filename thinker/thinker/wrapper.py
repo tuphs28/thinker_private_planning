@@ -45,6 +45,7 @@ class DummyWrapper(gym.Wrapper):
             
         real_done = [m["real_done"] if "real_done" in m else done[n] for n, m in enumerate(info)]
         truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
+        cost = [m["cost"] if "cost" in m else False for n, m in enumerate(info)]
         obs_py = torch.tensor(obs, dtype=self.state_dtype, device=self.device)
         if np.any(done):
             obs_py[done] = torch.tensor(obs_reset, dtype=self.state_dtype, device=self.device)
@@ -55,7 +56,8 @@ class DummyWrapper(gym.Wrapper):
   
         info = {"real_done": torch.tensor(real_done, dtype=torch.bool, device=self.device),
                 "truncated_done": torch.tensor(truncated_done, dtype=torch.bool, device=self.device),                
-                "step_status": torch.zeros(self.env_n, dtype=torch.long, device=self.device),
+                "cost": torch.tensor(cost, dtype=torch.bool, device=self.device),                
+                "step_status": torch.full((self.env_n,), fill_value=3, dtype=torch.long, device=self.device),
                 }
         
         return (states, 

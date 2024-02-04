@@ -827,7 +827,6 @@ class DRCNet(BaseNet):
             len(done.shape) == 2
         ), f"done shape should be (T, B) instead of {done.shape}"
         T, B = done.shape
-
         x = env_out.real_states.float() / 255.0
         x = torch.flatten(x, 0, 1)
         x_enc = self.encoder(x)
@@ -876,8 +875,8 @@ class DRCNet(BaseNet):
         if compute_loss:
             reg_loss = (
                 1e-3 * torch.sum(torch.square(pri_logits), dim=(-2, -1))
-                + 1e-5 * torch.sum(torch.square(self.baseline.weight)) / T / B
-                + 1e-5 * torch.sum(torch.square(self.policy.weight)) / T / B
+                + 1e-5 * torch.sum(torch.square(self.baseline.weight)) 
+                + 1e-5 * torch.sum(torch.square(self.policy.weight))
             )
         else:
             reg_loss = None

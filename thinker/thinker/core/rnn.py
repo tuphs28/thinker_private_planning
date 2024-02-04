@@ -290,7 +290,7 @@ class ConvAttnLSTM(nn.Module):
         ):
             for t in range(self.tran_t):
                 if t > 0:
-                    reset_single = torch.ones_like(reset_single)
+                    reset_single = torch.zeros_like(reset_single)
                 reset_single = reset_single.view(-1)
                 output, core_state = self.forward_single(
                     x_single, core_state, reset_single, reset_single
