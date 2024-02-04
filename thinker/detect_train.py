@@ -1,8 +1,11 @@
 import os
+import numpy as np
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Sampler
 import yaml
 import argparse
 import re
+import gc
 
 import math
 import torch
@@ -14,46 +17,103 @@ from thinker import util
 from thinker.core.file_writer import FileWriter
 
 class CustomDataset(Dataset):
-    def __init__(self, datadir, transform=None, data_n=None, prefix="data"):
+    def __init__(self, datadir, transform=None, data_n=None, prefix="data", chunk_n=1):
         self.datadir = datadir
         self.transform = transform
-        self.data = []        
-        self.samples_per_file = None   
+        self.data = []  # Current chunk of data
         self.data_n = data_n
         self.prefix = prefix
-        self._preload_data(datadir)  # Preload data        
+        self.file_list = [f for f in os.listdir(datadir) if f.endswith('.pt') and f.startswith(self.prefix)]
+        self.file_list = sorted(self.file_list, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
+        
+        xs, y = torch.load(os.path.join(self.datadir, self.file_list[0]))
+        self.t = xs['env_state'].shape[0]
+        self.b = xs['env_state'].shape[2]
+        self.samples_per_file = self.t * self.b
 
-    def _preload_data(self, datadir):
-        # Preload all .pt files
-        file_list = [f for f in os.listdir(datadir) if f.endswith('.pt') and f.startswith(self.prefix)]
-        file_list = sorted(file_list, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
-        for file_name in file_list:
-            print(f"Starting to preload {file_name}")
-            xs, y = torch.load(os.path.join(datadir, file_name))
-            if self.samples_per_file is None:  # Set samples_per_file based on the first file
-                self.t = xs['env_state'].shape[0]
-                self.b = xs['env_state'].shape[2]
-                self.samples_per_file = self.t * self.b
-            xs.pop('step_status')
-            xs.pop('done')
-            # Flatten data across t and b dimensions for easier indexing
+        if data_n is not None:
+            self.len_list = [self.samples_per_file for _ in range(data_n // self.samples_per_file)]
+            if data_n % self.samples_per_file > 0: self.len_list.append(data_n % self.samples_per_file)
+            self.file_list = self.file_list[:len(self.len_list)]
+        else:
+            self.len_list = [self.samples_per_file for _ in range(len(self.file_list))]
+        
+        self.chunk_n = chunk_n
+        self.current_chunk = 0  # To track which chunk is currently loaded
+        self.total_files = len(self.file_list)
+        self.files_per_chunk = max(1, self.total_files // self.chunk_n)
+        self.samples_per_chunk = self.files_per_chunk * self.samples_per_file
+
+    def _load_chunk(self, chunk_index):
+        # Determine file range for the current chunk
+        start_file = chunk_index * self.files_per_chunk
+        end_file = min(start_file + self.files_per_chunk, self.total_files)
+        self.data = []  # Clear current data
+        gc.collect()
+        self.current_chunk = chunk_index
+        for i in range(start_file, end_file):
+            data_tmp = []
+            file_name = self.file_list[i]
+            print(f"Loading {file_name}")
+            xs, y = torch.load(os.path.join(self.datadir, file_name))
+            xs.pop('step_status', None)
+            xs.pop('done', None)
+            
             for t_idx in range(self.t):
                 for b_idx in range(self.b):
                     flattened_xs = {k: v[t_idx, :, b_idx] for k, v in xs.items()}
                     flattened_y = y[t_idx, b_idx]
-                    self.data.append((flattened_xs, flattened_y))
-                    if self.data_n is not None and len(self.data) >= self.data_n: return
+                    data_tmp.append((flattened_xs, flattened_y))
+                    if len(data_tmp) >= self.len_list[i]: 
+                        break
+        
+            assert len(data_tmp) >= self.len_list[i], f"data {i} should have at least {self.len_list[i]} samples instead of {len(data_tmp)}"
+            self.data.extend(data_tmp)
 
     def __len__(self):
-        return len(self.data)
+        if self.data_n is not None: return self.data_n
+        return self.samples_per_file * self.total_files
 
     def __getitem__(self, idx):
-        xs, y = self.data[idx]
+        # Calculate which chunk the idx falls into        
+        chunk_index = idx // self.samples_per_chunk
+        
+        # If the requested idx is not in the current chunk, load the correct chunk
+        if chunk_index != self.current_chunk or not self.data:
+            self._load_chunk(chunk_index)
+        
+        # Adjust idx to the current chunk
+        idx_within_chunk = idx % self.samples_per_chunk
+        xs, y = self.data[idx_within_chunk]
         if self.transform:
-            # Apply transform if necessary. Note: You might need to adjust this part
-            # based on what your transform expects and can handle
-            xs = {k: self.transform(v) for k, v in xs.items()}            
-        return xs, y
+            xs = {k: self.transform(v) for k, v in xs.items()}
+        return xs, y   
+
+class ChunkSampler(Sampler):
+    def __init__(self, dataset):
+        self.chunk_n = dataset.chunk_n
+        self.data_n = dataset.data_n
+        self.samples_per_chunk = dataset.samples_per_chunk
+        if self.samples_per_chunk * self.chunk_n < self.data_n:
+            self.chunk_n += 1        
+
+    def __iter__(self):
+        # Generate a list of chunk indices
+        chunk_indices = np.arange(self.chunk_n)
+        # Shuffle the list of chunk indices to determine the order in which chunks are processed
+        np.random.shuffle(chunk_indices)
+        
+        # For each chunk, generate and shuffle indices within that chunk, then yield them
+        for chunk_idx in chunk_indices:
+            start_idx = chunk_idx * self.samples_per_chunk
+            end_idx = min(start_idx + self.samples_per_chunk, self.data_n)
+            indices = np.arange(start_idx, end_idx)
+            np.random.shuffle(indices)
+            for idx in indices:
+                yield idx
+
+    def __len__(self):
+        return self.data_n    
 
 class PositionalEncoding(nn.Module):
 
@@ -336,8 +396,8 @@ def detect_train(flags):
     print(f"Checkpoint path: {flags.tckp_path}")
 
     # load data
-    dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=flags.data_n)
-    dataloader = DataLoader(dataset, batch_size=flags.batch_size, shuffle=True)
+    dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=flags.data_n, chunk_n=flags.chunk_n)
+    dataloader = DataLoader(dataset, batch_size=flags.batch_size, sampler=ChunkSampler(dataset))
 
     val_dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=5000, prefix="val")
     val_dataloader = DataLoader(val_dataset, batch_size=flags.batch_size, shuffle=True)
@@ -444,6 +504,7 @@ if __name__ == "__main__":
     parser.add_argument("--datadir", default="../data/__dproject__/__dxpid__/", help="Data directory.")    
     parser.add_argument("--txpid", default="test", help="training xpid of the run.")  
     parser.add_argument("--project", default="detect_post", help="Project of the run.")
+    parser.add_argument("--chunk_n", default=1, type=int, help="Number of chunks; 1 for no chunking.")
     # training setting
     parser.add_argument("--batch_size", default=128, type=int, help="Batch size in training.")
     parser.add_argument("--learning_rate", default=0.0001, type=float, help="Learning rate.")

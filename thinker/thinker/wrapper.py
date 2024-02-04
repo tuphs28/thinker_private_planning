@@ -28,8 +28,8 @@ class DummyWrapper(gym.Wrapper):
         low = torch.tensor(self.env.observation_space.low[0])
         high = torch.tensor(self.env.observation_space.high[0])
         self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()
-        self.norm_low = low
-        self.norm_high = high
+        self.norm_low = low.to(device)
+        self.norm_high = high.to(device)
 
     def reset(self, model_net):
         obs = self.env.reset()
@@ -78,7 +78,7 @@ class DummyWrapper(gym.Wrapper):
         return x
     
     def normalize(self, x):
-        if self.need_norm:
+        if self.need_norm:            
             x = (x.float() - self.norm_low) / \
                 (self.norm_high -  self.norm_low)
         return x
