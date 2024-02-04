@@ -54,18 +54,19 @@ class ShallowAFrameEncoder(nn.Module):
     # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
     def __init__(self, 
                  input_shape, 
-                 out_size=256):
+                 out_size=256,
+                 downscale=True):
         super(ShallowAFrameEncoder, self).__init__()
         self.input_shape = input_shape
         self.out_size = out_size
 
         c, h, w = self.input_shape
         compute_hw = lambda h, w, k, s: ((h - k) // s + 1,  (h - k) // s + 1)
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4)
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4 if downscale else 1)
         h, w = compute_hw(h, w, 8, 4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2 if downscale else 1)
         h, w = compute_hw(h, w, 4, 2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1 if downscale else 1)
         h, w = compute_hw(h, w, 3, 1)
         fc_in_size = h * w * 64
         # Fully connected layer.
@@ -755,14 +756,14 @@ class ActorNetBase(BaseNet):
         return torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
 
 class DRCNet(BaseNet):
-    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
+    def __init__(self, obs_space, action_space, flags, record_state=False):
         super(DRCNet, self).__init__()
         assert flags.wrapper_type == 1
-        assert flags.critic_enc_type == 0
 
         self.obs_space = obs_space
         self.real_state_shape = obs_space["real_states"].shape[1:]
         self.action_space = action_space
+        self.record_state = record_state
 
         pri_action_space = action_space[0]
         if type(pri_action_space) == spaces.discrete.Discrete:    
@@ -831,7 +832,8 @@ class DRCNet(BaseNet):
         x = torch.flatten(x, 0, 1)
         x_enc = self.encoder(x)
         core_input = x_enc.view(*((T, B) + x_enc.shape[1:]))
-        core_output, core_state = self.core(core_input, done, core_state)
+        core_output, core_state = self.core(core_input, done, core_state, record_state=self.record_state)
+        if self.record_state: self.hidden_state = self.core.hidden_state
         core_output = torch.flatten(core_output, 0, 1)
         core_output = torch.cat([x_enc, core_output], dim=1)
         core_output = torch.flatten(core_output, 1)
@@ -901,7 +903,9 @@ class DRCNet(BaseNet):
 
 
 def ActorNet(*args, **kwargs):
-    if kwargs["flags"].drc:
+    if kwargs["flags"].drc:        
+        if "tree_rep_meaning" in kwargs: kwargs.pop("tree_rep_meaning")
         return DRCNet(*args, **kwargs)
-    else:
+    else:        
+        if "record_state" in kwargs: kwargs.pop("record_state")
         return ActorNetBase(*args, **kwargs)

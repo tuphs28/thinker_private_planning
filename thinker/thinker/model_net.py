@@ -55,6 +55,7 @@ class FrameEncoder(nn.Module):
         input_shape,
         size_nn=1,
         downscale_c=2,
+        downscale=True,
         concat_action=True,
         decoder=False,
         frame_stack_n=1,
@@ -73,6 +74,7 @@ class FrameEncoder(nn.Module):
         self.oned_input = len(self.input_shape) == 1
         self.has_memory = has_memory
 
+        stride = 2 if downscale else 1
         frame_channels = input_shape[0]
         if self.concat_action:
             in_channels = frame_channels + actions_ch
@@ -94,7 +96,7 @@ class FrameEncoder(nn.Module):
                 in_channels=in_channels,
                 out_channels=out_channels,
                 kernel_size=3,
-                stride=2,
+                stride=stride,
                 padding=1,
             )
             res = [
@@ -106,7 +108,7 @@ class FrameEncoder(nn.Module):
                 in_channels=out_channels,
                 out_channels=out_channels * 2,
                 kernel_size=3,
-                stride=2,
+                stride=stride,
                 padding=1,
             )
             res = [
@@ -114,17 +116,17 @@ class FrameEncoder(nn.Module):
                 for _ in range(n_block)
             ]  # Deep: 3 blocks here
             self.res2 = nn.Sequential(*res)
-            self.avg1 = nn.AvgPool2d(3, stride=2, padding=1)
+            self.avg1 = nn.AvgPool2d(3, stride=stride, padding=1)
             res = [
                 ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
                 for _ in range(n_block)
             ]  # Deep: 3 blocks here
             self.res3 = nn.Sequential(*res)
-            self.avg2 = nn.AvgPool2d(3, stride=2, padding=1)
+            self.avg2 = nn.AvgPool2d(3, stride=stride, padding=1)
             self.out_shape = (
                 out_channels * 2,
-                h // 16 + int((h % 16) > 0),
-                w // 16 + int((w % 16) > 0),
+                h // 16 + int((h % 16) > 0) if stride == 2 else h,
+                w // 16 + int((w % 16) > 0) if stride == 2 else w,
             )
 
             if self.has_memory:
@@ -207,7 +209,7 @@ class FrameEncoder(nn.Module):
           action (tensor): action with shape B, actions_ch (converted after convert_action)
         """
         assert x.dtype in [torch.float, torch.float16]
-        assert actions.dtype in [torch.float, torch.float16]
+        if self.concat_action: assert actions.dtype in [torch.float, torch.float16]
         if self.oned_input and flatten:
             assert len(x.shape) == 3, f"x should have 3 dim instead of shape {x.shape}"
         elif self.oned_input and not flatten:
@@ -221,10 +223,11 @@ class FrameEncoder(nn.Module):
 
         if flatten:            
             x = x.view((x.shape[0] * x.shape[1],) + x.shape[2:])
-            actions = actions.view(
-                (actions.shape[0] * actions.shape[1],) + actions.shape[2:]
-            )
         if self.concat_action:
+            if flatten:
+                actions = actions.view(
+                    (actions.shape[0] * actions.shape[1],) + actions.shape[2:]
+                )
             if not self.oned_input:
                 actions = (
                     actions.unsqueeze(-1).unsqueeze(-1).tile([1, 1, x.shape[2], x.shape[3]])

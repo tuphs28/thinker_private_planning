@@ -79,17 +79,17 @@ class DetectFrameEncoder(nn.Module):
     def __init__(
         self,
         input_shape,     
-        dim_rep_actions,   
         out_size=128,
-        stride=2,
+        downscale=True,
     ):  
         super(DetectFrameEncoder, self).__init__()
         self.out_size = out_size
         self.encoder = FrameEncoder(prefix="se",
-                                    actions_ch=dim_rep_actions,
+                                    actions_ch=None,
                                     input_shape=input_shape,                             
                                     size_nn=1,             
                                     downscale_c=2,    
+                                    downscale=downscale,
                                     concat_action=False)
         
         self.conv = []
@@ -106,9 +106,9 @@ class DetectFrameEncoder(nn.Module):
         conv_out_size = in_ch * self.encoder.out_shape[1] * self.encoder.out_shape[2]
         self.fc = nn.Sequential(nn.Linear(conv_out_size, self.out_size))       
 
-    def forward(self, x, action):
+    def forward(self, x):
         # x in shape of (B, C, H, W)
-        out, _ = self.encoder(x, done=None, actions=action, state={})
+        out, _ = self.encoder(x, done=None, actions=None, state={})
         out = self.conv(out)
         out = torch.flatten(out, start_dim=1)
         out = self.fc(out)
@@ -119,51 +119,67 @@ class DetectNet(BaseNet):
         self,
         env_state_shape,
         tree_rep_shape,
+        hidden_state_shape,
         dim_actions,
         num_actions,
         detect_ab=(0,0),
         clone=False,
         tran_layer_n=3,
+        tran_ff_n=512,
+        shallow_encode=False,
+        disable_thinker=False,
     ):    
         super(DetectNet, self).__init__()
         
         self.env_state_shape = env_state_shape # in (C, H, W) 
         self.tree_rep_shape = tree_rep_shape # in (C,) 
+        self.hidden_state_shape = hidden_state_shape # in (inner_t, C, H, W)
         self.dim_actions = dim_actions
         self.num_actions = num_actions
         self.dim_rep_actions = self.dim_actions if self.dim_actions > 1 else self.num_actions
 
         self.detect_ab = detect_ab
         self.clone = clone
+        self.disable_thinker = disable_thinker
 
         self.enc_out_size = 128
         tran_nhead = 8
-        reminder = tran_nhead - ((self.enc_out_size + tree_rep_shape[0] + self.dim_rep_actions + 1) % tran_nhead)
+        if not self.disable_thinker:
+            reminder = tran_nhead - ((self.enc_out_size + tree_rep_shape[0] + self.dim_rep_actions + 1) % tran_nhead)
+        else:
+            reminder = tran_nhead - ((self.enc_out_size + self.dim_rep_actions) % tran_nhead)
         self.enc_out_size += reminder
-        #self.true_x_encoder = ShallowAFrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
-        #self.pred_x_encoder = ShallowAFrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
-        self.true_x_encoder = DetectFrameEncoder(input_shape=env_state_shape, dim_rep_actions=self.dim_rep_actions, out_size=self.enc_out_size)
-        self.pred_x_encoder = DetectFrameEncoder(input_shape=env_state_shape, dim_rep_actions=self.dim_rep_actions, out_size=self.enc_out_size)
-        #self.pred_x_encoder = self.true_x_encoder
 
-        self.embed_size = self.enc_out_size + tree_rep_shape[0] + num_actions + 1
+        FrameEncoder = ShallowAFrameEncoder if shallow_encode else DetectFrameEncoder
+        self.true_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
+        if not self.disable_thinker:
+            self.pred_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
+        if hidden_state_shape is not None:
+            self.h_encoder = FrameEncoder(input_shape=hidden_state_shape[1:], out_size=self.enc_out_size, downscale=False)   
+
+        #self.pred_x_encoder = self.true_x_encoder
+        if not self.disable_thinker:
+            self.embed_size = self.enc_out_size + tree_rep_shape[0] + self.dim_rep_actions + 1
+        else:
+            self.embed_size = self.enc_out_size + self.dim_rep_actions
         self.pos_encoder = PositionalEncoding(self.embed_size)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.embed_size, 
                                                    nhead=tran_nhead, 
-                                                   dim_feedforward=512,
+                                                   dim_feedforward=tran_ff_n,
                                                    batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, tran_layer_n)
         self.classifier = nn.Linear(self.embed_size, 1)
 
         self.beta = nn.Parameter(torch.tensor(0.5), requires_grad=False) # portion of negative class
 
-    def forward(self, env_state, tree_rep, action, reset):
+    def forward(self, env_state, tree_rep, hidden_state, action, reset):
         """
         Forward pass of detection nn
         Args:
             env_state: float Tensor in shape of (B, rec_t, C, H, W); true and predicted frame
             tree_rep: float Tensor in shape of (B, rec_t, C); model output
+            hidden_state: float Tensor in shape of (B, rec_t, inner_t, C, H, W); model output
             action: uint Tensor in shape of (B, rec_t, dim_actions); action (real / imaginary)
             reset: bool Tensor in shape of  (B, rec_t); reset action
         Return:
@@ -185,16 +201,21 @@ class DetectNet(BaseNet):
                 tree_rep[:, 1:] = 0.
         
         action = util.encode_action(action, self.dim_actions, self.num_actions)        
-        true_proc_x = self.true_x_encoder(env_state[:,0], action[:,0])
-        pred_proc_x = self.pred_x_encoder(
-            torch.flatten(env_state[:,1:], 0, 1),
-            torch.flatten(action[:,1:], 0, 1)
-                                        )
+        true_proc_x = self.true_x_encoder(env_state[:,0])
         true_proc_x = true_proc_x.view(B, self.enc_out_size).unsqueeze(1) # (B, 1, C)
-        pred_proc_x = pred_proc_x.view(B, rec_t - 1, self.enc_out_size)  # (B, rec_t - 1, C)
-        proc_x = torch.concat([true_proc_x, pred_proc_x], dim=1) # (B, rec_t, C)
-        
-        embed = [proc_x, tree_rep, action, reset.unsqueeze(-1)]
+        if not self.disable_thinker:
+            pred_proc_x = self.pred_x_encoder(
+                torch.flatten(env_state[:,1:], 0, 1),
+                                            )            
+            pred_proc_x = pred_proc_x.view(B, rec_t - 1, self.enc_out_size)  # (B, rec_t - 1, C)
+            proc_x = torch.concat([true_proc_x, pred_proc_x], dim=1) # (B, rec_t, C)            
+            embed = [proc_x, tree_rep, action, reset.unsqueeze(-1)]
+        else:
+            proc_h = self.h_encoder(torch.flatten(hidden_state[:,0], 0, 1))
+            proc_h = proc_h.view(B, -1, self.enc_out_size)  # (B, inner_t, C)
+            proc_x = torch.concat([true_proc_x, proc_h], dim=1) # (B, 1 + inner_t, C)
+            embed = [proc_x, torch.broadcast_to(action, (B, proc_x.shape[1], self.dim_rep_actions))]
+            
         embed = torch.concat(embed, dim=2) # (B, rec_t, embed_size)
         embed_pos = self.pos_encoder(embed)
         out = self.transformer_encoder(embed_pos)
@@ -209,14 +230,15 @@ def transform_data(xs, device, flags):
         env_state = env_state.float() / 255
     xs_["env_state"] = env_state.to(device)
 
-    if "tree_rep" in xs: xs_["tree_rep"] = xs["tree_rep"].to(device)
+    xs_["tree_rep"] = xs["tree_rep"].to(device) if "tree_rep" in xs else None
 
     action = xs["pri_action"]
     if not flags.tuple_actions:
         action = action.unsqueeze(-1)
     xs_["action"] = action.to(device)
 
-    if "reset_action" in xs: xs_["reset"] = xs["reset_action"].to(device)
+    xs_["reset"] = xs["reset_action"].to(device) if "reset_action" in xs else None
+    xs_["hidden_state"] = xs["hidden_state"].to(device) if "hidden_state" in xs else None
     return xs_
 
 def evaluate_detect(target_y, pred_y):
@@ -342,9 +364,14 @@ def detect_train(flags):
     device = torch.device("cuda")
     detect_net = DetectNet(
         env_state_shape = flags_data.env_state_shape,
-        tree_rep_shape = flags_data.tree_rep_shape,
+        tree_rep_shape = getattr(flags_data, "tree_rep_shape", None),
+        hidden_state_shape = getattr(flags_data, "hidden_state_shape", None),
         dim_actions = flags_data.dim_actions,
         num_actions = flags_data.num_actions,
+        disable_thinker = flags.disable_thinker,
+        tran_layer_n = flags.tran_layer_n,
+        tran_ff_n = flags.tran_ff_n,
+        shallow_encode= flags.shallow_encode,
     )
 
     # load optimizer
@@ -405,25 +432,32 @@ def detect_train(flags):
             save_ckp(flags.tckp_path, epoch, flags, optimizer, detect_net)
             print(f"Checkpoint saved to {flags.tckp_path}")
 
-        if epoch % 10 == 0 or epoch >= flags.num_epochs:
+        if flags.use_wandb and (epoch % 10 == 0 or epoch >= flags.num_epochs):
             wlogger.wandb.save(
                 os.path.join(flags.tckpdir, "*"), flags.tckpdir
             )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Thinker detection network training")
+    # data setting
     parser.add_argument("--dxpid", default="", help="Data file name")
     parser.add_argument("--dproject", default="detect", help="Data project name.")
     parser.add_argument("--datadir", default="../data/__dproject__/__dxpid__/", help="Data directory.")    
     parser.add_argument("--txpid", default="test", help="training xpid of the run.")  
     parser.add_argument("--project", default="detect_post", help="Project of the run.")
+    # training setting
     parser.add_argument("--batch_size", default=128, type=int, help="Batch size in training.")
     parser.add_argument("--learning_rate", default=0.0001, type=float, help="Learning rate.")
     parser.add_argument("--num_epochs", default=50, type=int, help="Number of epoch.")
     parser.add_argument("--early_stop_n", default=-1, type=int, help="Earlying stopping; <0 for no early stopping.")
     parser.add_argument("--data_n", default=50000, type=int, help="Training data size.")
+    # store checkpoint setting
     parser.add_argument("--ckp", action="store_true", help="Enable loading from checkpoint.")
     parser.add_argument("--use_wandb", action="store_true", help="Enable logging to wandb.")
+    # net setting
+    parser.add_argument("--tran_layer_n", default=3, type=int, help="Transformer layer size.")
+    parser.add_argument("--tran_ff_n", default=512, type=int, help="Transformer encoder size.")
+    parser.add_argument("--shallow_encode", action="store_true", help="Using shallow encoding.")
 
     flags = parser.parse_args()    
     flags.datadir = flags.datadir.replace("__dproject__", flags.dproject)

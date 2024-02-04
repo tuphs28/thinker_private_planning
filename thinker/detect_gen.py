@@ -164,6 +164,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
         "action_space": action_space,
         "flags": flags,
         "tree_rep_meaning": env.get_tree_rep_meaning() if not disable_thinker else None,
+        "record_state": True,
     }
     actor_net = ActorNet(**actor_param)
 
@@ -197,50 +198,60 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
     rescale = "Sokoban" in flags.name
 
-    # save setting
-
-    env_state_shape = env.observation_space["real_states"].shape[1:]
-    #if rescale: env_state_shape = (3, 40, 40)
-    tree_rep_shape = env.observation_space["tree_reps"].shape[1:] if not disable_thinker else None
-
-    flags_detect = {
-        "dim_actions": actor_net.dim_actions,
-        "num_actions": actor_net.num_actions,
-        "tuple_actions": actor_net.tuple_action,
-        "name": flags.name,
-        "env_state_shape": list(env_state_shape),
-        "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
-        "rescale": rescale,
-        "rec_t": flags.rec_t,
-        "ckpdir": ckpdir,
-        "xpid": xpid,        
-        "dxpid": name,
-        "disable_thinker": disable_thinker,
-    }
-
-    yaml_file_path = os.path.join(outdir, 'config_detect.yaml')
-    with open(yaml_file_path, 'w') as file:
-        yaml.dump(flags_detect, file)
-
+    
     with torch.set_grad_enabled(False):
+        
+        actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
+        if not disable_thinker:
+            primary_action, reset_action = actor_out.action
+        else:
+            primary_action, reset_action = actor_out.action, None
+
+        # save setting
+        env_state_shape = env.observation_space["real_states"].shape[1:]
+        #if rescale: env_state_shape = (3, 40, 40)
+        tree_rep_shape = env.observation_space["tree_reps"].shape[1:] if not disable_thinker else None
+        hidden_state_shape = actor_net.hidden_state.shape[1:] if disable_thinker else None
+
+        flags_detect = {
+            "dim_actions": actor_net.dim_actions,
+            "num_actions": actor_net.num_actions,
+            "tuple_actions": actor_net.tuple_action,
+            "name": flags.name,
+            "env_state_shape": list(env_state_shape),
+            "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
+            "hidden_state_shape": list(hidden_state_shape) if disable_thinker else None,
+            "rescale": rescale,
+            "rec_t": flags.rec_t,
+            "ckpdir": ckpdir,
+            "xpid": xpid,        
+            "dxpid": name,
+            "disable_thinker": disable_thinker,
+        }
+
+        yaml_file_path = os.path.join(outdir, 'config_detect.yaml')
+        with open(yaml_file_path, 'w') as file:
+            yaml.dump(flags_detect, file)
+
 
         rets = []
         last_file_idx = None
         
         while(True):
-
-            actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)
-            if not disable_thinker:
-                primary_action, reset_action = actor_out.action
-            else:
-                primary_action, reset_action = actor_out.action, None
             state, reward, done, info = env.step(
                 primary_action=primary_action, 
                 reset_action=reset_action, 
                 action_prob=actor_out.action_prob[-1])    
+            
             env_out = create_env_out(actor_out.action, state, reward, done, info, flags=flags)
             if torch.any(done):
                 rets.extend(info["episode_return"][done].cpu().tolist())
+
+            actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
+            if not disable_thinker:
+                primary_action, reset_action = actor_out.action
+            else:
+                primary_action, reset_action = actor_out.action, None
             
             # write to detect buffer
             if not disable_thinker:
@@ -249,11 +260,10 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                     #env_state = F.interpolate(env_state , size=(40, 40), mode='bilinear', align_corners=False)
                     env_state = (env_state * 255).to(torch.uint8)
             else:
-                env_state = env_out.real_states
-            pri_action = primary_action
+                env_state = env_out.real_states[0]
             xs = {
                 "env_state": env_state,
-                "pri_action": pri_action,            
+                "pri_action": primary_action,            
                 "cost": info["cost"],
             }
             if not disable_thinker:
@@ -261,7 +271,11 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                     "tree_rep": state["tree_reps"],
                     "reset_action": actor_out.action[1],
                 })
-
+            else:
+                if flags.drc:
+                    xs.update({
+                        "hidden_state": actor_net.hidden_state
+                    })       
             y = info['cost']
             done = done
             step_status = info['step_status'][0].item()
