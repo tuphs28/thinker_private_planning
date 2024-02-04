@@ -283,6 +283,16 @@ def train_epoch(detect_net, dataloader, optimizer, device, flags, train=True):
             step += 1
     return {key: val / step for (key, val) in running_train_eval.items()}
 
+def save_ckp(path, epoch, flags, optimizer, detect_net):
+    # save checkpoint
+    d = {
+        "epoch": epoch,
+        "flags": flags,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "net_state_dict": detect_net.state_dict(),
+    }
+    torch.save(d, path)
+
 def detect_train(flags):
 
     if not flags.ckp:
@@ -301,6 +311,7 @@ def detect_train(flags):
         ckpdir = os.path.join(flags.datadir, flags.txpid)
     flags.tckpdir = ckpdir
     flags.tckp_path = os.path.join(ckpdir, "ckp_detect.tar")
+    flags.tckp_path_b = os.path.join(ckpdir, "ckp_detect_best.tar")
     print(f"Checkpoint path: {flags.tckp_path}")
 
     # load data
@@ -341,7 +352,7 @@ def detect_train(flags):
     )
 
     if flags.ckp:
-        checkpoint = torch.load(flags.ckp_path, torch.device("cpu"))
+        checkpoint = torch.load(flags.tckp_path, torch.device("cpu"))
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         detect_net.load_state_dict(checkpoint["net_state_dict"])
         epoch = checkpoint["epoch"]
@@ -355,6 +366,9 @@ def detect_train(flags):
     print("Detect network size: %d"
             % sum(p.numel() for p in detect_net.parameters())
         )
+    
+    best_val_loss = float('inf')
+    epoch_since_improve = 0
 
     while (epoch < flags.num_epochs):
         train_stat = train_epoch(detect_net, dataloader, optimizer, device, flags, train=True)
@@ -363,23 +377,31 @@ def detect_train(flags):
         stat["epoch"] = epoch
         plogger.log(stat)
         if flags.use_wandb: wlogger.wandb.log(stat, step=stat['epoch'])
-
-        print_str = f'Epoch {epoch+1}/{flags.num_epochs},'
+        
+        epoch += 1    
+        print_str = f'Epoch {epoch}/{flags.num_epochs},'
         for key in stat.keys(): 
             if 'val/' + key in stat.keys():
                 print_str += f" {key}:{stat[key]:.4f} ({stat['val/'+key]:.4f})"
-        print(print_str)    
-
-        epoch += 1    
+        print(print_str)   
+             
+        # Early stopping and best model saving logic
+        if flags.early_stop_n >= 0:  # Check if early stopping is enabled
+            current_val_loss = val_stat['loss']  # Assuming val_stat contains the validation loss
+            if current_val_loss < best_val_loss:
+                best_val_loss = current_val_loss
+                epoch_since_improve = 0
+                save_ckp(flags.tckp_path_b, epoch, flags, optimizer, detect_net)
+                print(f"New best model saved to {flags.tckp_path_b}")
+            else:
+                epoch_since_improve += 1
+            
+            if epoch_since_improve > flags.early_stop_n:
+                print(f"Stopping early at epoch {epoch} due to no improvement in validation loss for {flags.early_stop_n} consecutive epochs.")
+                break  # Stop the training loop
+ 
         if epoch % 5 == 0 or epoch >= flags.num_epochs:
-            # save checkpoint
-            d = {
-                "epoch": epoch,
-                "flags": flags,
-                "optimizer_state_dict": optimizer.state_dict(),
-                "net_state_dict": detect_net.state_dict(),
-            }
-            torch.save(d, flags.tckp_path)
+            save_ckp(flags.tckp_path, epoch, flags, optimizer, detect_net)
             print(f"Checkpoint saved to {flags.tckp_path}")
 
         if epoch % 10 == 0 or epoch >= flags.num_epochs:
@@ -397,6 +419,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=128, type=int, help="Batch size in training.")
     parser.add_argument("--learning_rate", default=0.0001, type=float, help="Learning rate.")
     parser.add_argument("--num_epochs", default=50, type=int, help="Number of epoch.")
+    parser.add_argument("--early_stop_n", default=-1, type=int, help="Earlying stopping; <0 for no early stopping.")
     parser.add_argument("--data_n", default=50000, type=int, help="Training data size.")
     parser.add_argument("--ckp", action="store_true", help="Enable loading from checkpoint.")
     parser.add_argument("--use_wandb", action="store_true", help="Enable logging to wandb.")
