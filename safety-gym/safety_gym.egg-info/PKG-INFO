@@ -1,9 +1,0 @@
-Metadata-Version: 2.1
-Name: safety-gym
-Version: 0.0.0
-License-File: LICENSE
-Requires-Dist: gym==0.22.0
-Requires-Dist: joblib~=0.14.0
-Requires-Dist: mujoco_py>=2.0.2.7
-Requires-Dist: numpy>=1.17.4
-Requires-Dist: xmltodict~=0.12.0
