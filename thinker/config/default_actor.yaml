@@ -34,6 +34,7 @@ see_h: true # whether to see model's hidden state
 see_x: false # whether to see the model's predicted state
 # actor network setting
 drc: false # whether to use the drc baseline
+legacy: false # whether to use legacy version
 tree_rep_rnn: true # whether to use rnn in processing tree representation
 se_lstm_table: false # whether to use lstm to enablde tables
 x_rnn: false # whether to use rnn in processing x, model's predicted state

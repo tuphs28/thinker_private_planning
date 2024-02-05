@@ -7,6 +7,7 @@ from thinker import util
 from thinker.core.rnn import ConvAttnLSTM, LSTMReset
 from thinker.core.module import MLP, OneDResBlock
 from thinker.model_net import BaseNet, RVTran
+from thinker.legacy import AFrameEncoderLegacy
 from gym import spaces
 
 ActorOut = namedtuple(
@@ -283,6 +284,10 @@ class ActorNetBase(BaseNet):
         self.see_tree_rep = flags.see_tree_rep and not self.disable_thinker
         if self.see_tree_rep:
             self.tree_reps_shape = obs_space["tree_reps"].shape[1:]             
+            if flags.legacy:
+                self.tree_reps_shape = list(self.tree_reps_shape)
+                self.tree_reps_shape[0] -= 2
+
         self.see_h = flags.see_h and not self.disable_thinker
         if self.see_h:
             self.hs_shape = obs_space["hs"].shape[1:]
@@ -338,15 +343,19 @@ class ActorNetBase(BaseNet):
         self.last_layer_n = flags.last_layer_n
 
         self.float16 = flags.float16
+        self.legacy = flags.legacy
         self.flags = flags        
 
         # encoder for state or encoding output
         last_out_size = self.dim_rep_actions + self.num_rewards
+        if self.legacy: last_out_size += self.dim_rep_actions
+
         if not self.disable_thinker:
             last_out_size += 2
 
         if self.see_h:
-            self.h_encoder = AFrameEncoder(
+            FrameEncoder = AFrameEncoder if not flags.legacy else AFrameEncoderLegacy
+            self.h_encoder = FrameEncoder(
                 input_shape=self.hs_shape,                                 
                 see_double=self.see_double
             )
@@ -354,7 +363,8 @@ class ActorNetBase(BaseNet):
             last_out_size += h_out_size
         
         if self.see_x:
-            self.x_encoder_pre = AFrameEncoder(
+            FrameEncoder = AFrameEncoder if not flags.legacy else AFrameEncoderLegacy
+            self.x_encoder_pre = FrameEncoder(
                 input_shape=self.xs_shape, 
                 downpool=True,
                 firstpool=flags.x_enc_first_pool,
@@ -539,6 +549,8 @@ class ActorNetBase(BaseNet):
         if not self.tuple_action: last_pri = last_pri.unsqueeze(-1)
         last_pri = util.encode_action(last_pri, self.dim_actions, self.num_actions)   
         final_out.append(last_pri)
+        if self.legacy:
+            final_out.append(last_pri)
 
         if not self.disable_thinker:
             last_reset = torch.flatten(env_out.last_reset, 0, 1)
@@ -553,6 +565,11 @@ class ActorNetBase(BaseNet):
         if self.see_tree_rep:                
             tree_rep = env_out.tree_reps               
             tree_rep = torch.flatten(tree_rep, 0, 1)     
+            if self.legacy:
+                indices_to_remove = [self.num_actions+1, self.num_actions*5+6 + self.num_actions+1]
+                mask = torch.ones(tree_rep.shape[1], dtype=torch.bool, device=tree_rep.device)
+                mask[indices_to_remove] = False
+                tree_rep = tree_rep[:, mask]
 
             if self.se_lstm_table:
                 root_table = tree_rep[:, self.root_table_mask]
@@ -578,6 +595,8 @@ class ActorNetBase(BaseNet):
             hs = torch.flatten(env_out.hs, 0, 1)
             encoded_h = self.h_encoder(hs)
             final_out.append(encoded_h)
+            if self.legacy and self.see_tree_rep:
+                final_out[-1], final_out[-2] = final_out[-2], final_out[-1]
 
         if self.see_x:
             xs = torch.flatten(env_out.xs, 0, 1)

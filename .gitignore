@@ -25,3 +25,7 @@ thinker/thinker/cenv.cpp
 thinker/notebook
 *.egg-info
 *.egg-info/*
+mujoco-py/mujoco_py/cymj.c
+mujoco-py/mujoco_py/generated/
+mujoco-py/mujoco_py.egg-info/SOURCES.txt
+safety-gym/safety_gym.egg-info/PKG-INFO

@@ -141,7 +141,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
     config_path = os.path.join(ckpdir, 'config_c.yaml')
     flags = util.create_flags(config_path, save_flags=False)
-    disable_thinker = flags.wrapper_type == 1
+    disable_thinker = flags.wrapper_type == 1    
 
     env = Env(
             name=flags.name,

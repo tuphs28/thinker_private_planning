@@ -516,10 +516,10 @@ class Env(gym.Wrapper):
         )
     
     def get_tree_rep_meaning(self):
-        if self.tree_rep_meaning is None:
+        if not hasattr(self, "tree_rep_meaning") or self.tree_rep_meaning is None:
             if self.flags.wrapper_type in [3, 4, 5]:
                 self.tree_rep_meaning = self.env.tree_rep_meaning
-            elif self.flags.wrapper_type == 1:
+            elif self.flags.wrapper_type in [0, 2]:
                 self.tree_rep_meaning = util.slice_tree_reps(self.num_actions, self.dim_actions, self.flags.sample_n, self.flags.rec_t)        
         return self.tree_rep_meaning
 
