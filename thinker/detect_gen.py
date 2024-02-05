@@ -309,7 +309,7 @@ if __name__ == "__main__":
     detect_gen(
         total_n=flags.total_n,
         env_n=flags.env_n,
-        delay_n=flags.env_n,
+        delay_n=flags.delay_n,
         greedy=flags.greedy,
         savedir=flags.savedir,
         outdir=flags.outdir,
