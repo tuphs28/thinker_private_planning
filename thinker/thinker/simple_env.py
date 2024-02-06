@@ -188,9 +188,9 @@ class SimWrapper():
             self.node_max_td[:, -1] = -np.inf
 
             if self.query_cur == 1:
-                self.cur_query_results = self.make_query(self.root_key, self.root_v, ignore_last=True)
+                self.cur_query_results, self.cur_query_rep = self.make_query(self.root_key, self.root_v, ignore_last=True)
             else:
-                self.cur_query_results = self.make_query(self.root_key, self.root_v, ignore_last=True)
+                self.cur_query_results, self.cur_query_rep = self.make_query(self.root_key, self.root_v, ignore_last=True)
                 self.root_query_results = self.cur_query_results
 
         return model_net_out
@@ -305,9 +305,9 @@ class SimWrapper():
 
                     query = model_net_out.zs[-1]
                     # let do a search using key
-                    self.cur_query_results = self.make_query(query, self.cur_v)                    
+                    self.cur_query_results, self.cur_query_rep = self.make_query(query, self.cur_v)                    
                     if self.query_cur == 2:
-                        self.root_query_results = self.make_query(self.root_key, self.root_v)
+                        self.root_query_results, self.root_query_rep = self.make_query(self.root_key, self.root_v)
 
                 state = self.prepare_state(model_net_out, None)
                 # reset processing
@@ -543,6 +543,13 @@ class SimWrapper():
 
         
         if not self.manual_stat:
+            rep = torch.concat([topk_similarity.unsqueeze(-1), 
+                                topk_action,
+                                topk_td.unsqueeze(-1),
+                                topk_n_td.unsqueeze(-1),
+                                topk_mean_td.unsqueeze(-1),
+                                topk_max_td.unsqueeze(-1),
+                                topk_count.unsqueeze(-1),], dim=-1)
             results = {
                 "similarity" : topk_similarity,
                 "action": topk_action,
@@ -558,7 +565,10 @@ class SimWrapper():
                 "max_q_sa" : max_q_sa,
                 "n_sa" : n_sa,
             }
-        return results
+            rep = torch.concat([mean_q_sa, 
+                                max_q_sa, 
+                                n_sa,], dim=-1)
+        return results, rep
 
     def render(self, *args, **kwargs):  
         return self.env.render(*args, **kwargs)

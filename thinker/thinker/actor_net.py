@@ -404,12 +404,12 @@ class ActorNetBase(BaseNet):
             if self.se_lstm_table:
                 assert flags.se_query_cur == 2                
                 root_table_mask = torch.zeros(in_size, dtype=torch.bool)
-                root_query_keys = [k for k in tree_rep_meaning if k.startswith("root_query_results")]
+                root_query_keys = [k for k in tree_rep_meaning if k.startswith("root_query")]
                 for i in root_query_keys:
                     root_table_mask[self.tree_rep_meaning[i]] = 1        
                 # print("root_query_size: ", sum(root_table_mask).long().item())        
                 cur_table_mask = torch.zeros(in_size, dtype=torch.bool)
-                cur_query_keys = [k for k in tree_rep_meaning if k.startswith("cur_query_results")]
+                cur_query_keys = [k for k in tree_rep_meaning if k.startswith("cur_query")]
                 for i in cur_query_keys:
                     cur_table_mask[self.tree_rep_meaning[i]] = 1
                 # print("cur_query_size: ", sum(cur_table_mask).long().item())        
