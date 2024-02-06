@@ -281,10 +281,12 @@ class ActorNetBase(BaseNet):
 
         self.disable_thinker = flags.wrapper_type == 1
         self.see_double = flags.return_double
+        self.legacy = getattr(flags, "legacy", False)
+
         self.see_tree_rep = flags.see_tree_rep and not self.disable_thinker
         if self.see_tree_rep:
             self.tree_reps_shape = obs_space["tree_reps"].shape[1:]             
-            if flags.legacy:
+            if self.legacy:
                 self.tree_reps_shape = list(self.tree_reps_shape)
                 self.tree_reps_shape[0] -= 2
 
@@ -343,7 +345,6 @@ class ActorNetBase(BaseNet):
         self.last_layer_n = flags.last_layer_n
 
         self.float16 = flags.float16
-        self.legacy = flags.legacy
         self.flags = flags        
 
         # encoder for state or encoding output
@@ -354,7 +355,7 @@ class ActorNetBase(BaseNet):
             last_out_size += 2
 
         if self.see_h:
-            FrameEncoder = AFrameEncoder if not flags.legacy else AFrameEncoderLegacy
+            FrameEncoder = AFrameEncoder if not self.legacy else AFrameEncoderLegacy
             self.h_encoder = FrameEncoder(
                 input_shape=self.hs_shape,                                 
                 see_double=self.see_double
@@ -363,7 +364,7 @@ class ActorNetBase(BaseNet):
             last_out_size += h_out_size
         
         if self.see_x:
-            FrameEncoder = AFrameEncoder if not flags.legacy else AFrameEncoderLegacy
+            FrameEncoder = AFrameEncoder if not self.legacy else AFrameEncoderLegacy
             self.x_encoder_pre = FrameEncoder(
                 input_shape=self.xs_shape, 
                 downpool=True,

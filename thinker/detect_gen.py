@@ -288,6 +288,8 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
             last_file_idx = file_idx
         
+        env.close()
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Thinker data generalization")

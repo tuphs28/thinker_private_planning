@@ -495,6 +495,9 @@ def detect_train(flags):
             wlogger.wandb.save(
                 os.path.join(flags.tckpdir, "*"), flags.tckpdir
             )
+    
+    plogger.close()    
+    if flags.use_wandb: wlogger.wandb.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Thinker detection network training")
