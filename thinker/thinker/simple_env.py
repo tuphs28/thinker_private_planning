@@ -192,6 +192,7 @@ class SimWrapper():
             else:
                 self.cur_query_results, self.cur_query_rep = self.make_query(self.root_key, self.root_v, ignore_last=True)
                 self.root_query_results = self.cur_query_results
+                self.root_query_rep = self.cur_query_rep
 
         return model_net_out
         
@@ -430,15 +431,15 @@ class SimWrapper():
         misc = ["cur_reset", "one_hot_k", "rollout_return", "max_rollout_return", "rollout_done"]
         root_tables = ["root_action_table", "root_td_table"]
         action_seq = ["action_seq"]   
-        cur_query_reslts = ["cur_query_results"]
-        root_query_reslts = ["root_query_results"]
+        cur_query_rep = ["cur_query_rep"]
+        root_query_rep = ["root_query_rep"]
 
         tree_reps = []
         tree_rep_keys = root_stat + cur_stat + misc + action_seq
         if self.query_cur == 1: 
-            tree_rep_keys += root_tables + cur_query_reslts
+            tree_rep_keys += root_tables + cur_query_rep
         elif self.query_cur == 2: 
-            tree_rep_keys += root_query_reslts + cur_query_reslts
+            tree_rep_keys += root_query_rep + cur_query_rep
         else:
             tree_rep_keys += root_tables 
         for k in tree_rep_keys:            
