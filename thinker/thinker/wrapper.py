@@ -141,12 +141,15 @@ def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_ac
     if one_to_threed_state: env = TileObservationWrapper(env)
 
     if "Sokoban" in name:
+        # sokoban
         env = TransposeWrap(env)
         if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
-    elif "Safexp" in name:
+    elif name.startswith("Safexp") or name.startswith("DM"):
+        # safexp or DM control
         assert discrete_k > 0, "Safeexp require discretizing the action space"
         if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
     else:
+        # atari
         env = StateWrapper(env)
         env = TimeLimit_(env, max_episode_steps=108000)
         env = NoopResetEnv(env, noop_max=30)
@@ -688,3 +691,100 @@ class TileObservationWrapper(gym.ObservationWrapper):
         n = len(observation)
         tiled_observation = np.tile(observation, (n, 1)).reshape(1, n, n)
         return tiled_observation
+    
+# wrapper for DM control
+    
+def convert_dm_control_to_gym_space(dm_control_space):    
+    from dm_env import specs
+    r"""Convert dm_control space to gym space. """
+    if isinstance(dm_control_space, specs.BoundedArray):
+        space = spaces.Box(low=dm_control_space.minimum, 
+                           high=dm_control_space.maximum, 
+                           dtype=dm_control_space.dtype)
+        assert space.shape == dm_control_space.shape
+        return space
+    elif isinstance(dm_control_space, specs.Array) and not isinstance(dm_control_space, specs.BoundedArray):
+        space = spaces.Box(low=-float('inf'), 
+                           high=float('inf'), 
+                           shape=dm_control_space.shape, 
+                           dtype=dm_control_space.dtype)
+        return space
+    elif isinstance(dm_control_space, dict):
+        space = spaces.Dict({key: convert_dm_control_to_gym_space(value)
+                             for key, value in dm_control_space.items()})
+        return space
+
+class DMSuiteEnv(gym.Env):
+    def __init__(self, domain_name, task_name, task_kwargs=None, environment_kwargs=None, visualize_reward=False, flatten=True):
+        from dm_control import suite
+        self.env = suite.load(domain_name, 
+                              task_name, 
+                              task_kwargs=task_kwargs, 
+                              environment_kwargs=environment_kwargs, 
+                              visualize_reward=visualize_reward)
+        self.metadata = {'render.modes': ['human', 'rgb_array'],
+                         'video.frames_per_second': round(1.0/self.env.control_timestep())}
+        self.flatten = flatten
+        if not flatten:
+            self.observation_space = convert_dm_control_to_gym_space(self.env.observation_spec())
+        else:
+            obs_spec = self.env.observation_spec()
+            self.obs_dim = int(sum([np.prod(obs_spec[key].shape) for key in obs_spec]))  # Ensure obs_dim is an integer
+            high = np.inf * np.ones(self.obs_dim)
+            low = -high
+            self.observation_space = spaces.Box(low, high, dtype=np.float32)
+        self.action_space = convert_dm_control_to_gym_space(self.env.action_spec())
+        self.viewer = None
+    
+    def seed(self, seed):
+        return self.env.task.random.seed(seed)
+    
+    def step(self, action):
+        timestep = self.env.step(action)
+        if not self.flatten:
+            observation = timestep.observation
+        else:        
+            observation = self._flatten_observation(timestep.observation)
+        reward = timestep.reward
+        done = timestep.last()
+        info = {}
+        return observation, reward, done, info
+    
+    def reset(self):
+        timestep = self.env.reset()
+        if not self.flatten:
+            observation = timestep.observation
+        else:        
+            observation = self._flatten_observation(timestep.observation)
+        return observation
+    
+    def render(self, mode='human', **kwargs):
+        if 'camera_id' not in kwargs:
+            kwargs['camera_id'] = 0  # Tracking camera
+        use_opencv_renderer = kwargs.pop('use_opencv_renderer', False)
+        
+        img = self.env.physics.render(**kwargs)
+        if mode == 'rgb_array':
+            return img
+        elif mode == 'human':
+            if self.viewer is None:
+                if not use_opencv_renderer:
+                    from gym.envs.classic_control import rendering
+                    self.viewer = rendering.SimpleImageViewer(maxwidth=1024)
+                else:
+                    from . import OpenCVImageViewer
+                    self.viewer = OpenCVImageViewer()
+            self.viewer.imshow(img)
+            return self.viewer.isopen
+        else:
+            raise NotImplementedError
+        
+    def _flatten_observation(self, observation):
+        """Flatten an observation into a single vector."""
+        return np.concatenate([observation[key].ravel() for key in observation])
+
+    def close(self):
+        if self.viewer is not None:
+            self.viewer.close()
+            self.viewer = None
+        return self.env.close()

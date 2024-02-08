@@ -94,14 +94,27 @@ class Env(gym.Wrapper):
         )
 
         if env_fn is None:
-            if name == "Sokoban-v0": import gym_sokoban
-            if "Safexp" in name: import mujoco_py, safety_gym
-            gym_make_args = {"id": name}
-            if name == "Sokoban-v0" and self.flags.detect_dan_num > 0:
-                gym_make_args["dan_num"] = self.flags.detect_dan_num
+            if name == "Sokoban-v0": 
+                import gym_sokoban
+                fn = gym.make
+                args = {"id": name, "dan_num": self.flags.detect_dan_num}
+
+            elif name.startswith("Safexp"): 
+                import mujoco_py, safety_gym
+                fn = gym.make
+                args = {"id": name}
+            
+            elif name.startswith("DM"):
+                from thinker.wrapper import DMSuiteEnv
+                _, domain_name, task_name = name.split("/")
+                fn = DMSuiteEnv
+                args = {"domain_name": domain_name, "task_name": task_name}
+            else:
+                fn = gym.make
+                args = {"id": name}
 
             env_fn = lambda: PreWrapper(
-                gym.make(**gym_make_args), 
+                fn(**args), 
                 name=name, 
                 grayscale=self.flags.grayscale, 
                 discrete_k=self.flags.discrete_k, 

@@ -548,7 +548,7 @@ class ActorNetBase(BaseNet):
         
         last_pri = torch.flatten(env_out.last_pri, 0, 1)
         if not self.tuple_action: last_pri = last_pri.unsqueeze(-1)
-        last_pri = util.encode_action(last_pri, self.dim_actions, self.num_actions)   
+        last_pri = util.encode_action(last_pri, self.tuple_action, self.num_actions)   
         final_out.append(last_pri)
         if self.legacy:
             final_out.append(last_pri)

@@ -1,5 +1,5 @@
 __version__ = "1.1.2"
-__project__ = "detect"
+__project__ = "thinker"
 
 import collections
 import time
@@ -522,8 +522,8 @@ def mask_tree_rep(tree_reps, num_actions, rec_t):
     tree_reps_m[:, 4+rec_t:] = tree_reps[:, d["action_seq"]]
     return tree_reps_m
 
-def encode_action(action, dim_actions, num_actions):
-    if dim_actions > 1:
+def encode_action(action, tuple_action, num_actions):
+    if tuple_action:
         return action.float() / num_actions
     else:
         return F.one_hot(action.squeeze(-1), num_classes=num_actions).float()

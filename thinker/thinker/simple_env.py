@@ -125,7 +125,7 @@ class SimWrapper():
         if self.perfect_model:
             self.root_env_state = self.env.clone_state()
 
-        pri_action = util.encode_action(pri_action, self.dim_actions, self.num_actions)
+        pri_action = util.encode_action(pri_action, self.tuple_action, self.num_actions)
 
         self.root_td = real_reward + self.discounting * model_net_out.vs[-1] - self.root_v
         self.root_action = pri_action
@@ -257,7 +257,7 @@ class SimWrapper():
                 im_logits = model_net_out.logits[-1]
                 im_v = model_net_out.vs[-1]
                 
-                self.cur_action = util.encode_action(pri_action, self.dim_actions, self.num_actions)
+                self.cur_action = util.encode_action(pri_action, self.tuple_action, self.num_actions)
                 self.cur_r = im_r
                 self.cur_r[self.rollout_done] = 0.                  
                 if torch.any(self.rollout_done):
