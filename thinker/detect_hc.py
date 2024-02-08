@@ -96,8 +96,8 @@ def detect_hc(datadir, imgdir, data_n=1000, batch_size=512, search_rank=0, legac
                 idx_reset = num_actions * 4 + 6 
                 idx_rr = idx_reset + flags_data.rec_t + 1
             else:
-                idx_reset =  num_actions * 5 + 5 + num_actions * 5 + 2
-                idx_rr = 5 * num_actions + 3
+                idx_reset =  num_actions * 5 + 6 + num_actions * 5 + 3
+                idx_rr = 5 * num_actions + 4
                 
             reset = tree_rep[:, :, idx_reset].bool()
             rollout_return = tree_rep[:, :, idx_rr]
