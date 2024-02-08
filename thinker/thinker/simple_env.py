@@ -326,11 +326,10 @@ class SimWrapper():
                     self.last_v[reset_bool] = self.root_v[reset_bool]
                     for k in self.tmp_state.keys():
                         self.tmp_state[k][reset_bool] = self.root_per_state[k][reset_bool]
-                    self.im_reward[reset_bool] = 0
+                    # self.im_reward[reset_bool] = 0
                     if self.perfect_model:
                         inds = np.arange(self.env_n)[reset_bool.cpu().numpy()]
                         self.env.restore_state([self.root_env_state[i] for i in inds], inds=inds)
-                    # todo - test if gating planning reward is necessary
 
                 if self.query_cur:                    
                     # shift table
