@@ -747,7 +747,7 @@ class DMSuiteEnv(gym.Env):
             observation = self._flatten_observation(timestep.observation)
         reward = timestep.reward
         done = timestep.last()
-        info = {}
+        info = {'truncated_done': done}
         return observation, reward, done, info
     
     def reset(self):
