@@ -35,7 +35,7 @@ def compute_action_log_prob(logits, actions):
     )
     log_prob = log_prob.view_as(actions)
     if has_dim:
-        log_prob = torch.sum(log_prob, dim=-1)
+        log_prob = torch.mean(log_prob, dim=-1)
     return log_prob
 
 
@@ -657,7 +657,7 @@ class ActorNetBase(BaseNet):
                 target=torch.flatten(F.softmax(pri_logits, dim=-1), 0, 1),                
             )
             entropy_loss = entropy_loss.view(T, B, self.dim_actions)
-            entropy_loss = torch.sum(entropy_loss, dim=-1)
+            entropy_loss = torch.mean(entropy_loss, dim=-1)
             if not self.disable_thinker:
                 ent_reset_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
                     input=reset_logits, target=F.softmax(reset_logits, dim=-1)
