@@ -2,7 +2,9 @@ import time
 import timeit
 import os
 import numpy as np
-import argparse
+import collections
+import random
+import copy
 import traceback
 import ray
 import torch
@@ -51,7 +53,7 @@ def compute_baseline_enc_loss(
     return torch.sum(loss)
 
 def compute_pg_loss(c_action_log_prob, adv, mask=None):
-    loss = -adv.detach() * c_action_log_prob
+    loss = -adv * c_action_log_prob
     if mask is not None: loss = loss * mask
     return torch.sum(loss)
 
@@ -160,6 +162,19 @@ class SActorLearner:
     
         if self.flags.float16:
             self.scaler = GradScaler(init_scale=2**8)
+        
+        self.impact_enable = self.flags.impact_k > 1
+        if self.impact_enable:
+            self.impact_n = self.flags.impact_n
+            self.impact_k = self.flags.impact_k
+            assert (self.impact_n > self.impact_k and self.impact_n % self.impact_k == 0) or (
+                self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0), "impact_k and impact_n should be divisible"
+            self.impact_update_freq = 1 if self.impact_k >= self.impact_n else self.impact_n // self.impact_k
+            self.impact_update_time = 1 if self.impact_n >= self.impact_k else self.impact_k // self.impact_n        
+            self.impact_update_tar_freq = self.flags.impact_update_tar_freq
+            self.impact_t = 0
+            self.datas = collections.deque(maxlen=self.impact_n)
+            self.tar_actor_net = None
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
@@ -210,15 +225,48 @@ class SActorLearner:
         finally:
             self.close()
             return True
+        
+    def update_target(self):
+        if self.tar_actor_net is None or self.flags.impact_update_lambda == 0:
+            self.tar_actor_net = copy.deepcopy(self.actor_net)
+        else:
+            for tar_module, new_module in zip(self.tar_actor_net.modules(), self.actor_net.modules()):
+                if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
+                    # Copy BatchNorm running mean and variance
+                    tar_module.running_mean = new_module.running_mean.clone()
+                    tar_module.running_var = new_module.running_var.clone()
+                # Apply EMA to other parameters
+                for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
+                    tar_param.data.mul_(self.flags.impact_update_lambda).add_(new_param.data, alpha=1 - self.flags.impact_update_lambda)
 
+            
     def consume_data(self, data, timing=None):
+        if not self.impact_enable: return self.consume_data_single(data, timing)
+        self.datas.append([data, None])
+        self.impact_t += 1
+        r = False
+        if self.impact_t % self.impact_update_tar_freq == 0: self.update_target()        
+        if self.impact_t % self.impact_update_freq == 0:
+            for _ in range(self.impact_update_time):
+                ns = random.sample(range(len(self.datas)), len(self.datas))
+                for n in ns:
+                    data, tar_stat = self.datas[n]
+                    r, tar_stat = self.consume_data_single(data, timing=timing, tar_stat=tar_stat)
+                    self.datas[n][1] = tar_stat     
+        return r
+
+    def consume_data_single(self, data, timing=None, tar_stat=None):
         train_actor_out, initial_actor_state = data
         actor_id = train_actor_out.id
 
         # compute losses
-        losses, train_actor_out = self.compute_losses(
-            train_actor_out, initial_actor_state
+        out = self.compute_losses(
+            train_actor_out, initial_actor_state, tar_stat
         )
+        if not self.impact_enable:
+            losses, train_actor_out = out
+        else:
+            losses, train_actor_out, tar_stat = out
         total_loss = losses["total_loss"]
         if timing is not None:
             timing.time("compute loss")
@@ -327,13 +375,17 @@ class SActorLearner:
 
         # update shared buffer's weights
         self.n += 1
-        return self.real_step > self.flags.total_steps
+        r = self.real_step > self.flags.total_steps
+        if not self.impact_enable:
+            return r
+        else:
+            return r, tar_stat
 
-    def compute_losses(self, train_actor_out, initial_actor_state):
+    def compute_losses(self, train_actor_out, initial_actor_state, tar_stat=None):
         # compute loss and then discard the first step in train_actor_out
 
         T, B = train_actor_out.done.shape
-        T = T - 1
+        T = T - 1        
         
         if self.disable_thinker:
             clamp_action = train_actor_out.pri[1:]
@@ -347,12 +399,33 @@ class SActorLearner:
             compute_loss = True,
         )
 
+        compute_tar = tar_stat is None and self.impact_enable
+        if compute_tar:
+            tar_stat = {}
+            with torch.no_grad():
+                tar_actor_out, _ = self.tar_actor_net(
+                    train_actor_out, 
+                    initial_actor_state,
+                    clamp_action = clamp_action,
+                    compute_loss = False,
+                )
+        else:
+            tar_actor_out = new_actor_out
+
         # Take final value function slice for bootstrapping.
-        bootstrap_value = new_actor_out.baseline[-1]
+        bootstrap_value = tar_actor_out.baseline[-1]
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         train_actor_out = util.tuple_map(train_actor_out, lambda x: x[1:])
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
+        if compute_tar:
+            tar_actor_out = util.tuple_map(tar_actor_out, lambda x: x[:-1])
+            tar_stat["pri_logits"] = tar_actor_out.misc["pri_logits"].detach()
+            if not self.disable_thinker:
+                tar_stat["reset_logits"] = tar_actor_out.misc["reset_logits"].detach()
+        else:
+            tar_actor_out = new_actor_out
         rewards = train_actor_out.reward
+
 
         # compute advantage and baseline        
         pg_losses = []
@@ -370,7 +443,7 @@ class SActorLearner:
             discounts.append((~train_actor_out.done).float() * self.im_discounting)            
             masks.append(None)
         
-        log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
+        log_rhos = tar_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
         if not self.flags.parallel_actor:
             log_rhos = torch.zeros_like(log_rhos)
         for i in range(self.num_rewards):
@@ -382,40 +455,62 @@ class SActorLearner:
                 prefix_rewards, self.crnorm = cur_reward_norm(prefix_rewards, self.crnorm, cur_gate, self.flags)      
             else:    
                 return_norm_type=self.flags.return_norm_type 
-            v_trace = compute_v_trace(
-                log_rhos=log_rhos,
-                discounts=discounts[i],
-                rewards=prefix_rewards,
-                values=new_actor_out.baseline[:, :, i],
-                bootstrap_value=bootstrap_value[:, i],
-                return_norm_type=return_norm_type,
-                norm_stat=self.norm_stats[i], 
-                lamb=self.flags.v_trace_lamb,
-            )
-            self.norm_stats[i] = v_trace.norm_stat
+            if not self.impact_enable or compute_tar:
+                v_trace = compute_v_trace(
+                    log_rhos=log_rhos,
+                    discounts=discounts[i],
+                    rewards=prefix_rewards,
+                    values=tar_actor_out.baseline[:, :, i],
+                    bootstrap_value=bootstrap_value[:, i],
+                    return_norm_type=return_norm_type,
+                    norm_stat=self.norm_stats[i], 
+                    lamb=self.flags.v_trace_lamb,
+                )                
+                self.norm_stats[i] = v_trace.norm_stat
+                if compute_tar:
+                    beta = torch.log(torch.tensor(self.flags.impact_beta, device=self.device))
+                    log_is_de = torch.maximum(tar_actor_out.c_action_log_prob, train_actor_out.c_action_log_prob + beta)
+                    tar_trace = {
+                        "pg_advantages": v_trace.pg_advantages_nois.detach(),
+                        "log_is_de": log_is_de.detach(),
+                        "vs": v_trace.vs.detach(),
+                    }
+                    tar_stat["trace_%d" % i] = tar_trace
+            else:
+                tar_trace = tar_stat["trace_%d" % i]
+
+            if not self.impact_enable:
+                adv = v_trace.pg_advantages.detach()
+                vs = v_trace.vs
+            else:                
+                log_is_de = tar_trace["log_is_de"]
+                los_is = new_actor_out.c_action_log_prob - log_is_de
+                adv = tar_trace["pg_advantages"] * torch.exp(los_is)
+                vs = tar_trace["vs"]
+
             pg_loss = compute_pg_loss(
                 c_action_log_prob=new_actor_out.c_action_log_prob,
-                adv=v_trace.pg_advantages,
+                adv=adv,
                 mask=masks[i]
             )
             pg_losses.append(pg_loss)
             if self.flags.critic_enc_type == 0:
                 baseline_loss = compute_baseline_loss(
                     baseline=new_actor_out.baseline[:, :, i],
-                    target_baseline=v_trace.vs,
+                    target_baseline=vs,
                     mask=masks[i]
                 )
             else:
                 baseline_loss = compute_baseline_enc_loss(
                     baseline_enc=new_actor_out.baseline_enc[:, :, i],
-                    target_baseline=v_trace.vs,
+                    target_baseline=vs,
                     rv_tran=self.actor_net.rv_tran,
                     enc_type=self.flags.critic_enc_type,
                     mask=masks[i]
                 )
 
             baseline_losses.append(baseline_loss)
-        
+
         # sum all the losses
         total_loss = pg_losses[0]
         total_loss += self.flags.baseline_cost * baseline_losses[0]
@@ -455,8 +550,32 @@ class SActorLearner:
         losses["reg_loss"] = reg_loss
         total_loss += self.flags.reg_cost * reg_loss
 
+        if self.impact_enable and self.flags.impact_kl_coef > 0.:
+            tar_pri_log_prob = F.log_softmax(tar_stat["pri_logits"], dim=-1)
+            pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
+            pri_kl_loss = F.kl_div(pri_log_prob, tar_pri_log_prob, reduction="none", log_target=True)
+            pri_kl_loss = torch.mean(pri_kl_loss, dim=-1)
+            pri_kl_loss = torch.sum(pri_kl_loss)
+            kl_loss = pri_kl_loss
+
+            if not self.disable_thinker:                
+                tar_reset_log_prob = F.log_softmax(tar_stat["reset_logits"], dim=-1)
+                reset_log_prob = F.log_softmax(new_actor_out.misc["reset_logits"], dim=-1)
+                reset_kl_loss = F.kl_div(reset_log_prob, tar_reset_log_prob, reduction="sum", log_target=True)
+                kl_loss += reset_kl_loss
+
+            total_loss += self.flags.impact_kl_coef * self.actor_net.kl_beta * kl_loss         
+            avg_kl_loss = kl_loss / T / B  
+            if avg_kl_loss < self.flags.impact_kl_targ / 1.5:
+                self.actor_net.kl_beta /= 2
+            elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
+                self.actor_net.kl_beta *= 2
+
         losses["total_loss"] = total_loss
-        return losses, train_actor_out
+        if not self.impact_enable:
+            return losses, train_actor_out
+        else:
+            return losses, train_actor_out, tar_stat
 
     def compute_stat(self, train_actor_out, losses, total_norm, actor_id):
         """Update step, real_step and tot_eps; return training stat for printing"""

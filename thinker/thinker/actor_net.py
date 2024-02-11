@@ -482,7 +482,10 @@ class ActorNetBase(BaseNet):
             self.register_buffer("ordinal_mask", ordinal_mask)
 
         self.initial_state(batch_size=1) # initialize self.state_idx
-
+        
+        if getattr(flags, "impact_k", 1) > 1:
+            kl_beta = torch.tensor(1.)
+            self.register_buffer("kl_beta", kl_beta)
 
     def initial_state(self, batch_size, device=None):
         self.state_idx = {}
@@ -831,6 +834,10 @@ class DRCNet(BaseNet):
         self.final_layer = nn.Linear(last_out_size, 256)
         self.policy = nn.Linear(256, self.num_actions * self.dim_actions)
         self.baseline = nn.Linear(256, 1)
+
+        if getattr(flags, "impact_k", 1) > 1:
+            kl_beta = torch.tensor(1.)
+            self.register_buffer("kl_beta", kl_beta)
 
     def initial_state(self, batch_size, device=None):
         return self.core.initial_state(batch_size, device=device)

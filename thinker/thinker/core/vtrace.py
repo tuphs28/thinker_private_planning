@@ -39,7 +39,7 @@ import torch
 import torch.nn.functional as F
 import math 
 
-VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages norm_stat")
+VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages pg_advantages_nois norm_stat")
 
 def action_log_probs(policy_logits, actions):
     return -F.nll_loss(
@@ -126,7 +126,8 @@ def compute_v_trace(
             )
             norm_stat = norm_stat + (norm_factor, buffer)
 
-        pg_advantages = clipped_pg_rhos * adv_l2(target_values, values)
+        pg_advantages_nois = adv_l2(target_values, values)
+        pg_advantages = clipped_pg_rhos * pg_advantages_nois
         if not return_norm_type == -1:
             # pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
             pg_advantages = pg_advantages / norm_factor
@@ -134,6 +135,7 @@ def compute_v_trace(
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, 
                              pg_advantages=pg_advantages, 
+                             pg_advantages_nois=pg_advantages_nois,
                              norm_stat=norm_stat)
 
 
