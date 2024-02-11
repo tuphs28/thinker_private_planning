@@ -715,7 +715,7 @@ def convert_dm_control_to_gym_space(dm_control_space):
         return space
 
 class DMSuiteEnv(gym.Env):
-    def __init__(self, domain_name, task_name, task_kwargs=None, environment_kwargs=None, visualize_reward=False, flatten=True):
+    def __init__(self, domain_name, task_name, task_kwargs=None, environment_kwargs=None, visualize_reward=False, flatten=True, rgb=False):
         from dm_control import suite
         self.env = suite.load(domain_name, 
                               task_name, 
@@ -725,7 +725,11 @@ class DMSuiteEnv(gym.Env):
         self.metadata = {'render.modes': ['human', 'rgb_array'],
                          'video.frames_per_second': round(1.0/self.env.control_timestep())}
         self.flatten = flatten
-        if not flatten:
+        self.rgb = rgb
+        if self.rgb:
+            # Assuming default resolution for simplicity; adjust as needed
+            self.observation_space = spaces.Box(low=0, high=255, shape=(3, 80, 80), dtype=np.uint8)
+        elif not flatten:
             self.observation_space = convert_dm_control_to_gym_space(self.env.observation_spec())
         else:
             obs_spec = self.env.observation_spec()
@@ -741,7 +745,9 @@ class DMSuiteEnv(gym.Env):
     
     def step(self, action):
         timestep = self.env.step(action)
-        if not self.flatten:
+        if self.rgb:
+            observation = self._get_rgb_image()
+        elif not self.flatten:
             observation = timestep.observation
         else:        
             observation = self._flatten_observation(timestep.observation)
@@ -752,7 +758,9 @@ class DMSuiteEnv(gym.Env):
     
     def reset(self):
         timestep = self.env.reset()
-        if not self.flatten:
+        if self.rgb:
+            observation = self._get_rgb_image()
+        elif not self.flatten:
             observation = timestep.observation
         else:        
             observation = self._flatten_observation(timestep.observation)
@@ -778,6 +786,13 @@ class DMSuiteEnv(gym.Env):
             return self.viewer.isopen
         else:
             raise NotImplementedError
+        
+    def _get_rgb_image(self):
+        # Render the RGB image. Adjust width and height as necessary.
+        img = self.env.physics.render(height=80, width=80, camera_id=0)  # Default camera; adjust if needed
+        img = np.transpose(img, (2, 0, 1))  # Convert from HWC to CHW format expected in the observation space
+        return img
+
         
     def _flatten_observation(self, observation):
         """Flatten an observation into a single vector."""

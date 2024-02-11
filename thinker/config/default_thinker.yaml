@@ -76,14 +76,16 @@ cur_x_cost: 0.0 # coefficient for curiosity loss based on image prediction loss
 cur_sup_cost: 0.0 # coefficient for curiosity loss based on SimSiam loss
 cur_done_gate: true # whehter to give no curiosity reward when episode ends or is predicted to end
 cur_done_elapse: 0 # number of step after episode done that receives no curisoity reward; 0 for disabling
-# danger-related env setting
-detect_dan_num: 0 # number of dangerous location in Sokoban
 # stochasic model
 noise_enable: false # enable vae model
 noise_n: 16 # number of catogorical variable
 noise_d: 10 # number of category for each variable
 noise_alpha: 0.8 # alpha for kl divergence rebalancing
 noise_mlp: false # use 2-layer mlp to compress noise
+# danger-related env setting
+detect_dan_num: 0 # number of dangerous location in Sokoban
+# env-specific setting
+dm_rgb: false # whether to use rgb for dm control suite
 # checkpoint
 xpid: '' # name of the run, automatically set if not given
 ckp: false # whether to load checkpoint; if set to true, will load checkpoint from savedir/xpid

@@ -108,7 +108,7 @@ class Env(gym.Wrapper):
                 from thinker.wrapper import DMSuiteEnv
                 _, domain_name, task_name = name.split("/")
                 fn = DMSuiteEnv
-                args = {"domain_name": domain_name, "task_name": task_name}
+                args = {"domain_name": domain_name, "task_name": task_name, "rgb": self.flags.dm_rgb}
             else:
                 fn = gym.make
                 args = {"id": name}
