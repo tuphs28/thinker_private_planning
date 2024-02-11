@@ -579,6 +579,8 @@ class SActorLearner:
             elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
                 self.actor_net.kl_beta *= 2
 
+            losses["kl_loss"] = kl_loss
+
         losses["total_loss"] = total_loss
         if not self.impact_enable:
             return losses, train_actor_out
