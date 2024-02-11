@@ -52,6 +52,7 @@ def process_flags_actor(flags):
         flags.im_cost = 0.
         flags.cur_cost = 0.
         flags.policy_vis_freq = -1
+        flags = process_flags(flags)
 
     if "Safexp" in flags.name:
         flags.policy_vis_freq = -1
