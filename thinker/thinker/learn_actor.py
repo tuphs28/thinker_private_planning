@@ -168,7 +168,9 @@ class SActorLearner:
             self.impact_n = self.flags.impact_n
             self.impact_k = self.flags.impact_k
             assert (self.impact_n > self.impact_k and self.impact_n % self.impact_k == 0) or (
-                self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0), "impact_k and impact_n should be divisible"
+                self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0) or (
+                self.impact_n == self.impact_k
+                ), "impact_k and impact_n should be divisible"
             self.impact_update_freq = 1 if self.impact_k >= self.impact_n else self.impact_n // self.impact_k
             self.impact_update_time = 1 if self.impact_n >= self.impact_k else self.impact_k // self.impact_n        
             self.impact_update_tar_freq = self.flags.impact_update_tar_freq
@@ -245,7 +247,7 @@ class SActorLearner:
         self.datas.append([data, None])
         self.impact_t += 1
         r = False
-        if self.impact_t % self.impact_update_tar_freq == 0: self.update_target()        
+        if self.impact_t % self.impact_update_tar_freq == 0 or self.tar_actor_net is None: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for _ in range(self.impact_update_time):
                 ns = random.sample(range(len(self.datas)), len(self.datas))
@@ -256,6 +258,8 @@ class SActorLearner:
         return r
 
     def consume_data_single(self, data, timing=None, tar_stat=None):
+        compute_tar = tar_stat is None and self.impact_enable
+
         train_actor_out, initial_actor_state = data
         actor_id = train_actor_out.id
 
@@ -303,74 +307,78 @@ class SActorLearner:
 
         self.scheduler.step()
         self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
+        
+        if not self.impact_enable or compute_tar:
+            # statistic output
+            stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)
+            stats["sps"] = self.sps
 
-        # statistic output
-        stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)
-        stats["sps"] = self.sps
+            # write to log file
+            self.plogger.log(stats)
 
-        # write to log file
-        self.plogger.log(stats)
-
-        # print statistics
-        if self.timer() - self.start_time > 5:
-            self.sps_buffer[self.sps_buffer_n] = (self.step, self.timer())
-            self.sps_buffer_n = (self.sps_buffer_n + 1) % len(self.sps_buffer)
-            self.sps = (
-                self.sps_buffer[self.sps_buffer_n - 1][0]
-                - self.sps_buffer[self.sps_buffer_n][0]
-            ) / (
-                self.sps_buffer[self.sps_buffer_n - 1][1]
-                - self.sps_buffer[self.sps_buffer_n][1]
-            )
-            tot_sps = (self.step - self.sps_start_step) / (
-                self.timer() - self.sps_start_time
-            )
-            print_str = (
-                "[%s] Steps %i @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Ret %f (%f/%f). Loss %.2f"
-                % (
-                    self.flags.xpid,
-                    self.real_step,
-                    self.sps,
-                    tot_sps,
-                    self.queue_n,
-                    self.tot_eps,
-                    stats["rmean_episode_return"],
-                    stats.get("rmean_im_episode_return", 0.),
-                    stats.get("rmean_cur_episode_return", 0.),
-                    total_loss,
+            # print statistics
+            if self.timer() - self.start_time > 5:
+                self.sps_buffer[self.sps_buffer_n] = (self.step, self.timer())
+                self.sps_buffer_n = (self.sps_buffer_n + 1) % len(self.sps_buffer)
+                self.sps = (
+                    self.sps_buffer[self.sps_buffer_n - 1][0]
+                    - self.sps_buffer[self.sps_buffer_n][0]
+                ) / (
+                    self.sps_buffer[self.sps_buffer_n - 1][1]
+                    - self.sps_buffer[self.sps_buffer_n][1]
                 )
-            )
-            print_stats = [
-                "actor/entropy_loss",
-                "actor/reg_loss",
-                "actor/total_norm",
-                "actor/mean_abs_v",
-            ]
-            for k in print_stats:
-                print_str += " %s %.2f" % (k.replace("actor/", ""), stats[k])
-            if self.flags.return_norm_type != -1:
-                print_str += " norm_diff %.4f/%.4f" % (
-                    stats["actor/norm_diff"],
-                    stats.get("actor/im_norm_diff", 0.),
+                tot_sps = (self.step - self.sps_start_step) / (
+                    self.timer() - self.sps_start_time
                 )
-            if self.flags.cur_return_norm_type != -1:
-                print_str += " cur_norm_diff %.4f" % (
-                    stats.get("actor/cur_norm_diff", 0.),
+                print_str = (
+                    "[%s] Steps %i @ %.1f SPS (%.1f). (T_q: %.2f) Eps %i. Ret %f (%f/%f). Loss %.2f"
+                    % (
+                        self.flags.xpid,
+                        self.real_step,
+                        self.sps,
+                        tot_sps,
+                        self.queue_n,
+                        self.tot_eps,
+                        stats["rmean_episode_return"],
+                        stats.get("rmean_im_episode_return", 0.),
+                        stats.get("rmean_cur_episode_return", 0.),
+                        total_loss,
+                    )
                 )
+                print_stats = [
+                    "actor/entropy_loss",
+                    "actor/reg_loss",
+                    "actor/total_norm",
+                    "actor/mean_abs_v",
+                ]
+                for k in print_stats:
+                    print_str += " %s %.2f" % (k.replace("actor/", ""), stats[k])
+                if self.flags.return_norm_type != -1:
+                    print_str += " norm_diff %.4f/%.4f" % (
+                        stats["actor/norm_diff"],
+                        stats.get("actor/im_norm_diff", 0.),
+                    )
+                if self.flags.cur_return_norm_type != -1:
+                    print_str += " cur_norm_diff %.4f" % (
+                        stats.get("actor/cur_norm_diff", 0.),
+                    )
 
-            self._logger.info(print_str)
-            self.start_time = self.timer()
-            self.queue_n = 0
-            if timing is not None:
-                print(timing.summary())
+                self._logger.info(print_str)
+                self.start_time = self.timer()
+                self.queue_n = 0
+                if timing is not None:
+                    print(timing.summary())
 
-        if int(time.strftime("%M")) // 10 != self.ckp_start_time:
-            self.save_checkpoint()
-            self.ckp_start_time = int(time.strftime("%M")) // 10
+            if int(time.strftime("%M")) // 10 != self.ckp_start_time:
+                self.save_checkpoint()
+                self.ckp_start_time = int(time.strftime("%M")) // 10
+            del train_actor_out, losses, total_loss, stats, total_norm
+        else:
+            del train_actor_out, losses, total_loss, total_norm
 
         if timing is not None:
             timing.time("misc")
-        del train_actor_out, losses, total_loss, stats, total_norm
+        
         torch.cuda.empty_cache()
 
         # update shared buffer's weights
