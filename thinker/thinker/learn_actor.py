@@ -52,11 +52,6 @@ def compute_baseline_enc_loss(
     if mask is not None: loss = loss * mask
     return torch.sum(loss)
 
-def compute_pg_loss(c_action_log_prob, adv, mask=None):
-    loss = -adv * c_action_log_prob
-    if mask is not None: loss = loss * mask
-    return torch.sum(loss)
-
 class SActorLearner:
     def __init__(self, ray_obj, actor_param, flags, actor_net=None, device=None):
         self.flags = flags
@@ -489,21 +484,19 @@ class SActorLearner:
 
             if not self.impact_enable:
                 adv = v_trace.pg_advantages.detach()
-                vs = v_trace.vs
+                pg_loss = -adv * new_actor_out.c_action_log_prob
             else:                
                 log_is_de = tar_trace["log_is_de"]
                 log_is = new_actor_out.c_action_log_prob - log_is_de
                 unclipped_is = torch.exp(log_is)       
                 clipped_is = torch.clamp(unclipped_is, 1-self.flags.impact_clip, 1+self.flags.impact_clip)
                 adv = tar_trace["pg_advantages"]
-                adv = torch.minimum(unclipped_is * adv, clipped_is * adv)
-                vs = tar_trace["vs"]
+                pg_loss = -torch.minimum(unclipped_is * adv, clipped_is * adv)
 
-            pg_loss = compute_pg_loss(
-                c_action_log_prob=new_actor_out.c_action_log_prob,
-                adv=adv,
-                mask=masks[i]
-            )
+            if masks[i] is not None: pg_loss = pg_loss * masks[i]
+            pg_loss = torch.sum(pg_loss)
+
+            vs = v_trace.vs if not self.impact_enable else tar_trace["vs"]
             pg_losses.append(pg_loss)
             if self.flags.critic_enc_type == 0:
                 baseline_loss = compute_baseline_loss(
