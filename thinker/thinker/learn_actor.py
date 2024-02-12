@@ -52,6 +52,12 @@ def compute_baseline_enc_loss(
     if mask is not None: loss = loss * mask
     return torch.sum(loss)
 
+def guassian_kl_div(tar_mean, tar_log_var, mean, log_var):
+    tar_var, var = torch.exp(tar_log_var), torch.exp(log_var)
+    tar_log_std, log_std = tar_var / 2, log_var / 2
+    kl = log_std - tar_log_std + (tar_var + (tar_mean - mean).pow(2)) / (2 * var) - 0.5
+    return torch.sum(kl, dim=-1)
+
 class SActorLearner:
     def __init__(self, ray_obj, actor_param, flags, actor_net=None, device=None):
         self.flags = flags
@@ -422,7 +428,11 @@ class SActorLearner:
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
         if compute_tar:
             tar_actor_out = util.tuple_map(tar_actor_out, lambda x: x[:-1])
-            tar_stat["pri_logits"] = tar_actor_out.misc["pri_logits"].detach()
+            if self.actor_net.discrete_action:
+                tar_stat["pri_logits"] = tar_actor_out.misc["pri_logits"].detach()
+            else:
+                tar_stat["pri_mean"] = tar_actor_out.misc["pri_mean"].detach()
+                tar_stat["pri_log_var"] = tar_actor_out.misc["pri_log_var"].detach()
             if not self.disable_thinker:
                 tar_stat["reset_logits"] = tar_actor_out.misc["reset_logits"].detach()
         else:
@@ -555,10 +565,17 @@ class SActorLearner:
         total_loss += self.flags.reg_cost * reg_loss
 
         if self.impact_enable and self.flags.impact_kl_coef > 0.:
-            tar_pri_log_prob = F.log_softmax(tar_stat["pri_logits"], dim=-1)
-            pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
-            pri_kl_loss = F.kl_div(pri_log_prob, tar_pri_log_prob, reduction="none", log_target=True)
-            pri_kl_loss = torch.mean(pri_kl_loss, dim=-1)
+            if self.actor_net.discrete_action:
+                tar_pri_log_prob = F.log_softmax(tar_stat["pri_logits"], dim=-1)
+                pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
+                pri_kl_loss = F.kl_div(pri_log_prob, tar_pri_log_prob, reduction="none", log_target=True)
+                pri_kl_loss = torch.sum(pri_kl_loss, dim=-1)
+            else:
+                pri_kl_loss = guassian_kl_div(tar_stat["pri_mean"], 
+                                          tar_stat["pri_log_var"],
+                                          new_actor_out.misc["pri_mean"],
+                                          new_actor_out.misc["pri_log_var"]
+                                          )            
             pri_kl_loss = torch.sum(pri_kl_loss)
             kl_loss = pri_kl_loss
 

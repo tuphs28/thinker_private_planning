@@ -709,6 +709,7 @@ class ActorNetBase(BaseNet):
             pri = pri.view(T, B, self.dim_actions)        
         else:
             pri_mean = pri_mean.view(T, B, self.dim_actions)
+            pri_log_var = pri_log_var.view(T, B, self.dim_actions)
             pri_std = torch.exp(pri_log_var / 2)
             pri_std = pri_std.view(T, B, self.dim_actions)
             normal_dist = torch.distributions.Normal(pri_mean, pri_std)
