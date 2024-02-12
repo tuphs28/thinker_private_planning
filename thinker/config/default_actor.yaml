@@ -53,6 +53,8 @@ critic_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 f
 sep_im_head: true # whether to use seperate head for computing imaginary logit
 last_layer_n: 0 # number of hidden layer after concat different branch
 actor_ordinal: false # whether to use ordinal representation in actor's policy
+actor_min_std: 0.03 # minimum std of Gaussian policy
+actor_max_std: 1 # maximum std of Gaussian policy
 # curiosity-related
 cur_reward_adj: -1 # multipler to curisoity reward. only enabled when larger than 0
 cur_norm_type: 0 # 0 for moving average and mean + std; 1 for fifo buffer and percentile

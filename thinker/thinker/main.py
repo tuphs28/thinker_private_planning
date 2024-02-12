@@ -126,8 +126,8 @@ class Env(gym.Wrapper):
         env = env_fn()
         assert len(env.observation_space.shape) in [1, 3], \
             f"env.observation_space should be 1d or 3d, not {env.observation_space.shape}"
-        assert type(env.action_space) in [gym.spaces.discrete.Discrete, gym.spaces.tuple.Tuple], \
-            f"env.action_space should be Discrete or Tuple, not {type(env.action_space)}"  
+        # assert type(env.action_space) in [gym.spaces.discrete.Discrete, gym.spaces.tuple.Tuple], \
+        #    f"env.action_space should be Discrete or Tuple, not {type(env.action_space)}"  
         
         if env.observation_space.dtype == 'uint8':
             self.state_dtype = 0
@@ -141,10 +141,21 @@ class Env(gym.Wrapper):
             self.num_actions = env.action_space.n
             self.dim_actions = 1
             self.tuple_action = False
-        else:
+            self.discrete_action = True
+        elif type(env.action_space) == gym.spaces.tuple.Tuple:
             self.num_actions = env.action_space[0].n
             self.dim_actions = len(env.action_space)
             self.tuple_action = True
+            self.discrete_action = True
+        elif isinstance(env.action_space, gym.spaces.Box):
+            self.num_actions = 1
+            self.dim_actions = env.action_space.shape[0]
+            self.tuple_action = True
+            self.discrete_action = False
+            assert (env.action_space.low == -1.).all() and (env.action_space.high == 1.).all(), f"Invalid action space {env.action_space}"
+            assert len(env.action_space.shape) == 1, f"Invalid action space {env.action_space}"
+        else:
+            raise AssertionError(f"Unsupported action space {env.action_space}")
         
         self.sample = self.flags.sample_n > 0
         self.sample_n = self.flags.sample_n

@@ -146,7 +146,7 @@ def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_ac
         if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
     elif name.startswith("Safexp") or name.startswith("DM"):
         # safexp or DM control
-        assert discrete_k > 0, "Safeexp require discretizing the action space"
+        # assert discrete_k > 0, "Safeexp require discretizing the action space"
         if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
     else:
         # atari
