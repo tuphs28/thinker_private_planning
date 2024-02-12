@@ -47,9 +47,9 @@ def sample(logits, greedy, dim=-1):
     else:
         return torch.argmax(logits, dim=dim)
 
-def add_hw(x, h, w):
-    return x.unsqueeze(-1).unsqueeze(-1).broadcast_to(x.shape + (h, w))
-
+def atanh(x, eps=1e-6):
+    x = torch.clamp(x, -1.0+eps, 1.0-eps)
+    return 0.5 * (x.log1p() - (-x).log1p())
 
 class ShallowAFrameEncoder(nn.Module):
     # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
@@ -714,9 +714,10 @@ class ActorNetBase(BaseNet):
             pri_std = pri_std.view(T, B, self.dim_actions)
             normal_dist = torch.distributions.Normal(pri_mean, pri_std)
             if not greedy:                
-                pri = normal_dist.sample()
+                pri_pre_tanh = normal_dist.sample()
             else:
-                pri = pri_mean
+                pri_pre_tanh = pri_mean
+            pri = torch.tanh(pri_pre_tanh)
 
         if not self.disable_thinker:
             reset = sample(reset_logits, greedy=greedy, dim=-1)
@@ -732,13 +733,17 @@ class ActorNetBase(BaseNet):
                 reset[:clamp_action[1].shape[0]] = clamp_action[1]
             else:
                 pri[:clamp_action.shape[0]] = clamp_action
+            if not self.discrete_action:                
+                pri_pre_tanh = atanh(pri)
 
         # compute chosen log porb
         if self.discrete_action:
             c_action_log_prob = compute_discrete_log_prob(pri_logits, pri)     
         else:
-            c_action_log_prob = normal_dist.log_prob(pri)
+            c_action_log_prob = normal_dist.log_prob(pri_pre_tanh)
+            c_action_log_prob = c_action_log_prob - torch.log(1.0 - pri ** 2 + 1e-6)
             c_action_log_prob = torch.sum(c_action_log_prob, dim=-1)
+            
 
         if not self.disable_thinker:
             c_reset_log_prob = compute_discrete_log_prob(reset_logits, reset)     
