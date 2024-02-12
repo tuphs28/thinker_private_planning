@@ -492,8 +492,11 @@ class SActorLearner:
                 vs = v_trace.vs
             else:                
                 log_is_de = tar_trace["log_is_de"]
-                los_is = new_actor_out.c_action_log_prob - log_is_de
-                adv = tar_trace["pg_advantages"] * torch.exp(los_is)
+                log_is = new_actor_out.c_action_log_prob - log_is_de
+                unclipped_is = torch.exp(log_is)       
+                clipped_is = torch.clamp(unclipped_is, 1-self.flags.impact_clip, 1+self.flags.impact_clip)
+                adv = tar_trace["pg_advantages"]
+                adv = torch.minimum(unclipped_is * adv, clipped_is * adv)
                 vs = tar_trace["vs"]
 
             pg_loss = compute_pg_loss(
