@@ -287,6 +287,7 @@ class ActorNetBaseSep(BaseNet):
         self.dim_actions = self.actor.dim_actions
         self.tuple_action = self.actor.tuple_action
         self.discrete_action = self.actor.discrete_action
+        self.rv_tran = self.critic.rv_tran
         if getattr(flags, "impact_k", 1) > 1:
             kl_beta = torch.tensor(1.)
             self.register_buffer("kl_beta", kl_beta)
