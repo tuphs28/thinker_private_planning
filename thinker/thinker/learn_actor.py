@@ -365,6 +365,8 @@ class SActorLearner:
                     print_str += " cur_norm_diff %.4f" % (
                         stats.get("actor/cur_norm_diff", 0.),
                     )
+                if self.impact_enable:
+                    print_str += " kl_beta %.4f" % self.actor_net.kl_beta
 
                 self._logger.info(print_str)
                 self.start_time = self.timer()
