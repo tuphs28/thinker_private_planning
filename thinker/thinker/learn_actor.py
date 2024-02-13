@@ -346,10 +346,11 @@ class SActorLearner:
                         stats["rmean_episode_return"],
                         stats.get("rmean_im_episode_return", 0.),
                         stats.get("rmean_cur_episode_return", 0.),
-                        total_loss,
+                        total_loss/T/B,
                     )
                 )
                 print_stats = [
+                    "actor/pg_loss",
                     "actor/entropy_loss",
                     "actor/reg_loss",
                     "actor/total_norm",
