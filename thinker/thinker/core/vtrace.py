@@ -131,6 +131,7 @@ def compute_v_trace(
         if not return_norm_type == -1:
             # pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
             pg_advantages = pg_advantages / norm_factor
+            pg_advantages_nois = pg_advantages_nois / norm_factor
 
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, 
