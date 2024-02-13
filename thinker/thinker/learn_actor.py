@@ -367,7 +367,7 @@ class SActorLearner:
                     )
                 if self.impact_enable:
                     print_str += " kl_beta %.4f" % self.actor_net.kl_beta
-                    if self.flags.kl_coef > 0:
+                    if self.flags.impact_kl_coef > 0:
                         print_str += " kl_loss %.4f" % losses["kl_loss"]
 
                 self._logger.info(print_str)
