@@ -13,7 +13,7 @@ actor_learning_rate: 0.0006 # actor learning rate
 actor_batch_size: 16 # actor batch size
 actor_unroll_len: 201 # unroll length used to update actor
 actor_use_rms: false # whether to use rms (default: adam) as optimizer
-actor_grad_norm_clipping: 1200 # gradient clipping norm; non-positive for no clipping
+actor_grad_norm_clipping: 0.5 # gradient clipping norm; non-positive for no clipping
 actor_adam_eps: 0.00000001 # eps for Adam optimizer
 return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
 cur_return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization

@@ -177,7 +177,9 @@ class SActorLearner:
             self.impact_update_tar_freq = self.flags.impact_update_tar_freq
             self.impact_t = 0
             self.datas = collections.deque(maxlen=self.impact_n)
-            self.tar_actor_net = None
+            self.tar_actor_net = ActorNet(**actor_param)
+            self.tar_actor_net.to(self.device)
+            self.update_target()
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
@@ -230,17 +232,14 @@ class SActorLearner:
             return True
         
     def update_target(self):
-        if self.tar_actor_net is None or self.flags.impact_update_lambda == 0:
-            self.tar_actor_net = copy.deepcopy(self.actor_net)
-        else:
-            for tar_module, new_module in zip(self.tar_actor_net.modules(), self.actor_net.modules()):
-                if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
-                    # Copy BatchNorm running mean and variance
-                    tar_module.running_mean = new_module.running_mean.clone()
-                    tar_module.running_var = new_module.running_var.clone()
-                # Apply EMA to other parameters
-                for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
-                    tar_param.data.mul_(self.flags.impact_update_lambda).add_(new_param.data, alpha=1 - self.flags.impact_update_lambda)
+        for tar_module, new_module in zip(self.tar_actor_net.modules(), self.actor_net.modules()):
+            if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
+                # Copy BatchNorm running mean and variance
+                tar_module.running_mean = new_module.running_mean.clone()
+                tar_module.running_var = new_module.running_var.clone()
+            # Apply EMA to other parameters
+            for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
+                tar_param.data.mul_(self.flags.impact_update_lambda).add_(new_param.data, alpha=1 - self.flags.impact_update_lambda)
 
             
     def consume_data(self, data, timing=None):
@@ -248,7 +247,7 @@ class SActorLearner:
         self.datas.append([data, None])
         self.impact_t += 1
         r = False
-        if self.impact_t % self.impact_update_tar_freq == 0 or self.tar_actor_net is None: self.update_target()        
+        if self.impact_t % self.impact_update_tar_freq == 0: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
                 ns = random.sample(range(len(self.datas)), len(self.datas))
@@ -312,6 +311,8 @@ class SActorLearner:
         
         if not self.impact_enable or compute_tar:
             # statistic output
+            for k in losses: losses[k] = losses[k] / T / B
+            total_norm = total_norm / T / B
             stats = self.compute_stat(train_actor_out, losses, total_norm, actor_id)
             stats["sps"] = self.sps
 
