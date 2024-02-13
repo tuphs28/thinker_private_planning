@@ -278,11 +278,9 @@ class RNNEncoder(nn.Module):
 class ActorNetBaseSep(BaseNet):
     def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
         super(ActorNetBaseSep, self).__init__()
-        self._is_fully_initialized = False
         self.actor = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=True, critic=False)
-        self.critic = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=True, critic=True)
+        self.critic = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=False, critic=True)
         self.initial_state(1)
-        self._is_fully_initialized = True
         self.num_actions = self.actor.num_actions
         self.dim_actions = self.actor.dim_actions
         self.tuple_action = self.actor.tuple_action
@@ -553,7 +551,7 @@ class ActorNetBase(BaseNet):
                 nn.init.constant_(self.baseline.bias, 0.0)
 
         self.initial_state(batch_size=1) # initialize self.state_idx        
-        if not (self.actor and self.critic):
+        if self.actor and self.critic:
             if getattr(flags, "impact_k", 1) > 1:
                 kl_beta = torch.tensor(1.)
                 self.register_buffer("kl_beta", kl_beta)

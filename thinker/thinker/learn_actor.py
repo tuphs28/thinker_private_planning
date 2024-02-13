@@ -54,7 +54,7 @@ def compute_baseline_enc_loss(
 
 def guassian_kl_div(tar_mean, tar_log_var, mean, log_var):
     tar_var, var = torch.exp(tar_log_var), torch.exp(log_var)
-    tar_log_std, log_std = tar_var / 2, log_var / 2
+    tar_log_std, log_std = tar_log_var / 2, log_var / 2
     kl = log_std - tar_log_std + (tar_var + (tar_mean - mean).pow(2)) / (2 * var) - 0.5
     return torch.sum(kl, dim=-1)
 
@@ -263,6 +263,7 @@ class SActorLearner:
 
         train_actor_out, initial_actor_state = data
         actor_id = train_actor_out.id
+        T, B = train_actor_out.done.shape
 
         # compute losses
         out = self.compute_losses(
@@ -290,7 +291,7 @@ class SActorLearner:
             self.scaler.unscale_(self.optimizer)
         if self.flags.actor_grad_norm_clipping > 0:
             total_norm = torch.nn.utils.clip_grad_norm_(
-                optimize_params, self.flags.actor_grad_norm_clipping
+                optimize_params, self.flags.actor_grad_norm_clipping * T * B
             )
             total_norm = total_norm.detach().cpu().item()
         else:
@@ -595,6 +596,7 @@ class SActorLearner:
             losses["kl_loss"] = kl_loss
 
         losses["total_loss"] = total_loss
+
         if not self.impact_enable:
             return losses, train_actor_out
         else:
