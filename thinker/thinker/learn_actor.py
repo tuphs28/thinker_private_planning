@@ -180,6 +180,7 @@ class SActorLearner:
             self.tar_actor_net = ActorNet(**actor_param)
             self.tar_actor_net.to(self.device)
             self.update_target()
+            self.kl_losses = collections.deque(maxlen=100)
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
@@ -570,7 +571,7 @@ class SActorLearner:
         losses["reg_loss"] = reg_loss
         total_loss += self.flags.reg_cost * reg_loss
 
-        if self.impact_enable and self.flags.impact_kl_coef > 0.:
+        if self.impact_enable:
             if self.actor_net.discrete_action:
                 tar_pri_log_prob = F.log_softmax(tar_stat["pri_logits"], dim=-1)
                 pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
@@ -591,14 +592,15 @@ class SActorLearner:
                 reset_kl_loss = F.kl_div(reset_log_prob, tar_reset_log_prob, reduction="sum", log_target=True)
                 kl_loss += reset_kl_loss
 
-            total_loss += self.flags.impact_kl_coef * self.actor_net.kl_beta * kl_loss         
-            avg_kl_loss = kl_loss / T / B  
-            if avg_kl_loss < self.flags.impact_kl_targ / 1.5:
-                self.actor_net.kl_beta /= 2
-            elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
-                self.actor_net.kl_beta *= 2
-
-            losses["kl_loss"] = kl_loss
+            if self.flags.impact_kl_coef > 0.:
+                total_loss += self.flags.impact_kl_coef * self.actor_net.kl_beta * kl_loss         
+                avg_kl_loss = kl_loss / T / B  
+                if avg_kl_loss < self.flags.impact_kl_targ / 1.5:
+                    self.actor_net.kl_beta /= 2
+                elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
+                    self.actor_net.kl_beta *= 2
+            self.kl_losses.append(kl_loss.item())            
+            losses["kl_loss"] = np.mean(self.kl_losses)
 
         losses["total_loss"] = total_loss
 
