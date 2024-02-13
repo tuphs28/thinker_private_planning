@@ -182,6 +182,8 @@ class SActorLearner:
             self.update_target()
             self.kl_losses = collections.deque(maxlen=100)
             self.impact_is_abs = collections.deque(maxlen=100)
+        self.dbg_adv = collections.deque(maxlen=100)
+        self.dbg_start_time = self.timer()
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
@@ -373,6 +375,9 @@ class SActorLearner:
                     print_str += " kl_loss %.4f" % losses["kl_loss"]
                     print_str += " is_abs %.4f" % np.mean(self.impact_is_abs)
 
+                dbg_adv = torch.concat(list(self.dbg_adv))
+                print_str += " dbg_adv mean %.4f std %.4f abs %.4f" % (torch.mean(dbg_adv), torch.std(dbg_adv), torch.mean(torch.abs(dbg_adv)))
+
                 self._logger.info(print_str)
                 self.start_time = self.timer()
                 self.queue_n = 0
@@ -498,6 +503,7 @@ class SActorLearner:
                         "vs": v_trace.vs.detach(),
                     }
                     tar_stat["trace_%d" % i] = tar_trace
+                    if i == 0: self.dbg_adv.append(torch.flatten(v_trace.pg_advantages_nois).detach())
             else:
                 tar_trace = tar_stat["trace_%d" % i]
 
@@ -608,6 +614,13 @@ class SActorLearner:
             losses["kl_loss"] = np.mean(self.kl_losses)
 
         losses["total_loss"] = total_loss
+
+        if self.timer() - self.dbg_start_time > 5:
+            self.dbg_start_time = self.timer()
+            print("is_de: ", torch.exp(log_is_de[10:14, :2]).detach())
+            print("is_no: ", torch.exp(new_actor_out.c_action_log_prob[10:14, :2]).detach())
+            print("adv: ", adv[10:14, :2].detach())
+            print("is: ", unclipped_is[10:14, :2].detach())
 
         if not self.impact_enable:
             return losses, train_actor_out

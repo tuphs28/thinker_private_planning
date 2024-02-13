@@ -108,7 +108,7 @@ def compute_v_trace(
             if return_norm_type == 0:
                 norm_v = target_values
             elif return_norm_type == 1:
-                norm_v = clipped_pg_rhos * (target_values - values)
+                norm_v = target_values - values
             
             if norm_stat is None:
                 buffer = FifoBuffer(100000, device=target_values.device)
