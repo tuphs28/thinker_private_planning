@@ -756,7 +756,7 @@ class DMSuiteEnv(gym.Env):
         info = {'truncated_done': done}
         return observation, reward, done, info
     
-    def reset(self, seed, options):
+    def reset(self, seed=None, options=None):
         timestep = self.env.reset()
         if self.rgb:
             observation = self._get_rgb_image()
