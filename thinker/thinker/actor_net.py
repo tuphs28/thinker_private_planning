@@ -382,7 +382,7 @@ class ActorNetBase(BaseNet):
             self.register_buffer("min_log_var", min_log_var)
             self.register_buffer("max_log_var", max_log_var)
 
-        self.obs_norm = flags.obs_norm
+        self.obs_norm = getattr(flags, "obs_norm", False)
         self.tran_dim = flags.tran_dim 
         self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep         
         self.se_lstm_table = flags.se_lstm_table and flags.see_tree_rep    
@@ -1040,7 +1040,7 @@ def ActorNet(*args, **kwargs):
         return DRCNet(*args, **kwargs)
     else:        
         if "record_state" in kwargs: kwargs.pop("record_state")
-        if not kwargs["flags"].sep_actor_critic:
+        if not getattr(kwargs["flags"], "sep_actor_critic", False):
             return ActorNetBase(*args, **kwargs)
         else:
             return ActorNetBaseSep(*args, **kwargs)

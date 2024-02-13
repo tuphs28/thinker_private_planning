@@ -617,10 +617,10 @@ class SActorLearner:
 
         if self.timer() - self.dbg_start_time > 5:
             self.dbg_start_time = self.timer()
-            print("is_de: ", torch.exp(log_is_de[10:14, :2]).detach())
-            print("is_no: ", torch.exp(new_actor_out.c_action_log_prob[10:14, :2]).detach())
-            print("adv: ", adv[10:14, :2].detach())
-            print("is: ", unclipped_is[10:14, :2].detach())
+            # print("is_de: ", torch.exp(log_is_de[10:14, :2]).detach())
+            # print("is_no: ", torch.exp(new_actor_out.c_action_log_prob[10:14, :2]).detach())
+            # print("adv: ", adv[10:14, :2].detach())
+            # print("is: ", unclipped_is[10:14, :2].detach())
 
         if not self.impact_enable:
             return losses, train_actor_out
