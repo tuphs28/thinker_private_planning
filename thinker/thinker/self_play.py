@@ -193,6 +193,9 @@ class SelfPlayWorker:
                 if self.time: self.timing.time("mics3")
       
                 if send_buffer and not self.flags.parallel_actor and hasattr(self, "actor_local_buffer"):
+                    initial_actor_state = util.tuple_map(
+                        initial_actor_state, lambda x: x.detach()   
+                    )
                     data = (self.actor_local_buffer, initial_actor_state)
                     self.actor_net.train(True)
                     self.train_actor = not self.actor_learner.consume_data(data)

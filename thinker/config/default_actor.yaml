@@ -28,18 +28,23 @@ entropy_cost: 0.001 # entropy cost for real actions
 im_entropy_cost: 0.0001 # entropy cost for imaginary actions
 reg_cost: 0.001 # regularization cost
 # actor setting
+# - general
 see_real_state: false # whether to see root real state
 see_tree_rep: true # whether to see tree representation
 see_h: true # whether to see model's hidden state
 see_x: false # whether to see the model's predicted state
-# actor network setting
 drc: false # whether to use the drc baseline
 legacy: false # whether to use legacy version
+obs_norm: false # whether to normalize obs by avg mean and std
+sep_actor_critic: false # whether to separate actor and critic
+# -tree rep processing
 tree_rep_rnn: true # whether to use rnn in processing tree representation
 se_lstm_table: false # whether to use lstm to enablde tables
+# -real state processing
 x_rnn: false # whether to use rnn in processing x, model's predicted state
 real_state_rnn: false # whether to use rnn in processing real state
 x_enc_first_pool: true # whether to reduce frame encoder size by first applying a 3x3 conv with 2 sride
+# -rnn setting
 tran_t: 1 # internal transition step for rnn
 tran_mem_n: 40 # memory slot size for the attention module in lstm-attn
 tran_layer_n: 3 # number of layers of lstm-attn
@@ -47,14 +52,17 @@ tran_head_n: 8 # number of head for each attention layer
 tran_lstm_no_attn: false # whether to disable the attention module in lstm-attn
 tran_attn_b: 5 # initial bias for attending to the current step
 tran_dim: 128 # hidden dimension of lstm-attn
+# -critic setting
 critic_zero_init: true # whether to zero initialize the critic outputs
 critic_enc_type: 0 # reward / value encoding type for the critic; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
 critic_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 for MuZero-like encoding, 1 for Dreamer-like encoding
+# -output setting
 sep_im_head: true # whether to use seperate head for computing imaginary logit
 last_layer_n: 0 # number of hidden layer after concat different branch
 actor_ordinal: false # whether to use ordinal representation in actor's policy
-actor_min_std: 0.03 # minimum std of Gaussian policy
-actor_max_std: 1 # maximum std of Gaussian policy
+# -specific setting for continuous policy
+actor_min_std: 0.003 # minimum std of Gaussian policy
+actor_max_std: 10 # maximum std of Gaussian policy
 # curiosity-related
 cur_reward_adj: -1 # multipler to curisoity reward. only enabled when larger than 0
 cur_norm_type: 0 # 0 for moving average and mean + std; 1 for fifo buffer and percentile

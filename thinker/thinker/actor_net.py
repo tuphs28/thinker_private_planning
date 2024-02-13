@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.cuda.amp import autocast
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM, LSTMReset
-from thinker.core.module import MLP, OneDResBlock
+from thinker.core.module import MLP, OneDResBlock, ObsNorm
 from thinker.model_net import BaseNet, RVTran
 from thinker.legacy import AFrameEncoderLegacy
 from gym import spaces
@@ -274,9 +274,52 @@ class RNNEncoder(nn.Module):
             d = x     
         d = self.rnn_out_fc(d)
         return d, core_state
+    
+class ActorNetBaseSep(BaseNet):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
+        super(ActorNetBaseSep, self).__init__()
+        self._is_fully_initialized = False
+        self.actor = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=True, critic=False)
+        self.critic = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=True, critic=True)
+        self.initial_state(1)
+        self._is_fully_initialized = True
+        self.num_actions = self.actor.num_actions
+        self.dim_actions = self.actor.dim_actions
+        self.tuple_action = self.actor.tuple_action
+        self.discrete_action = self.actor.discrete_action
+        if getattr(flags, "impact_k", 1) > 1:
+            kl_beta = torch.tensor(1.)
+            self.register_buffer("kl_beta", kl_beta)
+
+    def initial_state(self, batch_size, device=None):
+        actor_state = self.actor.initial_state(batch_size, device)
+        critic_state = self.critic.initial_state(batch_size, device)
+        self.state_idx = len(actor_state)
+        return actor_state + critic_state
+    
+    def forward(self, env_out, core_state=(), clamp_action=None, compute_loss=False, greedy=False):
+        actor_state = core_state[:self.state_idx]
+        critic_state = core_state[self.state_idx:]
+        actor_out, actor_state = self.actor(env_out, actor_state, clamp_action, compute_loss, greedy)
+        critic_out, critic_state = self.critic(env_out, critic_state, clamp_action, compute_loss, greedy)
+        misc = actor_out.misc
+        actor_out = ActorOut(
+            pri=actor_out.pri,
+            reset=actor_out.reset,
+            action=actor_out.action,
+            action_prob=actor_out.action_prob,
+            c_action_log_prob=actor_out.c_action_log_prob,            
+            baseline=critic_out.baseline,
+            baseline_enc=critic_out.baseline_enc,
+            entropy_loss=actor_out.entropy_loss,
+            reg_loss=actor_out.reg_loss,
+            misc=misc,
+        )
+        core_state = actor_state + critic_state
+        return actor_out, core_state
 
 class ActorNetBase(BaseNet):
-    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, actor=True, critic=True):
         super(ActorNetBase, self).__init__()
 
         self.disable_thinker = flags.wrapper_type == 1
@@ -340,6 +383,7 @@ class ActorNetBase(BaseNet):
             self.register_buffer("min_log_var", min_log_var)
             self.register_buffer("max_log_var", max_log_var)
 
+        self.obs_norm = flags.obs_norm
         self.tran_dim = flags.tran_dim 
         self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep         
         self.se_lstm_table = flags.se_lstm_table and flags.see_tree_rep    
@@ -358,6 +402,8 @@ class ActorNetBase(BaseNet):
 
         self.float16 = flags.float16
         self.flags = flags        
+        self.actor = actor
+        self.critic = critic
 
         # encoder for state or encoding output
         last_out_size = self.dim_rep_actions + self.num_rewards
@@ -391,7 +437,7 @@ class ActorNetBase(BaseNet):
                     flags=flags,
                 )
                 x_out_size = flags.tran_dim            
-            last_out_size += x_out_size
+            last_out_size += x_out_size           
 
         if self.see_real_state:
             self.real_state_encoder =  AFrameEncoder(
@@ -408,7 +454,14 @@ class ActorNetBase(BaseNet):
                     flags=flags,
                 )
                 r_out_size = flags.tran_dim   
-            last_out_size += r_out_size         
+            last_out_size += r_out_size       
+
+        if self.obs_norm and (self.see_x or self.see_real_state):
+            if self.see_x:
+                in_shape = self.xs_shape 
+            elif self.see_real_state:
+                in_shape = self.real_states_shape
+            self.obs_norm_layer = ObsNorm(shape=in_shape) 
                     
         if self.see_tree_rep:            
             self.tree_rep_meaning = tree_rep_meaning
@@ -460,48 +513,49 @@ class ActorNetBase(BaseNet):
             )
             last_out_size = 100
 
-        self.policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
-        if not self.discrete_action:
-            self.policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+        if self.actor:
+            self.policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+            if not self.discrete_action:
+                self.policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
 
-        if not self.disable_thinker:
-            if self.sep_im_head:
-                self.im_policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
-                if not self.discrete_action:
-                    self.im_policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
-            self.reset = nn.Linear(last_out_size, 2)
+            if not self.disable_thinker:
+                if self.sep_im_head:
+                    self.im_policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+                    if not self.discrete_action:
+                        self.im_policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+                self.reset = nn.Linear(last_out_size, 2)
+            self.ordinal = flags.actor_ordinal
+            if self.ordinal:
+                indices = torch.arange(self.num_actions).view(-1, 1)
+                ordinal_mask = (indices + indices.T) <= (self.num_actions - 1)
+                ordinal_mask = ordinal_mask.float()
+                self.register_buffer("ordinal_mask", ordinal_mask)
 
-        self.rv_tran = None
-        if self.enc_type == 0:
-            self.baseline = nn.Linear(last_out_size, self.num_rewards)
-            if self.flags.reward_clip > 0:
-                self.baseline_clamp = self.flags.reward_clip / (
-                    1 - self.flags.discounting
-                )
-        elif self.enc_type == 1:
-            self.baseline = nn.Linear(last_out_size, self.num_rewards)
-            self.rv_tran = RVTran(enc_type=self.enc_type, enc_f_type=flags.critic_enc_f_type)
-        elif self.enc_type in [2, 3]:                        
-            self.rv_tran = RVTran(enc_type=self.enc_type, enc_f_type=flags.critic_enc_f_type)
-            self.out_n = self.rv_tran.encoded_n
-            self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)            
+        if self.critic:
+            self.rv_tran = None
+            if self.enc_type == 0:
+                self.baseline = nn.Linear(last_out_size, self.num_rewards)
+                if self.flags.reward_clip > 0:
+                    self.baseline_clamp = self.flags.reward_clip / (
+                        1 - self.flags.discounting
+                    )
+            elif self.enc_type == 1:
+                self.baseline = nn.Linear(last_out_size, self.num_rewards)
+                self.rv_tran = RVTran(enc_type=self.enc_type, enc_f_type=flags.critic_enc_f_type)
+            elif self.enc_type in [2, 3]:                        
+                self.rv_tran = RVTran(enc_type=self.enc_type, enc_f_type=flags.critic_enc_f_type)
+                self.out_n = self.rv_tran.encoded_n
+                self.baseline = nn.Linear(last_out_size, self.num_rewards * self.out_n)            
 
-        if self.critic_zero_init:
-            nn.init.constant_(self.baseline.weight, 0.0)
-            nn.init.constant_(self.baseline.bias, 0.0)
+            if self.critic_zero_init:
+                nn.init.constant_(self.baseline.weight, 0.0)
+                nn.init.constant_(self.baseline.bias, 0.0)
 
-        self.ordinal = flags.actor_ordinal
-        if self.ordinal:
-            indices = torch.arange(self.num_actions).view(-1, 1)
-            ordinal_mask = (indices + indices.T) <= (self.num_actions - 1)
-            ordinal_mask = ordinal_mask.float()
-            self.register_buffer("ordinal_mask", ordinal_mask)
-
-        self.initial_state(batch_size=1) # initialize self.state_idx
-        
-        if getattr(flags, "impact_k", 1) > 1:
-            kl_beta = torch.tensor(1.)
-            self.register_buffer("kl_beta", kl_beta)
+        self.initial_state(batch_size=1) # initialize self.state_idx        
+        if not (self.actor and self.critic):
+            if getattr(flags, "impact_k", 1) > 1:
+                kl_beta = torch.tensor(1.)
+                self.register_buffer("kl_beta", kl_beta)
 
     def initial_state(self, batch_size, device=None):
         self.state_idx = {}
@@ -522,14 +576,7 @@ class ActorNetBase(BaseNet):
         self.state_len = idx
         return initial_state
     
-    def forward(self, 
-                env_out, 
-                core_state=(), 
-                clamp_action=None, 
-                compute_loss=False,
-                greedy=False,
-                dbg_mode=0,
-                ):
+    def forward(self, env_out, core_state=(), clamp_action=None, compute_loss=False, greedy=False):
         """one-step forward for the actor;
         args:
             env_out (EnvOut):
@@ -620,6 +667,7 @@ class ActorNetBase(BaseNet):
 
         if self.see_x:
             xs = torch.flatten(env_out.xs, 0, 1)
+            if self.obs_norm: xs = self.obs_norm_layer(xs)
             with autocast(enabled=self.float16):                
                 encoded_x = self.x_encoder_pre(xs)
             if self.float16: encoded_x = encoded_x.float()
@@ -635,6 +683,7 @@ class ActorNetBase(BaseNet):
         if self.see_real_state:
             real_states = torch.flatten(env_out.real_states, 0, 1)   
             real_states = self.normalize(real_states)
+            if self.obs_norm: real_states = self.obs_norm_layer(real_states)
             with autocast(enabled=self.float16):      
                 encoded_real_state = self.real_state_encoder(real_states)
             if self.float16: encoded_real_state = encoded_real_state.float()
@@ -652,176 +701,174 @@ class ActorNetBase(BaseNet):
         if self.last_layer_n > 0:
             final_out = self.final_mlp(final_out)     
 
-        # compute logits
-        pri_logits = self.policy(final_out)    
-        pri_logits = pri_logits.view(T*B, self.dim_actions, self.num_actions)
-        if not self.discrete_action:
-            pri_mean = pri_logits[:, :, 0]
-            pri_log_var = self.policy_lvar(final_out)
-            pri_log_var = torch.clamp(pri_log_var, self.min_log_var, self.max_log_var)
+        misc = {}
+        if self.actor:
+            # compute logits
+            pri_logits = self.policy(final_out)    
+            pri_logits = pri_logits.view(T*B, self.dim_actions, self.num_actions)
+            if not self.discrete_action:
+                pri_mean = pri_logits[:, :, 0]
+                pri_log_var = self.policy_lvar(final_out)
+                pri_log_var = torch.clamp(pri_log_var, self.min_log_var, self.max_log_var)
 
-        if self.ordinal: pri_logits = self.ordinal_encode(pri_logits)
+            if self.ordinal: pri_logits = self.ordinal_encode(pri_logits)
 
-        if not self.disable_thinker:
-            if self.sep_im_head:
-                im_logits = self.im_policy(final_out)                
-                im_logits = im_logits.view(T*B, self.dim_actions, self.num_actions)
-                if self.ordinal: im_logits = self.ordinal_encode(im_logits)
-                im_mask = env_out.step_status <= 1 # imagainary action will be taken next
+            if not self.disable_thinker:
+                if self.sep_im_head:
+                    im_logits = self.im_policy(final_out)                
+                    im_logits = im_logits.view(T*B, self.dim_actions, self.num_actions)
+                    if self.ordinal: im_logits = self.ordinal_encode(im_logits)
+                    im_mask = env_out.step_status <= 1 # imagainary action will be taken next
+                    if self.discrete_action:
+                        im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1).unsqueeze(-1)
+                        pri_logits = torch.where(im_mask, im_logits, pri_logits)
+                    else:                    
+                        im_mean = im_logits[:, :, 0]
+                        im_log_var = self.im_policy_lvar(final_out)
+                        im_log_var = torch.clamp(im_log_var, self.min_log_var, self.max_log_var)
+                        im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1)
+                        pri_mean = torch.where(im_mask, im_mean, pri_mean)
+                        pri_log_var = torch.where(im_mask, im_log_var, pri_log_var)
+                reset_logits = self.reset(final_out)
+            else:   
+                reset_logits = None
+
+            # compute entropy loss
+            if compute_loss:
                 if self.discrete_action:
-                    im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1).unsqueeze(-1)
-                    pri_logits = torch.where(im_mask, im_logits, pri_logits)
-                else:                    
-                    im_mean = im_logits[:, :, 0]
-                    im_log_var = self.im_policy_lvar(final_out)
-                    im_log_var = torch.clamp(im_log_var, self.min_log_var, self.max_log_var)
-                    im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1)
-                    pri_mean = torch.where(im_mask, im_mean, pri_mean)
-                    pri_log_var = torch.where(im_mask, im_log_var, pri_log_var)
-            reset_logits = self.reset(final_out)
-        else:   
-            reset_logits = None
+                    entropy_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
+                        input=torch.flatten(pri_logits, 0, 1), 
+                        target=torch.flatten(F.softmax(pri_logits, dim=-1), 0, 1),                
+                    )
+                    entropy_loss = entropy_loss.view(T, B, self.dim_actions)
+                    entropy_loss = torch.sum(entropy_loss, dim=-1)
+                else:
+                    entropy_loss = -torch.sum(pri_log_var.view(T, B, self.dim_actions), dim=-1)
+                if not self.disable_thinker:
+                    ent_reset_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
+                        input=reset_logits, target=F.softmax(reset_logits, dim=-1)
+                    )
+                    ent_reset_loss = ent_reset_loss.view(T, B) * (env_out.step_status <= 1).float()
+                    entropy_loss = entropy_loss + ent_reset_loss 
+            else:
+                entropy_loss = None
 
-        # compute entropy loss
-        if compute_loss:
+            # sample action
             if self.discrete_action:
-                entropy_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
-                    input=torch.flatten(pri_logits, 0, 1), 
-                    target=torch.flatten(F.softmax(pri_logits, dim=-1), 0, 1),                
-                )
-                entropy_loss = entropy_loss.view(T, B, self.dim_actions)
-                entropy_loss = torch.sum(entropy_loss, dim=-1)
+                pri = sample(pri_logits, greedy=greedy, dim=-1)
+                pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
+                pri = pri.view(T, B, self.dim_actions)        
             else:
-                entropy_loss = -torch.sum(pri_log_var.view(T, B, self.dim_actions), dim=-1)
+                pri_mean = pri_mean.view(T, B, self.dim_actions)
+                pri_log_var = pri_log_var.view(T, B, self.dim_actions)
+                pri_std = torch.exp(pri_log_var / 2)
+                pri_std = pri_std.view(T, B, self.dim_actions)
+                normal_dist = torch.distributions.Normal(pri_mean, pri_std)
+                if not greedy:                
+                    pri_pre_tanh = normal_dist.sample()
+                else:
+                    pri_pre_tanh = pri_mean
+                pri = torch.tanh(pri_pre_tanh)
+
             if not self.disable_thinker:
-                ent_reset_loss = -torch.nn.CrossEntropyLoss(reduction="none")(
-                    input=reset_logits, target=F.softmax(reset_logits, dim=-1)
-                )
-                ent_reset_loss = ent_reset_loss.view(T, B) * (env_out.step_status <= 1).float()
-                entropy_loss = entropy_loss + ent_reset_loss 
-        else:
-            entropy_loss = None
-
-        # sample action
-        if self.discrete_action:
-            pri = sample(pri_logits, greedy=greedy, dim=-1)
-            pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
-            pri = pri.view(T, B, self.dim_actions)        
-        else:
-            pri_mean = pri_mean.view(T, B, self.dim_actions)
-            pri_log_var = pri_log_var.view(T, B, self.dim_actions)
-            pri_std = torch.exp(pri_log_var / 2)
-            pri_std = pri_std.view(T, B, self.dim_actions)
-            normal_dist = torch.distributions.Normal(pri_mean, pri_std)
-            if not greedy:                
-                pri_pre_tanh = normal_dist.sample()
+                reset = sample(reset_logits, greedy=greedy, dim=-1)
+                reset_logits = reset_logits.view(T, B, 2)
+                reset = reset.view(T, B)    
             else:
-                pri_pre_tanh = pri_mean
-            pri = torch.tanh(pri_pre_tanh)
+                reset = None
 
-        if not self.disable_thinker:
-            reset = sample(reset_logits, greedy=greedy, dim=-1)
-            reset_logits = reset_logits.view(T, B, 2)
-            reset = reset.view(T, B)    
-        else:
-            reset = None
+            # clamp the action to clamp_action
+            if clamp_action is not None:
+                if not self.disable_thinker:
+                    pri[:clamp_action[0].shape[0]] = clamp_action[0]
+                    reset[:clamp_action[1].shape[0]] = clamp_action[1]
+                else:
+                    pri[:clamp_action.shape[0]] = clamp_action
+                if not self.discrete_action:                
+                    pri_pre_tanh = atanh(pri)
 
-        # clamp the action to clamp_action
-        if clamp_action is not None:
+            # compute chosen log porb
+            if self.discrete_action:
+                c_action_log_prob = compute_discrete_log_prob(pri_logits, pri)     
+            else:
+                c_action_log_prob = normal_dist.log_prob(pri_pre_tanh)
+                c_action_log_prob = c_action_log_prob - torch.log(1.0 - pri ** 2 + 1e-6)
+                c_action_log_prob = torch.sum(c_action_log_prob, dim=-1)                
+
             if not self.disable_thinker:
-                pri[:clamp_action[0].shape[0]] = clamp_action[0]
-                reset[:clamp_action[1].shape[0]] = clamp_action[1]
-            else:
-                pri[:clamp_action.shape[0]] = clamp_action
-            if not self.discrete_action:                
-                pri_pre_tanh = atanh(pri)
+                c_reset_log_prob = compute_discrete_log_prob(reset_logits, reset)     
+                c_reset_log_prob = c_reset_log_prob * (env_out.step_status <= 1).float()
+                # if next action is real action, reset will never be used
+                c_action_log_prob += c_reset_log_prob
 
-        # compute chosen log porb
-        if self.discrete_action:
-            c_action_log_prob = compute_discrete_log_prob(pri_logits, pri)     
-        else:
-            c_action_log_prob = normal_dist.log_prob(pri_pre_tanh)
-            c_action_log_prob = c_action_log_prob - torch.log(1.0 - pri ** 2 + 1e-6)
-            c_action_log_prob = torch.sum(c_action_log_prob, dim=-1)
+            # pack last step's action and action prob        
+            pri_env = pri[-1, :, 0] if not self.tuple_action else pri[-1]        
+            if not self.disable_thinker:
+                action = (pri_env, reset[-1])            
+            else:
+                action = pri_env           
+            action_prob = F.softmax(pri_logits, dim=-1)    
+            if not self.tuple_action: action_prob = action_prob[:, :, 0]    
             
+            misc["reset_logits"] = reset_logits
+            if self.discrete_action:
+                misc["pri_logits"] = pri_logits
+            else:
+                misc["pri_mean"] = pri_mean
+                misc["pri_log_var"] = pri_log_var
 
-        if not self.disable_thinker:
-            c_reset_log_prob = compute_discrete_log_prob(reset_logits, reset)     
-            c_reset_log_prob = c_reset_log_prob * (env_out.step_status <= 1).float()
-            # if next action is real action, reset will never be used
-            c_action_log_prob += c_reset_log_prob
-
-        # pack last step's action and action prob        
-        pri_env = pri[-1, :, 0] if not self.tuple_action else pri[-1]        
-        if not self.disable_thinker:
-            action = (pri_env, reset[-1])            
-        else:
-            action = pri_env           
-        action_prob = F.softmax(pri_logits, dim=-1)    
-        if not self.tuple_action: action_prob = action_prob[:, :, 0]    
-
-        # compute baseline
-        if self.enc_type == 0:
-            baseline = self.baseline(final_out)
-            if self.flags.reward_clip > 0:
-                baseline = torch.clamp(
-                    baseline, -self.baseline_clamp, +self.baseline_clamp
+        if self.critic:
+            # compute baseline
+            if self.enc_type == 0:
+                baseline = self.baseline(final_out)
+                if self.flags.reward_clip > 0:
+                    baseline = torch.clamp(
+                        baseline, -self.baseline_clamp, +self.baseline_clamp
+                    )
+                baseline_enc = None
+            elif self.enc_type == 1:
+                baseline_enc_s = self.baseline(final_out)
+                baseline = self.rv_tran.decode(baseline_enc_s)
+                baseline_enc = baseline_enc_s
+            elif self.enc_type in [2, 3]:
+                baseline_enc_logit = self.baseline(final_out).reshape(
+                    T * B, self.num_rewards, self.out_n
                 )
-            baseline_enc = None
-        elif self.enc_type == 1:
-            baseline_enc_s = self.baseline(final_out)
-            baseline = self.rv_tran.decode(baseline_enc_s)
-            baseline_enc = baseline_enc_s
-        elif self.enc_type in [2, 3]:
-            baseline_enc_logit = self.baseline(final_out).reshape(
-                T * B, self.num_rewards, self.out_n
-            )
-            baseline_enc_v = F.softmax(baseline_enc_logit, dim=-1)
-            baseline = self.rv_tran.decode(baseline_enc_v)
-            baseline_enc = baseline_enc_logit
+                baseline_enc_v = F.softmax(baseline_enc_logit, dim=-1)
+                baseline = self.rv_tran.decode(baseline_enc_v)
+                baseline_enc = baseline_enc_logit
 
-        baseline_enc = (
-            baseline_enc.view((T, B) + baseline_enc.shape[1:])
-            if baseline_enc is not None
-            else None
-        )
-        baseline = baseline.view(T, B, self.num_rewards)
+            baseline_enc = (
+                baseline_enc.view((T, B) + baseline_enc.shape[1:])
+                if baseline_enc is not None
+                else None
+            )
+            baseline = baseline.view(T, B, self.num_rewards)
 
         if compute_loss:
             reg_loss = 1e-6 * torch.sum(final_out**2, dim=-1).view(T, B) / 2
-            if self.discrete_action:
+            if self.discrete_action and self.actor:
                 reg_loss += 1e-3 * torch.sum(pri_logits**2, dim=(-2,-1)) / 2
-            if not self.disable_thinker:
+            if not self.disable_thinker and self.actor:
                 reg_loss += (
                     + 1e-3 * torch.sum(reset_logits**2, dim=-1) / 2
                 )
         else:
             reg_loss = None
-
-        misc = {
-            "reset_logits": reset_logits,
-        }
-
-        if self.discrete_action:
-            misc["pri_logits"] = pri_logits
-        else:
-            misc["pri_mean"] = pri_mean
-            misc["pri_log_var"] = pri_log_var
         
         actor_out = ActorOut(
-            pri=pri,
-            reset=reset,
-            action=action,
-            action_prob=action_prob,
-            c_action_log_prob=c_action_log_prob,            
-            baseline=baseline,
-            baseline_enc=baseline_enc,
-            entropy_loss=entropy_loss,
+            pri=pri if self.actor else None,
+            reset=reset if self.actor else None,
+            action=action if self.actor else None,
+            action_prob=action_prob if self.actor else None,
+            c_action_log_prob=c_action_log_prob if self.actor else None,            
+            baseline=baseline if self.critic else None,
+            baseline_enc=baseline_enc if self.critic else None,
+            entropy_loss=entropy_loss if self.actor else None,
             reg_loss=reg_loss,
             misc=misc,
         )
         core_state = tuple(new_core_state)
-
         return actor_out, core_state
     
     def normalize(self, x):
@@ -950,7 +997,7 @@ class DRCNet(BaseNet):
             pri[:clamp_action.shape[0]] = clamp_action
 
         # compute chosen log porb
-        c_action_log_prob = compute_action_log_prob(pri_logits, pri)    
+        c_action_log_prob = compute_discrete_log_prob(pri_logits, pri)    
 
         # pack last step's action and action prob        
         pri_env = pri[-1, :, 0] if not self.tuple_action else pri[-1]   
@@ -994,4 +1041,7 @@ def ActorNet(*args, **kwargs):
         return DRCNet(*args, **kwargs)
     else:        
         if "record_state" in kwargs: kwargs.pop("record_state")
-        return ActorNetBase(*args, **kwargs)
+        if not kwargs["flags"].sep_actor_critic:
+            return ActorNetBase(*args, **kwargs)
+        else:
+            return ActorNetBaseSep(*args, **kwargs)

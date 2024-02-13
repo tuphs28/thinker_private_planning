@@ -250,7 +250,7 @@ class SActorLearner:
         r = False
         if self.impact_t % self.impact_update_tar_freq == 0 or self.tar_actor_net is None: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
-            for _ in range(self.impact_update_time):
+            for m in range(self.impact_update_time):
                 ns = random.sample(range(len(self.datas)), len(self.datas))
                 for n in ns:
                     data, tar_stat = self.datas[n]
@@ -498,7 +498,7 @@ class SActorLearner:
             else:                
                 log_is_de = tar_trace["log_is_de"]
                 log_is = new_actor_out.c_action_log_prob - log_is_de
-                unclipped_is = torch.exp(log_is)       
+                unclipped_is = torch.exp(log_is)     
                 clipped_is = torch.clamp(unclipped_is, 1-self.flags.impact_clip, 1+self.flags.impact_clip)
                 adv = tar_trace["pg_advantages"]
                 pg_loss = -torch.minimum(unclipped_is * adv, clipped_is * adv)

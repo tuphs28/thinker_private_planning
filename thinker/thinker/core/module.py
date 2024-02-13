@@ -159,3 +159,44 @@ class OneDResBlock(nn.Module):
         out = F.relu(self.linear2(out))
         out = out + x  # Skip connection
         return out    
+    
+class ObsNorm(nn.Module):
+    """Normalizes observations using running mean and standard deviation in PyTorch."""
+    
+    def __init__(self, epsilon=1e-4, shape=()):
+        super(ObsNorm, self).__init__()
+        self.register_buffer('mean', torch.zeros(shape, dtype=torch.float))
+        self.register_buffer('var', torch.ones(shape, dtype=torch.float))
+        self.register_buffer('count', torch.tensor(epsilon, dtype=torch.float))
+        self.epsilon = epsilon
+
+    def update(self, x):
+        """Updates the mean, var, and count from a batch of observations."""
+        batch_mean = torch.mean(x, dim=0)
+        batch_var = torch.var(x, dim=0)
+        batch_count = x.size(0)
+        
+        self.mean, self.var, self.count = self.update_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, mean, var, count, batch_mean, batch_var, batch_count):
+        """Updates from batch mean, variance, and count moments."""
+        delta = batch_mean - mean
+        tot_count = count + batch_count
+
+        new_mean = mean + delta * batch_count / tot_count
+        m_a = var * count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + torch.square(delta) * count * batch_count / tot_count
+        new_var = M2 / tot_count
+        new_count = tot_count
+
+        return new_mean, new_var, new_count
+
+    def forward(self, x):
+        """Normalizes observations."""
+        if self.training:
+            self.update(x)
+        
+        normalized_obs = (x - self.mean) / (torch.sqrt(self.var + 1e-8))
+        return normalized_obs    
