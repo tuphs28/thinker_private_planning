@@ -181,6 +181,7 @@ class SActorLearner:
             self.tar_actor_net.to(self.device)
             self.update_target()
             self.kl_losses = collections.deque(maxlen=100)
+            self.impact_is_abs = collections.deque(maxlen=100)
 
     def learn_data(self):
         timing = util.Timings() if self.time else None
@@ -369,8 +370,8 @@ class SActorLearner:
                     )
                 if self.impact_enable:
                     print_str += " kl_beta %.4f" % self.actor_net.kl_beta
-                    if self.flags.impact_kl_coef > 0:
-                        print_str += " kl_loss %.4f" % losses["kl_loss"]
+                    print_str += " kl_loss %.4f" % losses["kl_loss"]
+                    print_str += " is_abs %.4f" % np.mean(self.impact_is_abs)
 
                 self._logger.info(print_str)
                 self.start_time = self.timer()
@@ -507,6 +508,7 @@ class SActorLearner:
                 log_is_de = tar_trace["log_is_de"]
                 log_is = new_actor_out.c_action_log_prob - log_is_de
                 unclipped_is = torch.exp(log_is)     
+                self.impact_is_abs.append(torch.mean(torch.abs(unclipped_is-1)).detach().item())
                 clipped_is = torch.clamp(unclipped_is, 1-self.flags.impact_clip, 1+self.flags.impact_clip)
                 adv = tar_trace["pg_advantages"]
                 pg_loss = -torch.minimum(unclipped_is * adv, clipped_is * adv)
@@ -578,6 +580,8 @@ class SActorLearner:
                 pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
                 pri_kl_loss = F.kl_div(pri_log_prob, tar_pri_log_prob, reduction="none", log_target=True)
                 pri_kl_loss = torch.sum(pri_kl_loss, dim=-1)
+                # print("tar_pri_log_prob", torch.exp(tar_pri_log_prob[:3, :3]).detach())
+                # print("pri_log_prob", torch.exp(pri_log_prob[:3, :3]).detach())
             else:
                 pri_kl_loss = guassian_kl_div(tar_stat["pri_mean"], 
                                           tar_stat["pri_log_var"],
