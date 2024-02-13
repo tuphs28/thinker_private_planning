@@ -260,14 +260,14 @@ class RNNEncoder(nn.Module):
         else:
             return ()
 
-    def forward(self, x, done, core_state):
+    def forward(self, x, done, core_state, record_state=False):
         # input should have shape (T*B, C) 
         # done should have shape (T, B)
         T, B = done.shape
         x = self.rnn_in_fc(x)
         if self.tran_layer_n >= 1:
             x = x.view(*((T, B) + x.shape[1:])).unsqueeze(-1).unsqueeze(-1)            
-            core_output, core_state = self.rnn(x, done, core_state)
+            core_output, core_state = self.rnn(x, done, core_state, record_state)
             core_output = torch.flatten(core_output, 0, 1)
             d = torch.flatten(core_output, 1)   
         else:
@@ -318,12 +318,13 @@ class ActorNetBaseSep(BaseNet):
         return actor_out, core_state
 
 class ActorNetBase(BaseNet):
-    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, actor=True, critic=True):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, actor=True, critic=True, record_state=False):
         super(ActorNetBase, self).__init__()
 
         self.disable_thinker = flags.wrapper_type == 1
         self.see_double = flags.return_double
         self.legacy = getattr(flags, "legacy", False)
+        self.record_state = record_state
 
         self.see_tree_rep = flags.see_tree_rep and not self.disable_thinker
         if self.see_tree_rep:
@@ -385,7 +386,7 @@ class ActorNetBase(BaseNet):
         self.obs_norm = getattr(flags, "obs_norm", False)
         self.tran_dim = flags.tran_dim 
         self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep         
-        self.se_lstm_table = flags.se_lstm_table and flags.see_tree_rep    
+        self.se_lstm_table = getattr(flags, "se_lstm_table", False) and flags.see_tree_rep    
         self.x_rnn = flags.x_rnn and flags.see_x  
         self.real_state_rnn = flags.real_state_rnn and flags.see_real_state 
 
@@ -690,8 +691,9 @@ class ActorNetBase(BaseNet):
             if self.real_state_rnn:
                 core_state_ = core_state[self.state_idx['r']]
                 encoded_real_state, core_state_ = self.r_encoder_rnn(
-                    encoded_real_state, done, core_state_)
+                    encoded_real_state, done, core_state_, record_state=self.record_state)
                 new_core_state[self.state_idx['r']] = core_state_
+                if self.record_state: self.hidden_state = self.r_encoder_rnn.rnn.hidden_state
 
             final_out.append(encoded_real_state)
 
@@ -1039,7 +1041,6 @@ def ActorNet(*args, **kwargs):
         if "tree_rep_meaning" in kwargs: kwargs.pop("tree_rep_meaning")
         return DRCNet(*args, **kwargs)
     else:        
-        if "record_state" in kwargs: kwargs.pop("record_state")
         if not getattr(kwargs["flags"], "sep_actor_critic", False):
             return ActorNetBase(*args, **kwargs)
         else:

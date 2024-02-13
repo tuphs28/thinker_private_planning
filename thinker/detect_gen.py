@@ -268,7 +268,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                     "reset_action": actor_out.action[1],
                 })
             else:
-                if flags.drc:
+                if disable_thinker:
                     xs.update({
                         "hidden_state": actor_net.hidden_state
                     })       

@@ -144,6 +144,7 @@ class DetectFrameEncoder(nn.Module):
     ):  
         super(DetectFrameEncoder, self).__init__()
         self.out_size = out_size
+        self.oned_input = len(input_shape) == 1
         self.encoder = FrameEncoder(prefix="se",
                                     actions_ch=None,
                                     input_shape=input_shape,                             
@@ -151,26 +152,29 @@ class DetectFrameEncoder(nn.Module):
                                     downscale_c=2,    
                                     downscale=downscale,
                                     concat_action=False)
-        
-        self.conv = []
-        in_ch =  self.encoder.out_shape[0]
-        for ch in [64]:
-            self.conv.append(nn.ReLU())
-            self.conv.append(nn.Conv2d(in_channels=in_ch,
-                                       out_channels=ch,
-                                       kernel_size=3,
-                                       stride=1,
-                                       padding=1,))
-            in_ch = ch
-        self.conv = nn.Sequential(*self.conv)
-        conv_out_size = in_ch * self.encoder.out_shape[1] * self.encoder.out_shape[2]
-        self.fc = nn.Sequential(nn.Linear(conv_out_size, self.out_size))       
+        if not self.oned_input:
+            self.conv = []
+            in_ch =  self.encoder.out_shape[0]
+            for ch in [64]:
+                self.conv.append(nn.ReLU())
+                self.conv.append(nn.Conv2d(in_channels=in_ch,
+                                        out_channels=ch,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1,))
+                in_ch = ch
+            self.conv = nn.Sequential(*self.conv)
+            out_size = in_ch * self.encoder.out_shape[1] * self.encoder.out_shape[2]
+        else:
+            out_size = self.encoder.out_shape[0]
+        self.fc = nn.Sequential(nn.Linear(out_size, self.out_size))       
 
     def forward(self, x):
         # x in shape of (B, C, H, W)
         out, _ = self.encoder(x, done=None, actions=None, state={})
-        out = self.conv(out)
-        out = torch.flatten(out, start_dim=1)
+        if not self.oned_input:
+            out = self.conv(out)
+            out = torch.flatten(out, start_dim=1)
         out = self.fc(out)
         return out                                
         
