@@ -186,6 +186,7 @@ class DetectNet(BaseNet):
         hidden_state_shape,
         dim_actions,
         num_actions,
+        tuple_action,
         detect_ab=(0,0),
         clone=False,
         tran_layer_n=3,
@@ -200,6 +201,7 @@ class DetectNet(BaseNet):
         self.hidden_state_shape = hidden_state_shape # in (inner_t, C, H, W)
         self.dim_actions = dim_actions
         self.num_actions = num_actions
+        self.tuple_action = tuple_action
         self.dim_rep_actions = self.dim_actions if self.dim_actions > 1 else self.num_actions
 
         self.detect_ab = detect_ab
@@ -264,7 +266,7 @@ class DetectNet(BaseNet):
             if self.detect_ab[1] in [2, 3]:
                 tree_rep[:, 1:] = 0.
         
-        action = util.encode_action(action, self.dim_actions, self.num_actions)        
+        action = util.encode_action(action, self.tuple_action, self.num_actions)        
         true_proc_x = self.true_x_encoder(env_state[:,0])
         true_proc_x = true_proc_x.view(B, self.enc_out_size).unsqueeze(1) # (B, 1, C)
         if not self.disable_thinker:
@@ -431,6 +433,7 @@ def detect_train(flags):
         hidden_state_shape = getattr(flags_data, "hidden_state_shape", None),
         dim_actions = flags_data.dim_actions,
         num_actions = flags_data.num_actions,
+        tuple_action = flags_data.tuple_action,
         disable_thinker = flags.disable_thinker,
         tran_layer_n = flags.tran_layer_n,
         tran_ff_n = flags.tran_ff_n,

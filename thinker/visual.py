@@ -239,7 +239,7 @@ def print_im_actions(im_dict, action_meanings, real_action, print_stat=False):
     reset = False
 
     def a_to_str(a):
-        if a.dim() > 1:
+        if a.dim() >= 1:
             a = a.tolist()
             return "(" + ",".join([f"{num:.2f}" for num in a]) + ")"
         else:
@@ -434,7 +434,7 @@ def visualize(
 
     while len(returns) < max_eps_n:
         step += 1
-        actor_out, actor_state = actor_net(env_out, actor_state, dbg_mode=1)        
+        actor_out, actor_state = actor_net(env_out, actor_state)        
         action = actor_out.action
 
         last_real_step = (env_out.step_status == 0) | (env_out.step_status == 3)

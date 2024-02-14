@@ -1366,6 +1366,15 @@ class Engine(gym.Env, gym.utils.EzPickle):
             binpos = np.array([np.cos(theta) * rad, np.sin(theta) * rad, offset])
             pos = robot_pos + np.matmul(binpos, robot_mat.transpose())
             alpha = min(1, sensor + .1)
+            #if sensor > 0.95:
+            #    color = [1, 0, 0, 1]  # Red
+            #    alpha = 1
+            #elif 0.9 < sensor <= 0.95:
+            #    color = [1, 0.647, 0, 1]  # Orange
+            #    alpha = 1
+            #elif 0.85 < sensor <= 0.9:
+            #    color = [1, 1, 0, 1]  # Yellow
+            #    alpha = 1
             self.viewer.add_marker(pos=pos,
                                    size=self.render_lidar_size * np.ones(3),
                                    type=const.GEOM_SPHERE,
