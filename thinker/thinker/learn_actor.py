@@ -104,12 +104,11 @@ class SActorLearner:
         self.tot_eps = 0
         self.real_step = 0
 
-        lr_lambda = lambda epoch: 1 - min(
-            epoch * self.flags.actor_unroll_len * self.flags.actor_batch_size,
-            self.flags.total_steps * self.flags.rec_t,
-        ) / (self.flags.total_steps * self.flags.rec_t)
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
-        
+        lr_lambda = (
+            lambda epoch: 1
+            - min(epoch, self.flags.total_steps) / self.flags.total_steps
+        )
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)        
 
         # other init. variables for consume_data
         max_actor_id = (
@@ -310,6 +309,9 @@ class SActorLearner:
         if timing is not None:
             timing.time("grad descent")
 
+        self.scheduler.last_epoch = (
+            max(self.real_step - 1, 0)
+        )  # scheduler does not support setting epoch directly
         self.scheduler.step()
         self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
         
@@ -375,8 +377,8 @@ class SActorLearner:
                     print_str += " kl_loss %.4f" % losses["kl_loss"]
                     print_str += " is_abs %.4f" % np.mean(self.impact_is_abs)
 
-                dbg_adv = torch.concat(list(self.dbg_adv))
-                print_str += " dbg_adv mean %.4f std %.4f abs %.4f" % (torch.mean(dbg_adv), torch.std(dbg_adv), torch.mean(torch.abs(dbg_adv)))
+                # dbg_adv = torch.concat(list(self.dbg_adv))
+                # print_str += " dbg_adv mean %.4f std %.4f abs %.4f" % (torch.mean(dbg_adv), torch.std(dbg_adv), torch.mean(torch.abs(dbg_adv)))
 
                 self._logger.info(print_str)
                 self.start_time = self.timer()
@@ -409,6 +411,24 @@ class SActorLearner:
 
         T, B = train_actor_out.done.shape
         T = T - 1        
+        
+        # if False and self.timer() - self.dbg_start_time > 30:
+        #    self.dbg_start_time = self.timer()
+        #    d = {
+        #        "step": self.step,
+        #        "real_step": self.real_step,
+        #        "tot_eps": self.tot_eps,
+        #        "ret_buffers": self.ret_buffers,
+        #        "norm_stats": self.norm_stats,
+        #        "crnorm": self.crnorm, 
+        #        "actor_net_optimizer_state_dict": self.optimizer.state_dict(),
+        #        "actor_net_scheduler_state_dict": self.scheduler.state_dict(),
+        #        "actor_net_state_dict": self.actor_net.state_dict(),                
+        #        "flags": vars(self.flags),
+        #        "train_actor_out": train_actor_out,
+        #        "initial_actor_state": initial_actor_state,
+        #    }      
+        #    torch.save(d, self.ckp_path + ".dbg.tmp")
         
         if self.disable_thinker:
             clamp_action = train_actor_out.pri[1:]
@@ -503,7 +523,7 @@ class SActorLearner:
                         "vs": v_trace.vs.detach(),
                     }
                     tar_stat["trace_%d" % i] = tar_trace
-                    if i == 0: self.dbg_adv.append(torch.flatten(v_trace.pg_advantages_nois).detach())
+                    # if i == 0: self.dbg_adv.append(torch.flatten(v_trace.pg_advantages_nois).detach())
             else:
                 tar_trace = tar_stat["trace_%d" % i]
 
@@ -615,12 +635,6 @@ class SActorLearner:
 
         losses["total_loss"] = total_loss
 
-        if self.timer() - self.dbg_start_time > 5:
-            self.dbg_start_time = self.timer()
-            # print("is_de: ", torch.exp(log_is_de[10:14, :2]).detach())
-            # print("is_no: ", torch.exp(new_actor_out.c_action_log_prob[10:14, :2]).detach())
-            # print("adv: ", adv[10:14, :2].detach())
-            # print("is: ", unclipped_is[10:14, :2].detach())
 
         if not self.impact_enable:
             return losses, train_actor_out
