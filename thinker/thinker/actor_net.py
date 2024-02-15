@@ -1035,11 +1035,150 @@ class DRCNet(BaseNet):
         )
         return actor_out, core_state
 
+class MCTS():
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):
+        super(MCTS, self).__init__()
+        self.flags = flags
+        self.tree_rep_meaning = tree_rep_meaning
+        assert flags.wrapper_type == 0, "MCTS only support wrapper_type 0"
+        assert not flags.tree_carry, "MCTS does not support tree carry"
+        pri_action_space = action_space[0][0]            
+        if type(pri_action_space) == spaces.discrete.Discrete:  
+            self.tuple_action = False
+            self.num_actions = pri_action_space.n   
+            self.dim_actions = 1            
+        else:
+            raise Exception(f"Unsupported action space f{pri_action_space}")
+        
+        self.temp = 1
+        self.q_min = None
+        self.q_max = None
+        self.dir_dist = None
+        self.root_psa = None            
+
+    def forward(self, env_out, core_state=(), clamp_action=None, compute_loss=False, greedy=False):
+        tree_rep = env_out.tree_reps  
+        T, B, C = tree_rep.shape
+        assert T == 1
+        tree_rep = tree_rep[0]
+
+        assert torch.all(env_out.step_status == env_out.step_status[0, 0]), f"step_status should be the same for all item, not {env_out.step_status}."
+        step_status = env_out.step_status[0, 0]
+        last_real_step = step_status in [0, 3]
+        next_real_step = step_status in [2, 3]                
+        
+        if last_real_step or self.q_min is None or self.q_max is None:
+            # last step is real, re init. variables
+            rollout_return = torch.clone(tree_rep[:, self.tree_rep_meaning["rollout_return"]]).squeeze(-1)
+            self.q_min = rollout_return
+            self.q_max = rollout_return            
+            root_logits = torch.clone(tree_rep[:, self.tree_rep_meaning["root_logits"]])  
+            self.root_psa = F.softmax(root_logits, dim=-1)
+            if self.dir_dist is None:
+                con = torch.tensor([0.25]*self.num_actions, device=tree_rep.device)
+                self.dir_dist = torch.distributions.dirichlet.Dirichlet(con, validate_args=None)
+            self.dir_noise = self.dir_dist.sample((B,))
+            self.root_psa = self.root_psa * 0.75 + self.dir_noise * 0.25
+
+        if next_real_step:
+            # real step
+            root_nsa = tree_rep[:, self.tree_rep_meaning["root_ns"]] * self.flags.rec_t            
+            if not greedy:
+                root_nsa_temp = root_nsa ** (1 / self.temp)
+                pri_prob = root_nsa_temp / torch.sum(root_nsa_temp, dim=-1, keepdim=True)
+                pri = torch.multinomial(pri_prob, num_samples=1)[:, 0]
+            else:
+                pri = torch.argmax(root_nsa, dim=-1)
+                pri_prob = F.one_hot(pri, self.num_actions)  
+
+            reset = torch.ones_like(pri)      
+        else:
+            # imaginary step            
+            reset_m = tree_rep[:, self.tree_rep_meaning["cur_reset"]].squeeze(-1) == 1
+
+            if last_real_step:
+                cur_psa = self.root_psa
+            else:
+                cur_logits = torch.clone(tree_rep[:, self.tree_rep_meaning["cur_logits"]])  
+                cur_psa = F.softmax(cur_logits, dim=-1)
+                if self.root_psa is not None:
+                    cur_psa[reset_m] = self.root_psa[reset_m]
+                else:
+                    print("Warning: root_psa is not initialized. Make sure the first state has step_status 0 or 3")
+
+            cur_nsa = torch.clone(tree_rep[:, self.tree_rep_meaning["cur_ns"]])    
+            root_nsa = torch.clone(tree_rep[:, self.tree_rep_meaning["root_ns"]])    
+            cur_nsa[reset_m] = root_nsa[reset_m]
+            cur_nsa = cur_nsa * self.flags.rec_t
+            
+            # compute normalized q(s,a)
+            cur_qsa = torch.clone(tree_rep[:, self.tree_rep_meaning["cur_qs_mean"]])    
+            root_qsa = torch.clone(tree_rep[:, self.tree_rep_meaning["root_qs_mean"]])    
+            cur_qsa[reset_m] = root_qsa[reset_m]
+            cur_qsa[cur_nsa==0] = float("Inf")
+            self.q_min = torch.minimum(self.q_min, torch.min(cur_qsa, dim=-1)[0])
+            cur_qsa[cur_nsa==0] = -float("Inf")
+            self.q_max = torch.maximum(self.q_max, torch.max(cur_qsa, dim=-1)[0])
+            cur_qsa[cur_nsa==0] = 0
+            cur_qsa = (cur_qsa - self.q_min.unsqueeze(-1)) / (self.q_max.unsqueeze(-1) - self.q_min.unsqueeze(-1) + 1e-8)
+            cur_qsa[cur_nsa==0] = 0
+
+            assert torch.all((cur_qsa >= 0) & (cur_qsa <= 1)), f"normalized cur_qsa should range from [0, 1], not {cur_qsa}"
+
+            c_1 = 1.25
+            c_2 = 19652
+            sum_cur_nsa = torch.sum(cur_nsa, dim=-1, keepdim=True) + 1 # + 1 for the rollout terminating at the node
+            score = cur_qsa + cur_psa * (torch.sqrt(sum_cur_nsa)) / (1 + cur_nsa) * (
+                c_1 + torch.log((sum_cur_nsa + c_2 + 1) / c_2)
+            )
+            pri = torch.argmax(score, dim=-1)
+            pri_prob = F.one_hot(pri, self.num_actions)      
+
+            reset = (torch.sum(cur_nsa, dim=-1) <= 0).long()
+        
+        pri = pri.view(T, B, 1)
+        reset = reset.view(T, B)
+        action = (pri[-1, :, 0], reset[-1])  
+        action_prob = pri_prob.view(T, B, self.num_actions)
+
+        actor_out = ActorOut(
+            pri=pri,
+            reset=reset,
+            action=action,
+            action_prob=action_prob,
+            c_action_log_prob=None,            
+            baseline=None,
+            baseline_enc=None,
+            entropy_loss=None,
+            reg_loss=None,
+            misc={},
+        )
+        return actor_out, core_state    
+    
+    def initial_state(self, batch_size, device=None):
+        return ()
+    
+    def set_weights(self, weights):
+        return
+    
+    def get_weights(self):
+        return None
+    
+    def to(self, device):
+        return self
+    
+    def train(self, train):
+        return     
+    
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
 def ActorNet(*args, **kwargs):
-    if kwargs["flags"].drc:        
+    if getattr(kwargs["flags"], "drc", False):        
         if "tree_rep_meaning" in kwargs: kwargs.pop("tree_rep_meaning")
         return DRCNet(*args, **kwargs)
+    elif getattr(kwargs["flags"], "mcts", False):  
+        return MCTS(*args, **kwargs)
     else:        
         if not getattr(kwargs["flags"], "sep_actor_critic", False):
             return ActorNetBase(*args, **kwargs)

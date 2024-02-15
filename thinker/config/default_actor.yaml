@@ -33,10 +33,11 @@ see_real_state: false # whether to see root real state
 see_tree_rep: true # whether to see tree representation
 see_h: true # whether to see model's hidden state
 see_x: false # whether to see the model's predicted state
-drc: false # whether to use the drc baseline
 legacy: false # whether to use legacy version
 obs_norm: false # whether to normalize obs by avg mean and std
 sep_actor_critic: false # whether to separate actor and critic
+drc: false # whether to use the drc baseline
+mcts: false # whether to use the mcts baseline
 # -tree rep processing
 tree_rep_rnn: true # whether to use rnn in processing tree representation
 se_lstm_table: false # whether to use lstm to enablde tables
@@ -77,7 +78,7 @@ cur_reward_max: 1000. # maximum normalized curisoity rewards; over 100 for no cl
 cur_ema: 0.999 # decaying rate of mean and second moment
 # impact-related
 impact_k: 1 # number of epoch
-impact_n: 4 # size of circular buffer
+impact_n: 1 # size of circular buffer
 impact_update_tar_freq: 2 # update frequence of target network
 impact_beta: 0.5 # beta for is clipping
 impact_update_lambda: 0. # update lambda when refreshing target network; 0 for direct copy without ema

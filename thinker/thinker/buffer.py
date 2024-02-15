@@ -389,7 +389,6 @@ class RecordBuffer(object):
         self._logger.info(print_str)
         return self.real_step
 
-
 class RetBuffer:
     def __init__(self, max_actor_id, mean_n=400):
         """

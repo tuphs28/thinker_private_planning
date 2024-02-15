@@ -460,7 +460,9 @@ class SActorLearner:
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         train_actor_out = util.tuple_map(train_actor_out, lambda x: x[1:])
         new_actor_out = util.tuple_map(new_actor_out, lambda x: x[:-1])
+
         if compute_tar:
+            # record target network policy for impact
             tar_actor_out = util.tuple_map(tar_actor_out, lambda x: x[:-1])
             if self.actor_net.discrete_action:
                 tar_stat["pri_logits"] = tar_actor_out.misc["pri_logits"].detach()
@@ -472,7 +474,6 @@ class SActorLearner:
         else:
             tar_actor_out = new_actor_out
         rewards = train_actor_out.reward
-
 
         # compute advantage and baseline        
         pg_losses = []
@@ -499,7 +500,7 @@ class SActorLearner:
             if prefix == "cur":
                 return_norm_type=self.flags.cur_return_norm_type 
                 cur_gate = train_actor_out.cur_gate
-                prefix_rewards, self.crnorm = cur_reward_norm(prefix_rewards, self.crnorm, cur_gate, self.flags)      
+                prefix_rewards, self.crnorm = util.cur_reward_norm(prefix_rewards, self.crnorm, cur_gate, self.flags)      
             else:    
                 return_norm_type=self.flags.return_norm_type 
             if not self.impact_enable or compute_tar:
@@ -793,46 +794,3 @@ class SActorLearner:
 @ray.remote
 class ActorLearner(SActorLearner):
     pass
-
-def cur_reward_norm(r, crnorm, cur_gate, flags):
-    r = r.clone()
-    nan_mask = ~torch.isnan(r)      
-    if torch.any(cur_gate):                  
-        m_r = r[cur_gate]
-        if flags.cur_reward_adj > 0:
-            m_r = m_r * flags.cur_reward_adj
-        if flags.cur_reward_norm or flags.cur_reward_pri:
-            if flags.cur_norm_type == 0:
-                if crnorm is None: crnorm = (0., 0., 1)
-                cmean, csq, ccounter = crnorm
-                cmean = flags.cur_ema * cmean + (1 - flags.cur_ema) * torch.mean(m_r)
-                csq = flags.cur_ema * csq + (1 - flags.cur_ema) * torch.mean(torch.square(m_r))                                        
-                adj = 1 - flags.cur_ema ** ccounter
-                adj_mean = cmean / adj
-                adj_sq = csq / adj
-                std = torch.sqrt(torch.relu(adj_sq - torch.square(adj_mean)) + 1e-8)
-                if flags.cur_reward_pri:
-                    m_r = m_r - adj_mean
-                if flags.cur_reward_norm: 
-                    m_r = m_r / std
-                cur_reward_min = None if flags.cur_reward_min < -100. else flags.cur_reward_min
-                cur_reward_max = None if flags.cur_reward_max > +100. else flags.cur_reward_max
-                if cur_reward_min is not None or cur_reward_max is not None:
-                    m_r = torch.clamp(m_r, min=cur_reward_min, max=cur_reward_max)
-                ccounter += 1
-                crnorm = (cmean, csq, ccounter)
-            else:
-                if crnorm is None: crnorm = FifoBuffer(flags.cur_reward_bn, device=m_r.device)
-                crnorm.push(m_r)
-                if flags.cur_reward_pri:
-                    mq = crnorm.get_percentile(flags.cur_reward_mq)
-                    m_r = m_r - mq
-                if flags.cur_reward_norm: 
-                    lq = crnorm.get_percentile(flags.cur_reward_lq)
-                    uq = crnorm.get_percentile(flags.cur_reward_uq)
-                    m_r = m_r / torch.clamp(uq - lq, min=1e-8)
-
-        r[cur_gate] = m_r
-    if torch.any(~cur_gate): 
-        r[~cur_gate] = 0.
-    return r, crnorm

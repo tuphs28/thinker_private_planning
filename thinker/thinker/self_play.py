@@ -43,14 +43,12 @@ class SelfPlayWorker:
 
         self.actor_buffer = ray_obj_actor["actor_buffer"]
         self.actor_param_buffer = ray_obj_actor["actor_param_buffer"]
-        self.test_buffer = None
 
         self._logger.info(
-            "Initializing actor %d with device %s %s"
+            "Initializing actor %d with device %s"
             % (
                 rank,
                 "cuda" if gpu else "cpu",
-                "(test mode)" if self.test_buffer is not None else "",
             )
         )
 
@@ -90,7 +88,7 @@ class SelfPlayWorker:
                 "tree_rep_meaning": self.env.get_tree_rep_meaning() if self.flags.wrapper_type != 1 else None,
             }
             self.actor_net = ActorNet(**actor_param)
-            if self.rank == 0:
+            if self.rank == 0 and not self.flags.mcts:
                 self._logger.info(
                     "Actor network size: %d"
                     % sum(p.numel() for p in self.actor_net.parameters())
@@ -113,25 +111,15 @@ class SelfPlayWorker:
         self.disable_thinker = flags.wrapper_type == 1
         self.finish_train_actor = False
 
-    def gen_data(self, test_eps_n: int = 0, verbose: bool = True):
+    def gen_data(self, verbose: bool = True):
         """Generate self-play data
         Args:
-            test_eps_n (int): number of episode to test for (only for testing mode);
-            if set to non-zero, the worker will stop once reaching test_eps_n episodes
-            and the data will not be sent out to model or actor buffer
             verbose (bool): whether to print output
         """
         try:
             if verbose:
-                self._logger.info(
-                    "Actor %d started. %s"
-                    % (self.rank, "(test mode)" if test_eps_n > 0 else "")
-                )
+                self._logger.info("Actor %d started." % self.rank)
             n = 0
-            if test_eps_n > 0:
-                self.test_eps_done_n = torch.zeros(
-                    self.env_n, device=self.device
-                )
             state = self.env.reset()
             env_out = self.init_env_out(state)                        
             actor_state = self.actor_net.initial_state(

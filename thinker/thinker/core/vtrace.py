@@ -34,10 +34,9 @@ See https://arxiv.org/abs/1802.01561 for the full paper.
 """
 
 import collections
-
 import torch
 import torch.nn.functional as F
-import math 
+from thinker.util import FifoBuffer
 
 VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages pg_advantages_nois norm_stat")
 
@@ -139,52 +138,3 @@ def compute_v_trace(
                              pg_advantages_nois=pg_advantages_nois,
                              norm_stat=norm_stat)
 
-
-class FifoBuffer:
-    def __init__(self, size, device):
-        self.size = size
-        self.buffer = torch.empty(
-            (self.size,), dtype=torch.float32, device=device
-        ).fill_(float("nan"))
-        self.current_index = 0
-        self.num_elements = 0
-
-    def push(self, data):
-        num_entries = math.prod(data.shape)
-        assert num_entries <= self.size, "Data too large for buffer"
-
-        start_index = self.current_index
-        end_index = (self.current_index + num_entries) % self.size
-
-        if end_index < start_index:
-            # The new data wraps around the buffer
-            remaining_space = self.size - start_index
-            self.buffer[start_index:] = data.flatten()[:remaining_space]
-            self.buffer[:end_index] = data.flatten()[remaining_space:]
-        else:
-            # The new data fits within the remaining space
-            self.buffer[start_index:end_index] = data.flatten()
-
-        self.current_index = end_index
-        self.num_elements = min(self.num_elements + num_entries, self.size)
-
-    def get_percentile(self, percentile):
-        num_valid_elements = min(self.num_elements, self.size)
-        if num_valid_elements == 0:
-            return None
-        return torch.quantile(self.buffer[:num_valid_elements], q=percentile)
-
-    def get_variance(self):
-        num_valid_elements = min(self.num_elements, self.size)
-        if num_valid_elements == 0:
-            return None
-        return torch.mean(torch.square(self.buffer[:num_valid_elements]))
-
-    def get_mean(self):
-        num_valid_elements = min(self.num_elements, self.size)
-        if num_valid_elements == 0:
-            return None
-        return torch.mean(self.buffer[:num_valid_elements])
-
-    def full(self):
-        return self.num_elements >= self.size

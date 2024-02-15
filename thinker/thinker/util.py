@@ -8,13 +8,14 @@ import yaml
 import argparse
 import subprocess
 import os
+import re
+import sys
+import math
 import logging
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
-import re
-import sys
 
 def process_flags(flags):
 
@@ -54,7 +55,11 @@ def process_flags_actor(flags):
         flags.policy_vis_freq = -1
         flags = process_flags(flags)
 
-    if "Safexp" in flags.name:
+    if flags.mcts:
+        flags.train_actor = False
+        flags.policy_vis_freq = -1
+
+    if "Safexp" in flags.name or flags.name.startswith("DM"):
         flags.policy_vis_freq = -1
 
     flags.return_h = flags.see_h
@@ -494,7 +499,7 @@ def slice_tree_reps(num_actions, dim_actions, sample_n, rec_t):
 def decode_tree_reps(tree_reps, num_actions, dim_actions, sample_n, rec_t, enc_type=0, f_type=0):
     nd = [
             "root_r", "root_v", "root_qs_mean", "root_qs_max", 
-            "root_trail_r", "root_trail_q", "root_max_v", 
+            "root_trail_r", "rollout_return", "max_rollout_return", 
             "cur_r", "cur_v", "cur_qs_mean", "cur_qs_max"
         ]
     def dec_k(x, key):        
@@ -546,6 +551,98 @@ def plot_raw_state(x, ax=None, title=None, savepath=None):
 
 def check_perfect_model(wrapper_type):
     return wrapper_type in [2, 4, 5]        
+
+def cur_reward_norm(r, crnorm, cur_gate, flags):
+    r = r.clone()
+    nan_mask = ~torch.isnan(r)      
+    if torch.any(cur_gate):                  
+        m_r = r[cur_gate]
+        if flags.cur_reward_adj > 0:
+            m_r = m_r * flags.cur_reward_adj
+        if flags.cur_reward_norm or flags.cur_reward_pri:
+            if flags.cur_norm_type == 0:
+                if crnorm is None: crnorm = (0., 0., 1)
+                cmean, csq, ccounter = crnorm
+                cmean = flags.cur_ema * cmean + (1 - flags.cur_ema) * torch.mean(m_r)
+                csq = flags.cur_ema * csq + (1 - flags.cur_ema) * torch.mean(torch.square(m_r))                                        
+                adj = 1 - flags.cur_ema ** ccounter
+                adj_mean = cmean / adj
+                adj_sq = csq / adj
+                std = torch.sqrt(torch.relu(adj_sq - torch.square(adj_mean)) + 1e-8)
+                if flags.cur_reward_pri:
+                    m_r = m_r - adj_mean
+                if flags.cur_reward_norm: 
+                    m_r = m_r / std
+                cur_reward_min = None if flags.cur_reward_min < -100. else flags.cur_reward_min
+                cur_reward_max = None if flags.cur_reward_max > +100. else flags.cur_reward_max
+                if cur_reward_min is not None or cur_reward_max is not None:
+                    m_r = torch.clamp(m_r, min=cur_reward_min, max=cur_reward_max)
+                ccounter += 1
+                crnorm = (cmean, csq, ccounter)
+            else:
+                if crnorm is None: crnorm = FifoBuffer(flags.cur_reward_bn, device=m_r.device)
+                crnorm.push(m_r)
+                if flags.cur_reward_pri:
+                    mq = crnorm.get_percentile(flags.cur_reward_mq)
+                    m_r = m_r - mq
+                if flags.cur_reward_norm: 
+                    lq = crnorm.get_percentile(flags.cur_reward_lq)
+                    uq = crnorm.get_percentile(flags.cur_reward_uq)
+                    m_r = m_r / torch.clamp(uq - lq, min=1e-8)
+
+        r[cur_gate] = m_r
+    if torch.any(~cur_gate): 
+        r[~cur_gate] = 0.
+    return r, crnorm
+
+class FifoBuffer:
+    def __init__(self, size, device):
+        self.size = size
+        self.buffer = torch.empty(
+            (self.size,), dtype=torch.float32, device=device
+        ).fill_(float("nan"))
+        self.current_index = 0
+        self.num_elements = 0
+
+    def push(self, data):
+        num_entries = math.prod(data.shape)
+        assert num_entries <= self.size, "Data too large for buffer"
+
+        start_index = self.current_index
+        end_index = (self.current_index + num_entries) % self.size
+
+        if end_index < start_index:
+            # The new data wraps around the buffer
+            remaining_space = self.size - start_index
+            self.buffer[start_index:] = data.flatten()[:remaining_space]
+            self.buffer[:end_index] = data.flatten()[remaining_space:]
+        else:
+            # The new data fits within the remaining space
+            self.buffer[start_index:end_index] = data.flatten()
+
+        self.current_index = end_index
+        self.num_elements = min(self.num_elements + num_entries, self.size)
+
+    def get_percentile(self, percentile):
+        num_valid_elements = min(self.num_elements, self.size)
+        if num_valid_elements == 0:
+            return None
+        return torch.quantile(self.buffer[:num_valid_elements], q=percentile)
+
+    def get_variance(self):
+        num_valid_elements = min(self.num_elements, self.size)
+        if num_valid_elements == 0:
+            return None
+        return torch.mean(torch.square(self.buffer[:num_valid_elements]))
+
+    def get_mean(self):
+        num_valid_elements = min(self.num_elements, self.size)
+        if num_valid_elements == 0:
+            return None
+        return torch.mean(self.buffer[:num_valid_elements])
+
+    def full(self):
+        return self.num_elements >= self.size
 
 # taken from https://github.com/openai/baselines/blob/master/baselines/common/vec_env/vec_normalize.py
 class RunningMeanStd:
