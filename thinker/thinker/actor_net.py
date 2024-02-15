@@ -1155,6 +1155,14 @@ class MCTS():
         )
         return actor_out, core_state    
     
+    def set_real_step(self, real_step):
+        if real_step < self.flags.total_steps * 0.5:
+            self.temp = 1
+        elif real_step < self.flags.total_steps * 0.75:
+            self.temp = 0.5
+        else:
+            self.temp = 0.25
+    
     def initial_state(self, batch_size, device=None):
         return ()
     

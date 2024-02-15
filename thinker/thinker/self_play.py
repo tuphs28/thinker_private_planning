@@ -6,7 +6,7 @@ import numpy as np
 import traceback
 import torch
 import ray
-from thinker.buffer import AB_CAN_WRITE, AB_FULL, AB_FINISH
+from thinker.buffer import AB_FULL, AB_FINISH
 from thinker.actor_net import ActorNet, ActorOut
 from thinker.learn_actor import ActorLearner, SActorLearner
 from thinker.main import Env
@@ -43,6 +43,11 @@ class SelfPlayWorker:
 
         self.actor_buffer = ray_obj_actor["actor_buffer"]
         self.actor_param_buffer = ray_obj_actor["actor_param_buffer"]
+
+        self.log = not flags.train_actor
+        if self.log: 
+            self.self_play_buffer = ray_obj_actor["self_play_buffer"]
+            self.real_step_ptr = None
 
         self._logger.info(
             "Initializing actor %d with device %s"
@@ -141,8 +146,8 @@ class SelfPlayWorker:
                         not info["model_status"]["running"] and
                         not info["model_status"]["finish"]
                         and self.flags.ckp) 
-                if send_buffer:
-                    self.write_actor_buffer(env_out, actor_out, 0)
+                if send_buffer or self.log:
+                    self.write_actor_buffer(env_out, actor_out, 0, log_only = not send_buffer and self.log)
                 if self.time: self.timing.time("misc1")
          
                 with torch.set_grad_enabled(False):
@@ -152,7 +157,7 @@ class SelfPlayWorker:
                             self.env_step(env_out, actor_state)
                         if self.time: self.timing.time("step env")
                         # write the data to the respective buffers
-                        if send_buffer: self.write_actor_buffer(env_out, actor_out, t + 1)
+                        if send_buffer or self.log: self.write_actor_buffer(env_out, actor_out, t + 1, log_only = not send_buffer and self.log)
                         if self.time: self.timing.time("finish actor buffer")                      
    
                 if send_buffer and self.flags.parallel_actor:
@@ -176,7 +181,21 @@ class SelfPlayWorker:
                             ray.put(self.actor_local_buffer),
                             ray.put(initial_actor_state),
                         )
-                    if self.time: self.timing.time("send actor buffer")                    
+                    if self.time: self.timing.time("send actor buffer")     
+
+                if self.log:
+                    if self.real_step_ptr is not None: 
+                        self.real_step = ray.get(self.real_step_ptr)                        
+                        if self.flags.mcts:
+                            self.actor_net.set_real_step(self.real_step)
+
+                    self.real_step_ptr = self.self_play_buffer.insert.remote(
+                        step_status = ray.put(self.actor_local_buffer.step_status), 
+                        episode_return = ray.put(self.actor_local_buffer.episode_return), 
+                        episode_step = ray.put(self.actor_local_buffer.episode_step), 
+                        real_done = ray.put(self.actor_local_buffer.real_done), 
+                        actor_id = ray.put(self.actor_local_buffer.id), 
+                    )
   
                 if self.time: self.timing.time("mics3")
       
@@ -231,14 +250,17 @@ class SelfPlayWorker:
         env_out = self.create_env_out(actor_out.action, state, reward, done, info)
         return actor_out, actor_state, env_out, info
 
-    def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int):
+    def write_actor_buffer(self, env_out: EnvOut, actor_out: ActorOut, t: int, log_only: bool = False):
         # write to local buffer
+        if log_only: include_fields = ["step_status", "episode_return", "episode_step", "real_done"]
+
         if t == 0:            
             out = {}
             
             for field in TrainActorOut._fields:
                 out[field] = None
-                if field in ["id"]: continue
+                if log_only and field not in include_fields: continue
+                if field in ["id"]: continue                
                 if field == "real_states" and not self.flags.see_real_state: continue
                 val = getattr(env_out if field in EnvOut._fields else actor_out, field)                
                 if val is None: continue
@@ -262,6 +284,7 @@ class SelfPlayWorker:
             self.actor_local_buffer = TrainActorOut(**out)
 
         for field in TrainActorOut._fields:
+            if log_only and field not in include_fields: continue
             v = getattr(self.actor_local_buffer, field)
             if v is not None and field not in ["id"]:                
                 new_val = getattr(

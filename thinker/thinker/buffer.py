@@ -1,6 +1,8 @@
 import numpy as np
 import time
+import timeit
 from operator import itemgetter
+import os
 import ray
 import thinker.util as util
 from thinker.core.file_writer import FileWriter
@@ -443,11 +445,18 @@ class RetBuffer:
                 self.return_buffer_n >= self.return_buffer.shape[1]
             )
 
-    def insert_raw(self, episode_returns, ind, actor_id, done):        
+    def insert_raw(self, episode_returns, ind, actor_id, done):                
+        if torch.is_tensor(episode_returns):
+            episode_returns = episode_returns.detach().cpu().numpy()
+        if torch.is_tensor(actor_id):
+            actor_id = actor_id.detach().cpu().numpy()
+        if torch.is_tensor(done):
+            done = done.detach().cpu().numpy()
+
         episode_returns = episode_returns[done][:, ind]
-        episode_returns = tuple(episode_returns.detach().cpu().numpy())
-        done_ids = actor_id.broadcast_to(done.shape)[done]
-        done_ids = tuple(done_ids.detach().cpu().numpy())
+        episode_returns = tuple(episode_returns)
+        done_ids = np.broadcast_to(actor_id, done.shape)[done]
+        done_ids = tuple(done_ids)
         self.insert(episode_returns, done_ids)
 
     def get_mean(self):
@@ -471,3 +480,165 @@ class RetBuffer:
             else:
                 overall_mean = 0.0
         return overall_mean
+
+@ray.remote
+class SelfPlayBuffer:    
+    def __init__(self, flags):
+        # A ray actor tailored for logging across self-play worker; code mostly from learn_actor
+        self.flags = flags
+        self._logger = util.logger()
+
+        max_actor_id = (
+            self.flags.self_play_n * self.flags.env_n
+        )
+
+        self.ret_buffers = [RetBuffer(max_actor_id, mean_n=400)]
+        if self.flags.im_cost > 0.:
+            self.ret_buffers.append(RetBuffer(max_actor_id, mean_n=20000))
+        if self.flags.cur_cost > 0.:
+            self.ret_buffers.append(RetBuffer(max_actor_id, mean_n=400))      
+
+        self.ckp_path = os.path.join(flags.ckpdir, "ckp_self_play.tar")
+        if flags.ckp: self.load_checkpoint(self.ckp_path)
+        
+        self.plogger = FileWriter(
+            xpid=flags.xpid,
+            xp_args=flags.__dict__,
+            rootdir=flags.savedir,
+            overwrite=not self.flags.ckp,
+        )
+
+        self.rewards_ls = ["re"]
+        if flags.im_cost > 0.0:
+            self.rewards_ls += ["im"]
+        if flags.cur_cost > 0.0:
+            self.rewards_ls += ["cur"]
+        self.num_rewards = len(self.rewards_ls)
+
+        self.step, self.real_step, self.tot_eps = 0, 0, 0
+
+        self.timer = timeit.default_timer
+        self.start_time = self.timer()
+        self.sps_buffer = [(self.step, self.start_time)] * 36
+        self.sps = 0
+        self.sps_buffer_n = 0
+        self.sps_start_time, self.sps_start_step = self.start_time, self.step
+        self.ckp_start_time = int(time.strftime("%M")) // 10
+
+    def insert(self, step_status, episode_return, episode_step, real_done, actor_id):
+
+        stats = {}
+
+        T, B, *_ = episode_return.shape
+        last_step_real = (step_status == 0) | (step_status == 3)
+        next_step_real = (step_status == 2) | (step_status == 3)
+
+        # extract episode_returns
+        if np.any(real_done):            
+            episode_returns = episode_return[real_done][
+                :, 0
+            ]
+            episode_returns = tuple(episode_returns)
+            episode_lens = episode_step[real_done]
+            episode_lens = tuple(episode_lens)
+            done_ids = np.broadcast_to(actor_id, real_done.shape)[real_done]
+            done_ids = tuple(done_ids)
+        else:
+            episode_returns, episode_lens, done_ids = (), (), ()
+
+        self.ret_buffers[0].insert(episode_returns, done_ids)
+        stats = {"rmean_episode_return": self.ret_buffers[0].get_mean()}
+
+        for prefix in ["im", "cur"]:            
+            if prefix == "im":
+                done = next_step_real
+            elif prefix == "cur":
+                done = real_done
+            
+            if prefix in self.rewards_ls:            
+                n = self.rewards_ls.index(prefix)
+                self.ret_buffers[n].insert_raw(
+                    episode_return,
+                    ind=n,
+                    actor_id=actor_id,
+                    done=done,
+                )
+                r = self.ret_buffers[n].get_mean()
+                stats["rmean_%s_episode_return" % prefix] = r
+
+        self.step += T * B
+        self.real_step += np.sum(last_step_real).item()
+        self.tot_eps += np.sum(real_done).item()
+
+        stats.update({
+            "step": self.step,
+            "real_step": self.real_step,
+            "tot_eps": self.tot_eps,
+            "episode_returns": episode_returns,
+            "episode_lens": episode_lens,
+            "done_ids": done_ids,
+        })
+
+        # write to log file
+        self.plogger.log(stats)
+
+        # print statistics
+        if self.timer() - self.start_time > 5:
+            self.sps_buffer[self.sps_buffer_n] = (self.step, self.timer())
+
+            self.sps_buffer_n = (self.sps_buffer_n + 1) % len(self.sps_buffer)
+            self.sps = (
+                self.sps_buffer[self.sps_buffer_n - 1][0]
+                - self.sps_buffer[self.sps_buffer_n][0]
+            ) / (
+                self.sps_buffer[self.sps_buffer_n - 1][1]
+                - self.sps_buffer[self.sps_buffer_n][1]
+            )
+            tot_sps = (self.step - self.sps_start_step) / (
+                self.timer() - self.sps_start_time
+            )
+            print_str = (
+                "[%s] Steps %i @ %.1f SPS (%.1f). Eps %i. Ret %f (%f/%f)."
+                % (
+                    self.flags.xpid,
+                    self.real_step,
+                    self.sps,
+                    tot_sps,
+                    self.tot_eps,
+                    stats["rmean_episode_return"],
+                    stats.get("rmean_im_episode_return", 0.),
+                    stats.get("rmean_cur_episode_return", 0.),
+                )
+            )            
+            self._logger.info(print_str)
+            self.start_time = self.timer()
+            self.queue_n = 0     
+
+        if int(time.strftime("%M")) // 10 != self.ckp_start_time:
+            self.save_checkpoint()
+            self.ckp_start_time = int(time.strftime("%M")) // 10     
+
+        return self.real_step  
+    
+    def save_checkpoint(self):
+        self._logger.info("Saving self-play checkpoint to %s" % self.ckp_path)
+        d = {
+                "step": self.step,
+                "real_step": self.real_step,
+                "tot_eps": self.tot_eps,
+                "ret_buffers": self.ret_buffers,
+                "flags": vars(self.flags),
+            }      
+        try:
+            torch.save(d, self.ckp_path + ".tmp")
+            os.replace(self.ckp_path + ".tmp", self.ckp_path)
+        except:       
+            pass
+
+    def load_checkpoint(self, ckp_path: str):
+        train_checkpoint = torch.load(ckp_path, torch.device("cpu"))
+        self.step = train_checkpoint["step"]
+        self.real_step = train_checkpoint["real_step"]
+        self.tot_eps = train_checkpoint["tot_eps"]
+        self.ret_buffers = train_checkpoint["ret_buffers"]
+        self._logger.info("Loaded self-play checkpoint from %s" % ckp_path)

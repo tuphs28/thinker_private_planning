@@ -696,7 +696,7 @@ class SActorLearner:
             )
             stats["max_rollout_depth"] = max_rollout_depth
 
-        self.step += self.flags.actor_unroll_len * self.flags.actor_batch_size
+        self.step += T * B
         self.real_step += torch.sum(last_step_real).item()
         self.tot_eps += torch.sum(train_actor_out.real_done).item()
         mean_abs_v = torch.mean(torch.abs(train_actor_out.baseline)).item()
