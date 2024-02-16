@@ -128,7 +128,7 @@ cdef node_refresh(Node* pnode, Node* pnode_to_refresh, float r_diff, float v_dif
                 pnode[0].prollout_qs[0][i] += discounting * pnode[0].discounting * v_diff
     if pnode[0].pparent != NULL: node_refresh(pnode[0].pparent, pnode_to_refresh, r_diff, v_diff, discounting * pnode[0].discounting, depth+1)
 
-cdef node_visit(Node* pnode, bool reset):
+cdef node_visit(Node* pnode):
     cdef vector[Node*]* ppath    
     pnode[0].trail_r = 0.
     pnode[0].trail_discount = 1.    
@@ -136,10 +136,11 @@ cdef node_visit(Node* pnode, bool reset):
         ppath = new vector[Node*]()
     else:
         ppath = NULL
-    node_propagate(pnode=pnode, r=pnode[0].r, v=pnode[0].v, new_rollout=not pnode[0].visited, reset=reset, ppath=ppath)
+    node_propagate(pnode=pnode, r=pnode[0].r, v=pnode[0].v, new_rollout=not pnode[0].visited, ppath=ppath)
     pnode[0].visited = True
+    pnode[0].rollout_n = pnode[0].rollout_n + 1        
 
-cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, bool reset, vector[Node*]* ppath):
+cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, vector[Node*]* ppath):
     cdef int i
     cdef vector[Node*]* ppath_
     pnode[0].trail_r = pnode[0].trail_r + pnode[0].trail_discount * r
@@ -155,10 +156,9 @@ cdef void node_propagate(Node* pnode, float r, float v, bool new_rollout, bool r
         else:
             ppath_ = NULL
         pnode[0].prollout_qs[0].push_back(pnode[0].rollout_q)        
-    if new_rollout or reset:
-        pnode[0].rollout_n = pnode[0].rollout_n + 1        
+        #pnode[0].rollout_n = pnode[0].rollout_n + 1        
     if pnode[0].pparent != NULL: 
-        node_propagate(pnode[0].pparent, r, v, new_rollout, reset, ppath=ppath_)
+        node_propagate(pnode[0].pparent, r, v, new_rollout, ppath=ppath_)
 
 #@cython.cdivision(True)
 cdef float[:] node_stat(Node* pnode, bool detailed, int enc_type, int enc_f_type, int mask_type, int raw_num_actions=-1):
@@ -727,7 +727,7 @@ cdef class cModelWrapper(cWrapper):
                 if self.sample: encoded["sampled_action"] = sampled_action[i]
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), t=self.total_step[i], done=False,
                     logits=logits[i], encoded=<PyObject*>encoded, override=False)
-                node_visit(pnode=root_node, reset=False)
+                node_visit(pnode=root_node)
                 self.root_nodes.push_back(root_node)
                 self.cur_nodes.push_back(root_node)
             
@@ -1020,13 +1020,13 @@ cdef class cModelWrapper(cWrapper):
                     node_expand(pnode=root_node, r=reward[j], v=vs_1[j], t=self.total_step[i], done=False,
                         logits=logits_1[j], encoded=<PyObject*>encoded, override=False)
                     node_del(self.root_nodes[i], except_idx=-1)
-                    node_visit(root_node, reset=False)
+                    node_visit(root_node)
                 else:
                     root_node = self.root_nodes[i][0].ppchildren[0][re_action[i]]
                     node_expand(pnode=root_node, r=reward[j], v=vs_1[j], t=self.total_step[i], done=False,
                         logits=logits_1[j], encoded=<PyObject*>encoded, override=True)                        
                     node_del(self.root_nodes[i], except_idx=re_action[i])
-                    node_visit(root_node, reset=False)
+                    node_visit(root_node)
                     
                 j += 1
                 root_nodes_.push_back(root_node)
@@ -1034,7 +1034,7 @@ cdef class cModelWrapper(cWrapper):
             elif self.status[i] == 2:
                 # expanded already
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
-                node_visit(cur_node, reset=reset[i])
+                node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)      
 
@@ -1045,7 +1045,7 @@ cdef class cModelWrapper(cWrapper):
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
                 node_expand(pnode=cur_node, r=0., v=0., t=self.total_step[i], done=True,
                         logits=self.par_logits, encoded=self.cur_nodes[i][0].encoded, override=True)
-                node_visit(cur_node, reset=reset[i])
+                node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)        
             
@@ -1068,7 +1068,7 @@ cdef class cModelWrapper(cWrapper):
                 node_expand(pnode=cur_node, r=rs_4[l], 
                         v=v_in, t=self.total_step[i], done=done_in,
                         logits=logits_4[l], encoded=<PyObject*>encoded, override=True)
-                node_visit(cur_node, reset=reset[i])
+                node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)   
                 l += 1                   
@@ -1076,7 +1076,7 @@ cdef class cModelWrapper(cWrapper):
                 # reset
                 self.rollout_depth[i] = 0
                 cur_node = self.root_nodes[i]
-                node_visit(cur_node, reset=False)
+                node_visit(cur_node) 
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node) 
 
@@ -1140,7 +1140,7 @@ cdef class cModelWrapper(cWrapper):
                 # reset after computing the tree rep for reset_mode 0
                 self.rollout_depth[i] = 0
                 self.cur_nodes[i] = self.root_nodes[i]
-                node_visit(self.cur_nodes[i], False)
+                node_visit(self.cur_nodes[i])
                 self.status[i] = 5
             # compute step status
             if self.cur_t[i] == 0:
@@ -1227,7 +1227,7 @@ cdef class cPerfectWrapper(cWrapper):
                            }
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), t=self.total_step[i], done=False,
                     logits=logits[-1, i].numpy(), encoded=<PyObject*>encoded, override=False)
-                node_visit(pnode=root_node, reset=False)
+                node_visit(pnode=root_node)
                 self.root_nodes.push_back(root_node)
                 self.cur_nodes.push_back(root_node)
             
@@ -1396,7 +1396,7 @@ cdef class cPerfectWrapper(cWrapper):
                     logits=logits[j], encoded=<PyObject*>encoded, override=not new_root)
                 except_idx = -1 if new_root else re_action[i]
                 node_del(self.root_nodes[i], except_idx=except_idx)
-                node_visit(root_node, False)                    
+                node_visit(root_node)                    
                 j += 1
                 root_nodes_.push_back(root_node)
                 cur_nodes_.push_back(root_node)
@@ -1404,7 +1404,7 @@ cdef class cPerfectWrapper(cWrapper):
             elif self.status[i] == 2:
                 # expanded already
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
-                node_visit(cur_node, reset[i])
+                node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)    
 
@@ -1415,7 +1415,7 @@ cdef class cPerfectWrapper(cWrapper):
                 cur_node = self.cur_nodes[i][0].ppchildren[0][im_action[i]]
                 node_expand(pnode=cur_node, r=0., v=0., t=self.total_step[i], done=True,
                         logits=self.par_logits, encoded=self.cur_nodes[i][0].encoded, override=False)
-                node_visit(cur_node, reset[i])
+                node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)              
             
@@ -1430,7 +1430,7 @@ cdef class cPerfectWrapper(cWrapper):
                 r = reward[j]
                 node_expand(pnode=cur_node, r=r, v=vs[j] if not done[j] else 0., t=self.total_step[i], done=done[j],
                         logits=logits[j], encoded=<PyObject*>encoded, override=False)
-                node_visit(cur_node, reset[i])
+                node_visit(cur_node)
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node)   
                 j += 1                            
@@ -1439,7 +1439,7 @@ cdef class cPerfectWrapper(cWrapper):
                 # reset
                 self.rollout_depth[i] = 0
                 cur_node = self.root_nodes[i]
-                node_visit(cur_node, False) 
+                node_visit(cur_node) 
                 root_nodes_.push_back(self.root_nodes[i])
                 cur_nodes_.push_back(cur_node) 
 
@@ -1489,7 +1489,7 @@ cdef class cPerfectWrapper(cWrapper):
                 # reset after computing the tree rep for reset_mode 0
                 self.rollout_depth[i] = 0
                 self.cur_nodes[i] = self.root_nodes[i]
-                node_visit(self.cur_nodes[i], False)
+                node_visit(self.cur_nodes[i])
                 self.status[i] = 5
             if self.cur_t[i] == 0:
                 self.step_status[i] = 0 # real action just taken
