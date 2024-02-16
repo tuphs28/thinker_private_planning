@@ -1051,8 +1051,6 @@ class MCTS():
             raise Exception(f"Unsupported action space f{pri_action_space}")
         
         self.temp = 1
-        self.q_min = None
-        self.q_max = None
         self.dir_dist = None
         self.root_psa = None            
 
@@ -1069,13 +1067,11 @@ class MCTS():
         
         if last_real_step or self.q_min is None or self.q_max is None:
             # last step is real, re init. variables
-            rollout_return = torch.clone(tree_rep[:, self.tree_rep_meaning["rollout_return"]]).squeeze(-1)
-            self.q_min = rollout_return
-            self.q_max = rollout_return            
+            rollout_return = torch.clone(tree_rep[:, self.tree_rep_meaning["rollout_return"]]).squeeze(-1)     
             root_logits = torch.clone(tree_rep[:, self.tree_rep_meaning["root_logits"]])  
             self.root_psa = F.softmax(root_logits, dim=-1)
             if self.dir_dist is None:
-                con = torch.tensor([0.25]*self.num_actions, device=tree_rep.device)
+                con = torch.tensor([0.3]*self.num_actions, device=tree_rep.device)
                 self.dir_dist = torch.distributions.dirichlet.Dirichlet(con, validate_args=None)
             self.dir_noise = self.dir_dist.sample((B,))
             self.root_psa = self.root_psa * 0.75 + self.dir_noise * 0.25
@@ -1115,19 +1111,23 @@ class MCTS():
             cur_qsa = torch.clone(tree_rep[:, self.tree_rep_meaning["cur_qs_mean"]])    
             root_qsa = torch.clone(tree_rep[:, self.tree_rep_meaning["root_qs_mean"]])    
             cur_qsa[reset_m] = root_qsa[reset_m]
-            cur_qsa[cur_nsa==0] = float("Inf")
-            self.q_min = torch.minimum(self.q_min, torch.min(cur_qsa, dim=-1)[0])
-            cur_qsa[cur_nsa==0] = -float("Inf")
-            self.q_max = torch.maximum(self.q_max, torch.max(cur_qsa, dim=-1)[0])
-            cur_qsa[cur_nsa==0] = 0
-            cur_qsa = (cur_qsa - self.q_min.unsqueeze(-1)) / (self.q_max.unsqueeze(-1) - self.q_min.unsqueeze(-1) + 1e-8)
-            cur_qsa[cur_nsa==0] = 0
+
+            # normalization (see https://github.com/google-deepmind/mctx/blob/main/mctx/_src/qtransforms.py#L87)
+            cur_v = torch.clone(tree_rep[:, self.tree_rep_meaning["cur_v"]])    
+            root_v = torch.clone(tree_rep[:, self.tree_rep_meaning["root_v"]])    
+            cur_v[reset_m] = root_v[reset_m]
+
+            cur_qsa[cur_nsa==0] = cur_v[cur_nsa==0]
+            q_min = torch.minimum(cur_v.squeeze(-1), torch.min(cur_qsa, dim=-1))
+            q_max = torch.maximum(cur_v.squeeze(-1), torch.max(cur_qsa, dim=-1))
+            cur_qsa[cur_nsa==0] = q_min[cur_nsa==0]            
+            cur_qsa = (cur_qsa - q_min.unsqueeze(-1)) / (q_max.unsqueeze(-1) - q_min.unsqueeze(-1) + 1e-8)
 
             assert torch.all((cur_qsa >= 0) & (cur_qsa <= 1)), f"normalized cur_qsa should range from [0, 1], not {cur_qsa}"
 
             c_1 = 1.25
             c_2 = 19652
-            sum_cur_nsa = torch.sum(cur_nsa, dim=-1, keepdim=True) + 1 # + 1 for the rollout terminating at the node
+            sum_cur_nsa = torch.sum(cur_nsa, dim=-1, keepdim=True)
             score = cur_qsa + cur_psa * (torch.sqrt(sum_cur_nsa)) / (1 + cur_nsa) * (
                 c_1 + torch.log((sum_cur_nsa + c_2 + 1) / c_2)
             )
