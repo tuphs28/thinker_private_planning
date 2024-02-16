@@ -1065,9 +1065,8 @@ class MCTS():
         last_real_step = step_status in [0, 3]
         next_real_step = step_status in [2, 3]                
         
-        if last_real_step or self.q_min is None or self.q_max is None:
-            # last step is real, re init. variables
-            rollout_return = torch.clone(tree_rep[:, self.tree_rep_meaning["rollout_return"]]).squeeze(-1)     
+        if last_real_step:
+            # last step is real, re init. variables   
             root_logits = torch.clone(tree_rep[:, self.tree_rep_meaning["root_logits"]])  
             self.root_psa = F.softmax(root_logits, dim=-1)
             if self.dir_dist is None:
