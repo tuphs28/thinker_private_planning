@@ -1117,10 +1117,10 @@ class MCTS():
             root_v = torch.clone(tree_rep[:, self.tree_rep_meaning["root_v"]])    
             cur_v[reset_m] = root_v[reset_m]
 
-            cur_qsa[cur_nsa==0] = cur_v[cur_nsa==0]
+            cur_qsa[cur_nsa==0] = cur_v[cur_nsa==0].broadcast_to(B, self.num_actions)
             q_min = torch.minimum(cur_v.squeeze(-1), torch.min(cur_qsa, dim=-1))
             q_max = torch.maximum(cur_v.squeeze(-1), torch.max(cur_qsa, dim=-1))
-            cur_qsa[cur_nsa==0] = q_min[cur_nsa==0]            
+            cur_qsa[cur_nsa==0] = q_min[cur_nsa==0].broadcast_to(B, self.num_actions)
             cur_qsa = (cur_qsa - q_min.unsqueeze(-1)) / (q_max.unsqueeze(-1) - q_min.unsqueeze(-1) + 1e-8)
 
             assert torch.all((cur_qsa >= 0) & (cur_qsa <= 1)), f"normalized cur_qsa should range from [0, 1], not {cur_qsa}"
