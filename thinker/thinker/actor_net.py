@@ -1119,9 +1119,9 @@ class MCTS():
 
             cur_qsa[cur_nsa==0] = cur_v.broadcast_to(B, self.num_actions)[cur_nsa==0]
             q_min = torch.minimum(cur_v.squeeze(-1), torch.min(cur_qsa, dim=-1)[0])
-            q_max = torch.maximum(cur_v.squeeze(-1), torch.max(cur_qsa, dim=-1)[0])
-            cur_qsa[cur_nsa==0] = q_min.broadcast_to(B, self.num_actions)[cur_nsa==0]
+            q_max = torch.maximum(cur_v.squeeze(-1), torch.max(cur_qsa, dim=-1)[0])            
             cur_qsa = (cur_qsa - q_min.unsqueeze(-1)) / (q_max.unsqueeze(-1) - q_min.unsqueeze(-1) + 1e-8)
+            cur_qsa[cur_nsa==0] = 0.
 
             assert torch.all((cur_qsa >= 0) & (cur_qsa <= 1)), f"normalized cur_qsa should range from [0, 1], not {cur_qsa}"
 
