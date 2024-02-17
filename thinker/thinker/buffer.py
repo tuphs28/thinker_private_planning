@@ -497,9 +497,6 @@ class SelfPlayBuffer:
             self.ret_buffers.append(RetBuffer(max_actor_id, mean_n=20000))
         if self.flags.cur_cost > 0.:
             self.ret_buffers.append(RetBuffer(max_actor_id, mean_n=400))      
-
-        self.ckp_path = os.path.join(flags.ckpdir, "ckp_self_play.tar")
-        if flags.ckp: self.load_checkpoint(self.ckp_path)
         
         self.plogger = FileWriter(
             xpid=flags.xpid,
@@ -524,6 +521,9 @@ class SelfPlayBuffer:
         self.sps_buffer_n = 0
         self.sps_start_time, self.sps_start_step = self.start_time, self.step
         self.ckp_start_time = int(time.strftime("%M")) // 10
+        
+        self.ckp_path = os.path.join(flags.ckpdir, "ckp_self_play.tar")
+        if flags.ckp: self.load_checkpoint(self.ckp_path)
 
     def insert(self, step_status, episode_return, episode_step, real_done, actor_id):
 

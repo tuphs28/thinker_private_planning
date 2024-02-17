@@ -98,7 +98,7 @@ class SelfPlayWorker:
                     "Actor network size: %d"
                     % sum(p.numel() for p in self.actor_net.parameters())
                 )
-            self._load_net()          
+            if not self.flags.mcts: self._load_net()          
             self.actor_net.to(self.device)
             self.actor_net.train(False)
             if self.train_actor and self.rank == 0:

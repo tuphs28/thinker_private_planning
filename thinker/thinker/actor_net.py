@@ -1040,7 +1040,7 @@ class MCTS():
         super(MCTS, self).__init__()
         self.flags = flags
         self.tree_rep_meaning = tree_rep_meaning
-        assert flags.wrapper_type == 0, "MCTS only support wrapper_type 0"
+        assert flags.wrapper_type in [0, 2], "MCTS only support wrapper_type 0, 2"
         assert not flags.tree_carry, "MCTS does not support tree carry"
         pri_action_space = action_space[0][0]            
         if type(pri_action_space) == spaces.discrete.Discrete:  

@@ -1206,14 +1206,21 @@ cdef class cPerfectWrapper(cWrapper):
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
             pass_action = torch.zeros(self.env_n, self.raw_dim_actions, dtype=torch.long)
-            model_net_out = model_net(obs_py, 
-                                      pass_action.unsqueeze(0).to(self.device), 
+            model_net_out = model_net(x=obs_py, 
+                                      done=None,
+                                      actions=pass_action.unsqueeze(0).to(self.device), 
+                                      state=None,
                                       one_hot=False,
                                       ret_xs=self.return_x,
                                       ret_zs=False,
                                       ret_hs=self.return_h)  
             vs = model_net_out.vs.cpu()
-            logits = model_net_out.logits.cpu()
+            logits = model_net_out.logits[-1]    
+            if self.sample: 
+                sampled_action, logits = self.sample_from_dist(logits)
+            else:
+                logits = logits.squeeze(-2)
+            logits = logits.cpu().numpy()
             env_state = self.env.clone_state(inds=np.arange(self.env_n))
 
             # compute and update root node and current node
@@ -1226,7 +1233,7 @@ cdef class cPerfectWrapper(cWrapper):
                            "env_states": env_state[i],
                            }
                 node_expand(pnode=root_node, r=0., v=vs[-1, i].item(), t=self.total_step[i], done=False,
-                    logits=logits[-1, i].numpy(), encoded=<PyObject*>encoded, override=False)
+                    logits=logits[i], encoded=<PyObject*>encoded, override=False)
                 node_visit(pnode=root_node)
                 self.root_nodes.push_back(root_node)
                 self.cur_nodes.push_back(root_node)
@@ -1364,14 +1371,22 @@ cdef class cPerfectWrapper(cWrapper):
             with torch.no_grad():
                 obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
                 pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(-1).unsqueeze(0)
-                model_net_out = model_net(obs_py, 
-                                          pass_action_py, 
+                done_py = torch.tensor(done, dtype=torch.bool, device=self.device)
+                model_net_out = model_net(x=obs_py, 
+                                          done=done_py,
+                                          actions=pass_action_py, 
+                                          state=None,
                                           one_hot=False,
                                           ret_xs=self.return_x,
                                           ret_zs=False,
                                           ret_hs=self.return_h)  
             vs = model_net_out.vs[-1].float().cpu().numpy()
-            logits = model_net_out.logits[-1].float().cpu().numpy()
+            logits_ = model_net_out.logits[-1].float()
+            if self.sample: 
+                sampled_action, logits_ = self.sample_from_dist(logits_)            
+            else:
+                logits_ = logits_.squeeze(-2)
+            logits = logits_.cpu().numpy()
             if self.time: self.timings.time("model")
             env_state = self.env.clone_state(inds=pass_inds_step)   
             if self.time: self.timings.time("clone_state")        
