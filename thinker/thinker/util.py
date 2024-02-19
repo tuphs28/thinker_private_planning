@@ -21,7 +21,7 @@ def process_flags(flags):
 
     if flags.wrapper_type == 1:
         flags.rec_t = 1
-        flags.train_model = False
+        # flags.train_model = False
         flags.im_enable = False
         flags.cur_enable = False
         flags.return_h = False

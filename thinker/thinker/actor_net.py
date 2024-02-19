@@ -347,8 +347,8 @@ class ActorNetBase(BaseNet):
                 self.state_dtype_n = 1
             else:
                 raise Exception(f"Unupported observation sapce", obs_space["real_states"])            
-            low = torch.tensor(obs_space["real_states"].low)
-            high = torch.tensor(obs_space["real_states"].high)
+            low = torch.tensor(obs_space["real_states"].low[0])
+            high = torch.tensor(obs_space["real_states"].high[0])
             self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()            
             if self.need_norm:
                 self.register_buffer("norm_low", low)

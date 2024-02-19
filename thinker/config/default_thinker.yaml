@@ -1,5 +1,6 @@
 # the setting for default Thinker environment
 # training setting
+has_model: true # whether the model exists
 train_model: true # whether to train the model
 model_batch_size: 128 # training batch size of the model
 model_learning_rate: 0.0001 # model learning rate

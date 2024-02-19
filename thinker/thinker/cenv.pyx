@@ -355,6 +355,7 @@ cdef class cWrapper():
         self.sample_temp = flags.sample_temp     
         self.sample_replace = flags.sample_replace
         self.has_action_seq = flags.has_action_seq
+        if self.max_depth <= 0: self.has_action_seq = False
 
         self.enc_type = flags.model_enc_type
         self.enc_f_type = flags.model_enc_f_type

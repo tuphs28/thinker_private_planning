@@ -31,16 +31,38 @@ class DummyWrapper(gym.Wrapper):
         self.norm_low = low.to(device)
         self.norm_high = high.to(device)
 
+        self.train_model = self.flags.train_model
+        action_space =  env.action_space[0]
+        if type(action_space) == spaces.discrete.Discrete:    
+            self.dim_actions = 1
+            self.tuple_action = False
+        else:
+            self.dim_actions = len(action_space)    
+            self.tuple_action = True
+
     def reset(self, model_net):
         obs = self.env.reset()
-        obs_py = torch.tensor(obs, dtype=self.state_dtype, device=self.device)        
+        obs_py = torch.tensor(obs, dtype=self.state_dtype, device=self.device)                
+        if self.train_model: 
+            self.per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
+            pri_action = torch.zeros(self.env_n, self.dim_actions, dtype=torch.long, device=self.device)
+            done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
+            with torch.no_grad():
+                model_net_out = model_net(
+                    x=obs_py, 
+                    done=done,
+                    actions=pri_action.unsqueeze(0), 
+                    state=self.per_state,
+                    one_hot=False)       
+            self.per_state = model_net_out.state
+            self.baseline = model_net_out.vs[-1]
         states = {"real_states": obs_py}       
         return states 
 
     def step(self, action, model_net):  
         # action in shape (B, *) or (B,)
         if torch.is_tensor(action):
-            action = action.detach().cpu().numpy()
+            action = action.detach().cpu().numpy()        
 
         obs, reward, done, info = self.env.step(action) 
         if np.any(done):
@@ -51,9 +73,10 @@ class DummyWrapper(gym.Wrapper):
         truncated_done = [m["truncated_done"] if "truncated_done" in m else False for n, m in enumerate(info)]
         cost = [m["cost"] if "cost" in m else False for n, m in enumerate(info)]
         obs_py = torch.tensor(obs, dtype=self.state_dtype, device=self.device)
-        if np.any(done):
+        reward = torch.tensor(reward, dtype=torch.float32, device=self.device)
+        done = torch.tensor(done, dtype=torch.bool, device=self.device)
+        if torch.any(done):
             obs_py[done] = torch.tensor(obs_reset, dtype=self.state_dtype, device=self.device)
-
         states = {
             "real_states": obs_py,
         }     
@@ -62,11 +85,26 @@ class DummyWrapper(gym.Wrapper):
                 "truncated_done": torch.tensor(truncated_done, dtype=torch.bool, device=self.device),                
                 "cost": torch.tensor(cost, dtype=torch.bool, device=self.device),                
                 "step_status": torch.full((self.env_n,), fill_value=3, dtype=torch.long, device=self.device),
-                }
+                }        
+        
+        if self.train_model:             
+            info["initial_per_state"] = self.per_state
+            info["baseline"] = self.baseline
+            pri_action = torch.tensor(action, dtype=torch.long, device=self.device)
+            if not self.tuple_action: pri_action = pri_action.unsqueeze(-1)          
+            with torch.no_grad():
+                model_net_out = model_net(
+                    x=obs_py, 
+                    done=done,
+                    actions=pri_action.unsqueeze(0), 
+                    state=self.per_state,
+                    one_hot=False)       
+                self.per_state = model_net_out.state
+                self.baseline = model_net_out.vs[-1]
         
         return (states, 
-                torch.tensor(reward, dtype=torch.float32, device=self.device), 
-                torch.tensor(done, dtype=torch.bool, device=self.device), 
+                reward, 
+                done, 
                 info)
     
     def unnormalize(self, x):

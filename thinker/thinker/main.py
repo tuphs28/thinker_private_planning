@@ -176,7 +176,7 @@ class Env(gym.Wrapper):
         env.close()
 
         # initalize model
-        self.has_model = self.flags.wrapper_type != 1
+        self.has_model = self.flags.has_model
         self.train_model = self.has_model and self.flags.train_model 
         self.require_prob = False
         self.sample = self.flags.sample_n > 0

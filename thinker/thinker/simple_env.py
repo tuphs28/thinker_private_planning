@@ -112,7 +112,7 @@ class SimWrapper():
             pri_action = pri_action.clone()
             pri_action[done] = 0
         model_net_out = model_net(x=real_state, 
-                                  done=None,
+                                  done=done,
                                   actions=pri_action.unsqueeze(0), 
                                   state=per_state,
                                   one_hot=False,
