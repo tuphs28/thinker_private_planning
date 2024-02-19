@@ -320,6 +320,7 @@ class SModelLearner:
                 "total_loss_m",
                 "total_loss_p",
                 "img_loss",
+                "fea_loss",
                 "sup_loss",
                 "noise_loss",
                 "done_loss",
@@ -387,6 +388,17 @@ class SModelLearner:
         else:
             done_loss = None
         return done_loss
+    
+    def compute_state_loss(self, diff, target, is_weights):
+        if not self.model_net.oned_input:
+            state_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
+        else:
+            state_loss = torch.mean(torch.square(diff), dim=2)
+        state_loss = state_loss * target["done_mask"][1:]
+        state_loss = torch.sum(state_loss, dim=0)
+        state_loss = state_loss * is_weights
+        state_loss = torch.sum(state_loss)
+        return state_loss
 
     def compute_losses_m(self, train_model_out, target, is_weights):
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
@@ -419,9 +431,12 @@ class SModelLearner:
             is_weights,
         )
         done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
-        if self.flags.model_img_type == 0:
+        if self.flags.model_img_loss_cost > 0.:
             diff = target["xs"] - out.xs
-        elif self.flags.model_img_type == 1:
+            img_loss = self.compute_state_loss(diff, target, is_weights)
+        else:
+            img_loss = None
+        if self.flags.model_fea_loss_cost > 0.:
             with torch.no_grad():
                 action = self.model_net.vp_net.convert_action(train_model_out.action[1 : k + 1], one_hot=False)
                 target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
@@ -429,14 +444,9 @@ class SModelLearner:
                 )
             pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True)
             diff = target_enc - pred_enc
-        if not self.model_net.oned_input:
-            img_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
+            fea_loss = self.compute_state_loss(diff, target, is_weights)
         else:
-            img_loss = torch.mean(torch.square(diff), dim=2)
-        img_loss = img_loss * target["done_mask"][1:]
-        img_loss = torch.sum(img_loss, dim=0)
-        img_loss = img_loss * is_weights
-        img_loss = torch.sum(img_loss)
+            fea_loss = None
 
         if self.flags.model_sup_loss_cost > 0.:
             sup_loss = self.model_net.sr_net.supervise_loss(
@@ -461,7 +471,7 @@ class SModelLearner:
             noise_loss = None
 
         total_loss = self.flags.model_rs_loss_cost * rs_loss
-        total_loss = total_loss + self.flags.model_img_loss_cost * img_loss
+        total_loss = total_loss + self.flags.model_img_loss_cost * img_loss + self.flags.model_fea_loss_cost * fea_loss
         if self.flags.model_done_loss_cost > 0.0:
             total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
         if self.flags.model_sup_loss_cost > 0.:
@@ -473,6 +483,7 @@ class SModelLearner:
             "rs_loss": rs_loss,
             "done_loss": done_loss,
             "img_loss": img_loss,
+            "fea_loss": fea_loss,
             "sup_loss": sup_loss,
             "noise_loss": noise_loss,
             "total_loss_m": total_loss,

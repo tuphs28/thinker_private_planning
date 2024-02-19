@@ -22,7 +22,8 @@ model_logits_loss_cost: 0.5 # cost for training model's policy
 model_vs_loss_cost: 0.25 # cost for training model's values
 model_rs_loss_cost: 1.0 # cost for training model's reward
 model_done_loss_cost: 1.0 # cost for training model's done signal
-model_img_loss_cost: 10.0 # cost for training model's state output (dual network only)
+model_img_loss_cost: 10.0 # cost for training model's state output (L2 loss) (dual network only)
+model_fea_loss_cost: 10.0 # cost for training model's state output (feature loss) (dual network only)
 model_sup_loss_cost: 0.0 # cost for SimSiam loss
 model_reg_loss_cost: 0.0 # cost for model regularization loss
 model_noise_loss_cost: 0.0 # cost for model noise loss
@@ -36,7 +37,6 @@ model_disable_bn: true # whether to disable batch norm in model
 model_zero_init: true # whether to zero initialize the model's predicted rewards and values
 model_has_memory: false # whether to enable memory in model
 model_ordinal: false # whether to use ordinal representation in model's policy
-model_img_type: 1 # type of model's state loss: 0 for L2 loss, 1 for feature loss
 # wrapper to be used
 require_prob: false # whether to use prob to train model instead of sampled action
 wrapper_type: 0 # 0: default Thinker; 1: raw env; 2: Thinker w/ perfect model; 3: simple env
