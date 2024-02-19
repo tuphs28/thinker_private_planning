@@ -22,8 +22,8 @@ model_logits_loss_cost: 0.5 # cost for training model's policy
 model_vs_loss_cost: 0.25 # cost for training model's values
 model_rs_loss_cost: 1.0 # cost for training model's reward
 model_done_loss_cost: 1.0 # cost for training model's done signal
-model_img_loss_cost: 10.0 # cost for training model's state output (L2 loss) (dual network only)
-model_fea_loss_cost: 10.0 # cost for training model's state output (feature loss) (dual network only)
+model_img_loss_cost: 5.0 # cost for training model's state output (L2 loss) (dual network only)
+model_fea_loss_cost: 5.0 # cost for training model's state output (feature loss) (dual network only)
 model_sup_loss_cost: 0.0 # cost for SimSiam loss
 model_reg_loss_cost: 0.0 # cost for model regularization loss
 model_noise_loss_cost: 0.0 # cost for model noise loss
