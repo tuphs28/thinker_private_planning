@@ -285,7 +285,6 @@ cdef class cWrapper():
     cdef float cur_sup_cost
     cdef bool cur_done_gate
     cdef int cur_done_elapse
-    cdef bool model_img_type
     
     cdef int stat_mask_type
     cdef bool time 
@@ -408,7 +407,6 @@ cdef class cWrapper():
             self.cur_sup_cost = flags.cur_sup_cost        
             self.cur_done_gate = flags.cur_done_gate
             self.cur_done_elapse = flags.cur_done_elapse
-        self.model_img_type = flags.model_img_type
 
         self.stat_mask_type = flags.stat_mask_type
         self.time = time        
