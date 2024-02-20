@@ -24,6 +24,7 @@ im_cost_anneal: true # whether to anneal the imaginary cost to 0
 cur_cost: 0. # cost for curiosity rewards
 cur_cost_anneal: true # whether to anneal the curiosity cost to 0
 baseline_cost: 0.5 # cost for computing baseline
+entropy_r_cost: 0. # entropy cost added to reward
 entropy_cost: 0.001 # entropy cost for real actions
 im_entropy_cost: 0.0001 # entropy cost for imaginary actions
 reg_cost: 0.001 # regularization cost

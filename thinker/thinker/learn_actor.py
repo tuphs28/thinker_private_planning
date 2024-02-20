@@ -483,7 +483,7 @@ class SActorLearner:
 
         last_step_real = (train_actor_out.step_status == 0) | (train_actor_out.step_status == 3)
         next_step_real = (train_actor_out.step_status == 2) | (train_actor_out.step_status == 3)
-
+        
         if self.flags.im_cost > 0.:
             discounts.append((~next_step_real).float() * self.im_discounting)            
             masks.append((~last_step_real).float())
@@ -497,6 +497,10 @@ class SActorLearner:
         for i in range(self.num_rewards):
             prefix = self.rewards_ls[i]
             prefix_rewards = rewards[:, :, i]
+            
+            if self.flags.entropy_r_cost > 0. and prefix == "re":
+                prefix_rewards[last_step_real] += self.flags.entropy_r_cost * train_actor_out.c_action_log_prob[last_step_real]
+
             if prefix == "cur":
                 return_norm_type=self.flags.cur_return_norm_type 
                 cur_gate = train_actor_out.cur_gate
