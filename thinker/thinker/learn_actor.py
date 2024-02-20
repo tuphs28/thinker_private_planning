@@ -499,7 +499,7 @@ class SActorLearner:
             prefix_rewards = rewards[:, :, i]
             
             if self.flags.entropy_r_cost > 0. and prefix == "re":
-                prefix_rewards[last_step_real] += self.flags.entropy_r_cost * train_actor_out.c_action_log_prob[last_step_real]
+                prefix_rewards[last_step_real] += -self.flags.entropy_r_cost * train_actor_out.c_action_log_prob[last_step_real]
 
             if prefix == "cur":
                 return_norm_type=self.flags.cur_return_norm_type 
