@@ -471,7 +471,10 @@ class SModelLearner:
             noise_loss = None
 
         total_loss = self.flags.model_rs_loss_cost * rs_loss
-        total_loss = total_loss + self.flags.model_img_loss_cost * img_loss + self.flags.model_fea_loss_cost * fea_loss
+        if self.flags.model_img_loss_cost > 0.0:
+            total_loss = total_loss + self.flags.model_img_loss_cost * img_loss
+        if self.flags.model_fea_loss_cost > 0.0:
+            total_loss = total_loss + self.flags.model_fea_loss_cost * fea_loss
         if self.flags.model_done_loss_cost > 0.0:
             total_loss = total_loss + self.flags.model_done_loss_cost * done_loss
         if self.flags.model_sup_loss_cost > 0.:
