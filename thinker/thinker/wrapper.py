@@ -174,19 +174,12 @@ class PostWrapper(gym.Wrapper):
     def render(self, *args, **kwargs):  
         return self.env.render(*args, **kwargs)
 
-def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_action_n=0, one_to_threed_state=False):
+def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_action_n=0, atari=False):
     if discrete_k > 0: env = DiscretizeActionWrapper(env, K=discrete_k)
-    if one_to_threed_state: env = TileObservationWrapper(env)
-
-    if "Sokoban" in name:
-        # sokoban
-        env = TransposeWrap(env)
-        if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
-    elif name.startswith("Safexp") or name.startswith("DM"):
-        # safexp or DM control
-        # assert discrete_k > 0, "Safeexp require discretizing the action space"
-        if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)
-    else:
+    if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)        
+    if "NoFrameskip" in name and not atari: 
+        raise Exception(f"{name} is likely an Atari game but flags.Atari is False")
+    if atari: 
         # atari
         env = StateWrapper(env)
         env = TimeLimit_(env, max_episode_steps=108000)
@@ -202,6 +195,10 @@ def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_ac
             grayscale=grayscale,
             frame_wh=frame_wh,
         )
+    
+        env = TransposeWrap(env)
+    if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
+        # 3d input, need transpose
         env = TransposeWrap(env)
     return env
 
@@ -708,27 +705,6 @@ class DiscretizeActionWrapper(gym.ActionWrapper):
         action = np.array(action)  # Ensure action is a NumPy array
         discrete_to_cont = (action / (self.K - 1)) * (self.max_action - self.min_action) + self.min_action
         return discrete_to_cont
-    
-class TileObservationWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super(TileObservationWrapper, self).__init__(env)
-
-        # Ensure the original observation space is a Box with a single dimension
-        assert isinstance(env.observation_space, gym.spaces.Box), "This wrapper only works with continuous state spaces (Box)"
-        assert len(env.observation_space.shape) == 1, "The observation space must be 1D"
-
-        n = env.observation_space.shape[0]
-
-        # Update the observation space to Box(1, n, n)
-        self.observation_space = spaces.Box(low=np.tile(env.observation_space.low, (1, n)).reshape(1, n, n),
-                                     high=np.tile(env.observation_space.high, (1, n)).reshape(1, n, n),
-                                     dtype=env.observation_space.dtype)
-
-    def observation(self, observation):
-        # Tile the observation and reshape to (1, n, n)
-        n = len(observation)
-        tiled_observation = np.tile(observation, (n, 1)).reshape(1, n, n)
-        return tiled_observation
     
 # wrapper for DM control
     

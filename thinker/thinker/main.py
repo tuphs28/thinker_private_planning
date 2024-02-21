@@ -119,7 +119,7 @@ class Env(gym.Wrapper):
                 grayscale=self.flags.grayscale, 
                 discrete_k=self.flags.discrete_k, 
                 repeat_action_n=self.flags.repeat_action_n,
-                one_to_threed_state=self.flags.one_to_threed_state,
+                atari=self.flags.atari,
             )         
 
         # initialize a single env to collect env information

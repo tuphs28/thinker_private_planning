@@ -38,6 +38,10 @@ model_disable_bn: true # whether to disable batch norm in model
 model_zero_init: true # whether to zero initialize the model's predicted rewards and values
 model_has_memory: false # whether to enable memory in model
 model_ordinal: false # whether to use ordinal representation in model's policy
+# wrapper for env
+grayscale: false # whether to apply grayscale for atari
+atari: false # whether to use atari wrapper
+discrete_k: -1 # bin used to discretize the action space; -1 for no discretizing
 # wrapper to be used
 require_prob: false # whether to use prob to train model instead of sampled action
 wrapper_type: 0 # 0: default Thinker; 1: raw env; 2: Thinker w/ perfect model; 3: simple env
@@ -49,9 +53,7 @@ reset_mode: 0 # 0 for conventional thinker; 1 for no expansion if reset - return
 return_h: true # whether to return model's hidden state
 return_x: false # whether to return the model's predicted state
 return_double: false # whether to return both root node and current node's h / raw_s
-grayscale: false # whether to apply grayscale for atari
 has_action_seq: true # whether tree rep contains action sequence
-one_to_threed_state: false # if enabled, one-dim observation state space will be converted to three-dim
 se_query_size: 5 # size of query table in wrapper_type 3
 se_td_lambda: 0.9 # lambda for discounting td err in wrapper_type 3
 se_query_cur: 0 # 0 for no query on current nodes; 1 for query on current nodes; 2 for query on both current & root nodes & enable node carry
@@ -98,7 +100,6 @@ profile: false # whether to output all the time statistics of the run
 parallel: false # whether to use a parallel ray actor for training the model
 float16: false # whether to use mixed precision
 base_seed: 1 # base seed for the gym environment
-discrete_k: -1 # bin used to discretize the action space; -1 for no discretizing
 repeat_action_n: 0 # custom frame stacking (only for non-Atari envrionment)
 project: ''
 # ray resources
