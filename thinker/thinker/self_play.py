@@ -18,8 +18,8 @@ _fields += ("done", "real_done", "truncated_done")
 _fields += ("max_rollout_depth", "step_status")
 _fields += ("last_pri", "last_reset", "cur_gate")
 EnvOut = namedtuple("EnvOut", _fields)
-_fields = tuple(ActorOut._fields) + tuple(EnvOut._fields) + ("id",)
 
+_fields = tuple(ActorOut._fields) + tuple(EnvOut._fields) + ("id",)
 exc_list = ["action",
             "action_prob",
             "entropy_loss",

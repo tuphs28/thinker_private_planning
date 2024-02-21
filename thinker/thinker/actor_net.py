@@ -14,7 +14,9 @@ ActorOut = namedtuple(
     "ActorOut",
     [     
         "pri", # sampled primiary action
+        "pri_param", # parameter for primary action dist, can be logit or gaussian mean + log var        
         "reset", # sampled reset action
+        "reset_logits", # parameter for reset dist, i.e. logit
         "action", # tuple of the above two actions 
         "action_prob", # prob of primary action 
         "c_action_log_prob", # log prob of chosen action
@@ -304,7 +306,9 @@ class ActorNetBaseSep(BaseNet):
         misc = actor_out.misc
         actor_out = ActorOut(
             pri=actor_out.pri,
+            pri_param=actor_out.pri_param,
             reset=actor_out.reset,
+            reset_logits=actor_out.reset_logits,
             action=actor_out.action,
             action_prob=actor_out.action_prob,
             c_action_log_prob=actor_out.c_action_log_prob,            
@@ -759,6 +763,7 @@ class ActorNetBase(BaseNet):
                 pri = sample(pri_logits, greedy=greedy, dim=-1)
                 pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
                 pri = pri.view(T, B, self.dim_actions)        
+                pri_param = pri_logits
             else:
                 pri_mean = pri_mean.view(T, B, self.dim_actions)
                 pri_log_var = pri_log_var.view(T, B, self.dim_actions)
@@ -770,6 +775,7 @@ class ActorNetBase(BaseNet):
                 else:
                     pri_pre_tanh = pri_mean
                 pri = torch.tanh(pri_pre_tanh)
+                pri_param = torch.concat([pri_mean, pri_log_var], dim=-1)
 
             if not self.disable_thinker:
                 reset = sample(reset_logits, greedy=greedy, dim=-1)
@@ -810,13 +816,6 @@ class ActorNetBase(BaseNet):
                 action = pri_env           
             action_prob = F.softmax(pri_logits, dim=-1)    
             if not self.tuple_action: action_prob = action_prob[:, :, 0]    
-            
-            misc["reset_logits"] = reset_logits
-            if self.discrete_action:
-                misc["pri_logits"] = pri_logits
-            else:
-                misc["pri_mean"] = pri_mean
-                misc["pri_log_var"] = pri_log_var
 
         if self.critic:
             # compute baseline
@@ -859,7 +858,9 @@ class ActorNetBase(BaseNet):
         
         actor_out = ActorOut(
             pri=pri if self.actor else None,
+            pri_param=pri_param if self.actor else None,
             reset=reset if self.actor else None,
+            reset_logits=reset_logits if self.actor else None,
             action=action if self.actor else None,
             action_prob=action_prob if self.actor else None,
             c_action_log_prob=c_action_log_prob if self.actor else None,            
@@ -991,7 +992,6 @@ class DRCNet(BaseNet):
         pri = sample(pri_logits, greedy=greedy, dim=-1)
         pri_logits = pri_logits.view(T, B, self.dim_actions, self.num_actions)
         pri = pri.view(T, B, self.dim_actions)      
-        reset = None
 
         # clamp the action to clamp_action
         if clamp_action is not None:
@@ -1016,14 +1016,12 @@ class DRCNet(BaseNet):
             )
         else:
             reg_loss = None
-
-        misc = {
-            "pri_logits": pri_logits,
-        }
-
+            
         actor_out = ActorOut(
             pri=pri,
-            reset=reset,
+            pri_param=pri_logits,
+            reset=None,
+            reset_logits=None,
             action=action,
             action_prob=action_prob,
             c_action_log_prob=c_action_log_prob,            
@@ -1031,7 +1029,7 @@ class DRCNet(BaseNet):
             baseline_enc=None,
             entropy_loss=entropy_loss,
             reg_loss=reg_loss,
-            misc=misc,
+            misc={},
         )
         return actor_out, core_state
 
@@ -1142,7 +1140,9 @@ class MCTS():
 
         actor_out = ActorOut(
             pri=pri,
+            pri_logits=None,
             reset=reset,
+            reset_logits=None,
             action=action,
             action_prob=action_prob,
             c_action_log_prob=None,            

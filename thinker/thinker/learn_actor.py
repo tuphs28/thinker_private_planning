@@ -463,12 +463,13 @@ class SActorLearner:
             else:
                 base_actor_out = train_actor_out
             if self.actor_net.discrete_action:
-                base_stat["pri_logits"] = base_actor_out.misc["pri_logits"].detach()
+                base_stat["pri_logits"] = base_actor_out.pri_param.detach()
             else:
-                base_stat["pri_mean"] = base_actor_out.misc["pri_mean"].detach()
-                base_stat["pri_log_var"] = base_actor_out.misc["pri_log_var"].detach()
+                pri_param = base_actor_out.pri_param.detach()
+                base_stat["pri_mean"] = pri_param[:, :, :pri_param.shape[-1]//2]
+                base_stat["pri_log_var"] = pri_param[:, :, pri_param.shape[-1]//2:]
             if not self.disable_thinker:
-                base_stat["reset_logits"] = base_actor_out.misc["reset_logits"].detach()
+                base_stat["reset_logits"] = base_actor_out.reset_logits.detach()
         rewards = train_actor_out.reward
 
         # compute advantage and baseline        
@@ -486,9 +487,14 @@ class SActorLearner:
         if self.flags.cur_cost > 0.:
             discounts.append((~train_actor_out.done).float() * self.im_discounting)            
             masks.append(None)
-        log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
-        if not self.flags.parallel_actor or self.ppo:
-            log_rhos = torch.zeros_like(log_rhos)
+
+        if not self.impact_enable:
+            log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
+        elif impact_first_sample and not self.ppo:
+            log_rhos = tar_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
+        elif impact_first_sample and self.ppo:
+            log_rhos = torch.zeros_like(tar_actor_out.c_action_log_prob)
+
         for i in range(self.num_rewards):
             prefix = self.rewards_ls[i]
             prefix_rewards = rewards[:, :, i]
@@ -610,22 +616,23 @@ class SActorLearner:
         if self.impact_enable:
             if self.actor_net.discrete_action:
                 tar_pri_log_prob = F.log_softmax(base_stat["pri_logits"], dim=-1)
-                pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
+                pri_log_prob = F.log_softmax(new_actor_out.pri_param, dim=-1)
                 pri_kl_loss = F.kl_div(pri_log_prob, tar_pri_log_prob, reduction="none", log_target=True)
                 pri_kl_loss = torch.sum(pri_kl_loss, dim=-1)
             else:
-                pri_kl_loss = guassian_kl_div(base_stat["pri_mean"], 
-                                          base_stat["pri_log_var"],
-                                          new_actor_out.misc["pri_mean"],
-                                          new_actor_out.misc["pri_log_var"]
-                                          )            
+                pri_kl_loss = guassian_kl_div(
+                    base_stat["pri_mean"], 
+                    base_stat["pri_log_var"],
+                    new_actor_out.pri_param[:, :, :new_actor_out.pri_param.shape[-1]//2],
+                    new_actor_out.pri_param[:, :, new_actor_out.pri_param.shape[-1]//2:]
+                )            
             pri_kl_loss = torch.sum(pri_kl_loss)
             #if impact_first_sample: print("pri_kl_loss", pri_kl_loss)
             kl_loss = pri_kl_loss
 
             if not self.disable_thinker:                
                 tar_reset_log_prob = F.log_softmax(base_stat["reset_logits"], dim=-1)
-                reset_log_prob = F.log_softmax(new_actor_out.misc["reset_logits"], dim=-1)
+                reset_log_prob = F.log_softmax(new_actor_out.reset_logits, dim=-1)
                 reset_kl_loss = F.kl_div(reset_log_prob, tar_reset_log_prob, reduction="sum", log_target=True)
                 kl_loss += reset_kl_loss
 

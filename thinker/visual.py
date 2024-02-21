@@ -443,8 +443,8 @@ def visualize(
             agent_v = actor_out.baseline[0, 0, 0]
 
         # additional stat record
-        im_dict["pri_logits"].append(actor_out.misc["pri_logits"][:,0])
-        im_dict["reset_logits"].append(actor_out.misc["reset_logits"][:,0])
+        im_dict["pri_logits"].append(actor_out.pri_param[:,0])
+        im_dict["reset_logits"].append(actor_out.reset_logits[:,0])
         im_dict["pri"].append(actor_out.pri[:,0])
         im_dict["cur_reset"].append(actor_out.reset[:,0])
         
@@ -547,7 +547,7 @@ def visualize(
                     ax=axs[3],
                 )
             model_policy_logits = tree_reps_["root_logits"][0].view(actor_net.dim_actions, actor_net.num_actions)
-            agent_policy_logits = actor_out.misc["pri_logits"][0, 0]
+            agent_policy_logits = actor_out.pri_param[0, 0]
             action = torch.nn.functional.one_hot(
                 actor_out.pri[0, 0], env.num_actions
             )
