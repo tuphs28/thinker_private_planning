@@ -77,9 +77,10 @@ cur_reward_pri: true # whether to use prioritized cur reward (i.e. relu(r - mean
 cur_reward_min: 0. # minimum normalized curisoity rewards; over -100 for no clamping
 cur_reward_max: 1000. # maximum normalized curisoity rewards; over 100 for no clamping
 cur_ema: 0.999 # decaying rate of mean and second moment
-# impact-related
-impact_k: 1 # number of epoch
+# impact-related / PPO-related
+impact_k: 1 # number of SGD iteration per epoch; set to higher than 1 to enable ppo / impact
 impact_n: 1 # size of circular buffer
+ppo: false # whether to use ppo mode or impact mode
 impact_update_tar_freq: 2 # update frequence of target network
 impact_beta: 0.5 # beta for is clipping
 impact_update_lambda: 0. # update lambda when refreshing target network; 0 for direct copy without ema

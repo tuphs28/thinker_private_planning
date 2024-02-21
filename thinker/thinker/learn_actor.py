@@ -164,6 +164,9 @@ class SActorLearner:
             self.scaler = GradScaler(init_scale=2**8)
         
         self.impact_enable = self.flags.impact_k > 1
+        self.ppo = self.flags.ppo
+        if self.ppo: 
+            assert self.flags.impact_k > 1, f"For PPO mode, impact_k needs to be larger than 1, not {self.flags.impact_k}"
         if self.impact_enable:
             self.impact_n = self.flags.impact_n
             self.impact_k = self.flags.impact_k
@@ -176,9 +179,10 @@ class SActorLearner:
             self.impact_update_tar_freq = self.flags.impact_update_tar_freq
             self.impact_t = 0
             self.datas = collections.deque(maxlen=self.impact_n)
-            self.tar_actor_net = ActorNet(**actor_param)
-            self.tar_actor_net.to(self.device)
-            self.update_target()
+            if not self.ppo:
+                self.tar_actor_net = ActorNet(**actor_param)
+                self.tar_actor_net.to(self.device)
+                self.update_target()
             self.kl_losses = collections.deque(maxlen=100)
             self.impact_is_abs = collections.deque(maxlen=100)
         self.dbg_adv = collections.deque(maxlen=100)
@@ -250,7 +254,7 @@ class SActorLearner:
         self.datas.append([data, None])
         self.impact_t += 1
         r = False
-        if self.impact_t % self.impact_update_tar_freq == 0: self.update_target()        
+        if self.impact_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
                 ns = random.sample(range(len(self.datas)), len(self.datas))
@@ -412,24 +416,6 @@ class SActorLearner:
         T, B = train_actor_out.done.shape
         T = T - 1        
         
-        # if False and self.timer() - self.dbg_start_time > 30:
-        #    self.dbg_start_time = self.timer()
-        #    d = {
-        #        "step": self.step,
-        #        "real_step": self.real_step,
-        #        "tot_eps": self.tot_eps,
-        #        "ret_buffers": self.ret_buffers,
-        #        "norm_stats": self.norm_stats,
-        #        "crnorm": self.crnorm, 
-        #        "actor_net_optimizer_state_dict": self.optimizer.state_dict(),
-        #        "actor_net_scheduler_state_dict": self.scheduler.state_dict(),
-        #        "actor_net_state_dict": self.actor_net.state_dict(),                
-        #        "flags": vars(self.flags),
-        #        "train_actor_out": train_actor_out,
-        #        "initial_actor_state": initial_actor_state,
-        #    }      
-        #    torch.save(d, self.ckp_path + ".dbg.tmp")
-        
         if self.disable_thinker:
             clamp_action = train_actor_out.pri[1:]
         else:
@@ -445,13 +431,17 @@ class SActorLearner:
         compute_tar = tar_stat is None and self.impact_enable
         if compute_tar:
             tar_stat = {}
-            with torch.no_grad():
-                tar_actor_out, _ = self.tar_actor_net(
-                    train_actor_out, 
-                    initial_actor_state,
-                    clamp_action = clamp_action,
-                    compute_loss = False,
-                )
+            if not self.ppo:
+                # need separate target value in case of impact, but not ppo
+                with torch.no_grad():
+                    tar_actor_out, _ = self.tar_actor_net(
+                        train_actor_out, 
+                        initial_actor_state,
+                        clamp_action = clamp_action,
+                        compute_loss = False,
+                    )
+            else:
+                tar_actor_out = new_actor_out    
         else:
             tar_actor_out = new_actor_out
 
@@ -611,8 +601,6 @@ class SActorLearner:
                 pri_log_prob = F.log_softmax(new_actor_out.misc["pri_logits"], dim=-1)
                 pri_kl_loss = F.kl_div(pri_log_prob, tar_pri_log_prob, reduction="none", log_target=True)
                 pri_kl_loss = torch.sum(pri_kl_loss, dim=-1)
-                # print("tar_pri_log_prob", torch.exp(tar_pri_log_prob[:3, :3]).detach())
-                # print("pri_log_prob", torch.exp(pri_log_prob[:3, :3]).detach())
             else:
                 pri_kl_loss = guassian_kl_div(tar_stat["pri_mean"], 
                                           tar_stat["pri_log_var"],
