@@ -258,14 +258,15 @@ class SActorLearner:
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
                 ns = random.sample(range(len(self.datas)), len(self.datas))
-                for n in ns:
+                for k, n in enumerate(ns):
                     data, base_stat = self.datas[n]
                     #print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, base_stat is None)
-                    r, base_stat = self.consume_data_single(data, timing=timing, base_stat=base_stat)
+                    update_beta = (k == len(ns) - 1)
+                    r, base_stat = self.consume_data_single(data, timing=timing, base_stat=base_stat, update_beta=update_beta)
                     self.datas[n][1] = base_stat     
         return r
 
-    def consume_data_single(self, data, timing=None, base_stat=None):
+    def consume_data_single(self, data, timing=None, base_stat=None, update_beta=False):
         impact_first_sample = base_stat is None and self.impact_enable
 
         train_actor_out, initial_actor_state = data
@@ -274,7 +275,7 @@ class SActorLearner:
 
         # compute losses
         out = self.compute_losses(
-            train_actor_out, initial_actor_state, base_stat
+            train_actor_out, initial_actor_state, base_stat, update_beta
         )
         if not self.impact_enable:
             losses, train_actor_out = out
@@ -411,7 +412,7 @@ class SActorLearner:
         else:
             return r, base_stat
 
-    def compute_losses(self, train_actor_out, initial_actor_state, base_stat=None):
+    def compute_losses(self, train_actor_out, initial_actor_state, base_stat=None, update_beta=False):
         # compute loss and then discard the first step in train_actor_out
 
         T, B = train_actor_out.done.shape
@@ -639,10 +640,11 @@ class SActorLearner:
             if self.flags.impact_kl_coef > 0.:
                 total_loss += self.flags.impact_kl_coef * self.actor_net.kl_beta * kl_loss         
                 avg_kl_loss = kl_loss / T / B  
-                if avg_kl_loss < self.flags.impact_kl_targ / 1.5:
-                    self.actor_net.kl_beta /= 2
-                elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
-                    self.actor_net.kl_beta *= 2
+                if update_beta:                
+                    if avg_kl_loss < self.flags.impact_kl_targ / 1.5:
+                        self.actor_net.kl_beta /= 2
+                    elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
+                        self.actor_net.kl_beta *= 2
                 self.actor_net.kl_beta = torch.clamp(self.actor_net.kl_beta, 1e-6, 1e6)
             self.kl_losses.append(kl_loss.item())            
             losses["kl_loss"] = np.mean(self.kl_losses)
