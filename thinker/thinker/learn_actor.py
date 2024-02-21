@@ -443,7 +443,7 @@ class SActorLearner:
                     )
 
         # Take final value function slice for bootstrapping.
-        if self.impact_first_sample:
+        if impact_first_sample:
             if not self.ppo:
                 bootstrap_value = tar_actor_out.baseline[-1]
             else:
