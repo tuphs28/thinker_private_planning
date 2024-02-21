@@ -260,7 +260,7 @@ class SActorLearner:
                 ns = random.sample(range(len(self.datas)), len(self.datas))
                 for n in ns:
                     data, base_stat = self.datas[n]
-                    print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, base_stat is None)
+                    #print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, base_stat is None)
                     r, base_stat = self.consume_data_single(data, timing=timing, base_stat=base_stat)
                     self.datas[n][1] = base_stat     
         return r
@@ -620,7 +620,7 @@ class SActorLearner:
                                           new_actor_out.misc["pri_log_var"]
                                           )            
             pri_kl_loss = torch.sum(pri_kl_loss)
-            if impact_first_sample: print("pri_kl_loss", pri_kl_loss)
+            #if impact_first_sample: print("pri_kl_loss", pri_kl_loss)
             kl_loss = pri_kl_loss
 
             if not self.disable_thinker:                
