@@ -197,9 +197,11 @@ def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_ac
         )
     
         env = TransposeWrap(env)
+    if env.observation_space.dtype == np.float64:
+        env = ScaledFloatFrame(env)
     if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
         # 3d input, need transpose
-        env = TransposeWrap(env)
+        env = TransposeWrap(env)        
     return env
 
 # Standard wrappers
@@ -541,18 +543,6 @@ class FrameStack(gym.Wrapper):
             self.frames.append(i)
         self.env.restore_state(state)
 
-class ScaledFloatFrame(gym.ObservationWrapper):
-    def __init__(self, env):
-        gym.ObservationWrapper.__init__(self, env)
-        self.observation_space = gym.spaces.Box(
-            low=0, high=1, shape=env.observation_space.shape, dtype=np.float32
-        )
-
-    def observation(self, observation):
-        # careful! This undoes the memory optimization, use
-        # with smaller replay buffers only.
-        return np.array(observation).astype(np.float32) / 255.0
-
 class LazyFrames(object):
     def __init__(self, frames):
         """This object ensures that common frames between the observations are only stored once.
@@ -604,6 +594,32 @@ class StateWrapper(gym.Wrapper):
         self.env.restore_state(state["ale_state"])
 
 class ScaledFloatFrame(gym.ObservationWrapper):
+    """
+    An environment wrapper that scales observations from uint8 to float32 and
+    normalizes them if they are uint8. If observations are float64, it converts them to float32 without normalization.
+    """
+    def __init__(self, env):
+        super(ScaledFloatFrame, self).__init__(env)
+        assert self.env.observation_space.dtype in [np.uint8, np.float64]
+
+        # Determine if the original observation space is uint8
+        self.is_uint8 = self.env.observation_space.dtype == np.uint8
+        # Adjust the observation space to reflect the change in dtype
+        self.observation_space = gym.spaces.Box(
+            low=self.env.observation_space.low if not self.is_uint8 else 0,
+            high=self.env.observation_space.high if not self.is_uint8 else 1,
+            shape=self.env.observation_space.shape,
+            dtype=np.float32
+        )
+
+    def observation(self, observation):
+        # Convert observation to float32
+        observation = np.array(observation, dtype=np.float32)        
+        # Normalize only if the original observation space was uint8
+        if self.is_uint8: observation = observation / 255.0
+        return observation
+
+class ScaledFloatFrame(gym.ObservationWrapper):
     def __init__(self, env):
         gym.ObservationWrapper.__init__(self, env)
         self.observation_space = gym.spaces.Box(
@@ -614,6 +630,7 @@ class ScaledFloatFrame(gym.ObservationWrapper):
         # careful! This undoes the memory optimization, use
         # with smaller replay buffers only.
         return np.array(observation).astype(np.float32) / 255.0
+
 
 def wrap_deepmind(
     env,
