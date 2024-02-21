@@ -260,7 +260,7 @@ class SActorLearner:
                 ns = random.sample(range(len(self.datas)), len(self.datas))
                 for n in ns:
                     data, tar_stat = self.datas[n]
-                    print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_freq, tar_stat is None)
+                    print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, tar_stat is None)
                     r, tar_stat = self.consume_data_single(data, timing=timing, tar_stat=tar_stat)
                     self.datas[n][1] = tar_stat     
         return r
@@ -512,7 +512,10 @@ class SActorLearner:
                 self.norm_stats[i] = v_trace.norm_stat
                 if compute_tar:
                     beta = torch.log(torch.tensor(self.flags.impact_beta, device=self.device))
-                    log_is_de = torch.maximum(tar_actor_out.c_action_log_prob, train_actor_out.c_action_log_prob + beta)
+                    if not self.ppo:
+                        log_is_de = torch.maximum(tar_actor_out.c_action_log_prob, train_actor_out.c_action_log_prob + beta)
+                    else:
+                        log_is_de = train_actor_out.c_action_log_prob
                     tar_trace = {
                         "pg_advantages": v_trace.pg_advantages_nois.detach(),
                         "log_is_de": log_is_de.detach(),
