@@ -18,7 +18,6 @@ import torch
 import torch.nn.functional as F
 
 def process_flags(flags):
-
     if flags.wrapper_type == 1:
         flags.rec_t = 1
         # flags.train_model = False
@@ -68,6 +67,9 @@ def process_flags_actor(flags):
     if check_perfect_model(flags.wrapper_type):
         flags.cur_cost = 0.
         flags.cur_enable = False    
+
+    if not flags.has_model:
+        flags.train_model = False
     
     return flags
 
