@@ -511,7 +511,7 @@ class SActorLearner:
                 return_norm_type=self.flags.return_norm_type 
             if not self.impact_enable or impact_first_sample:
                 if not self.impact_enable or self.ppo:
-                    values = train_actor_out.baseline[:, :, i]
+                    values = new_actor_out.baseline[:, :, i]
                 else:
                     values = tar_actor_out.baseline[:, :, i]
                 v_trace = compute_v_trace(
