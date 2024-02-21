@@ -608,6 +608,7 @@ class SActorLearner:
                                           new_actor_out.misc["pri_log_var"]
                                           )            
             pri_kl_loss = torch.sum(pri_kl_loss)
+            if compute_tar: print("kl_loss", pri_kl_loss)
             kl_loss = pri_kl_loss
 
             if not self.disable_thinker:                
