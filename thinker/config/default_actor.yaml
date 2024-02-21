@@ -94,7 +94,7 @@ preload_actor: '' # path for the folder that consists ckp_actor.tar, which is us
 savedir: '../logs/__project__' # base log directory
 use_wandb: false # whether to use wandb; need to have global variable WANDB_USER set to wandb user
 wandb_ckp_freq: 500000 # frequency in real steps to upload all files in the run
-policy_vis_freq: 2000000 # frequency in real steps to visualize the run
+policy_vis_freq: -1 # frequency in real steps to visualize the run
 policy_vis_length: 20 # length of the video visualization
 # misc
 profile: false # whether to output all the time statistics of the run
