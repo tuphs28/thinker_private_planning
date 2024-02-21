@@ -486,10 +486,7 @@ class SActorLearner:
         if self.flags.cur_cost > 0.:
             discounts.append((~train_actor_out.done).float() * self.im_discounting)            
             masks.append(None)
-        if self.impact_enable:
-            log_rhos = tar_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
-        else:
-            log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
+        log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
         if not self.flags.parallel_actor or self.ppo:
             log_rhos = torch.zeros_like(log_rhos)
         for i in range(self.num_rewards):
