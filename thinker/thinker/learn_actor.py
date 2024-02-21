@@ -493,7 +493,7 @@ class SActorLearner:
         elif impact_first_sample and not self.ppo:
             log_rhos = tar_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
         elif impact_first_sample and self.ppo:
-            log_rhos = torch.zeros_like(tar_actor_out.c_action_log_prob)
+            log_rhos = torch.zeros_like(train_actor_out.c_action_log_prob)
 
         for i in range(self.num_rewards):
             prefix = self.rewards_ls[i]
