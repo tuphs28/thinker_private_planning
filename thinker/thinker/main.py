@@ -10,11 +10,11 @@ from thinker.buffer import ModelBuffer, SModelBuffer, GeneralBuffer
 from thinker.learn_model import ModelLearner, SModelLearner
 from thinker.model_net import ModelNet
 from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
-from thinker.wrapper import PreWrapper, DummyWrapper, PostWrapper
+from thinker.wrapper import PreWrapper, DummyWrapper, PostWrapper, NormalizeObservation
 from thinker.cenv import cModelWrapper, cPerfectWrapper
 from thinker.simple_env import SimWrapper
 import gym
-from gym.wrappers import NormalizeObservation
+#from gym.wrappers import NormalizeObservation
 
 TrainModelOut = namedtuple(
     "TrainModelOut",
