@@ -649,7 +649,7 @@ class SActorLearner:
                         self.actor_net.kl_beta /= 2
                     elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
                         self.actor_net.kl_beta *= 2
-                self.actor_net.kl_beta = torch.clamp(self.actor_net.kl_beta, 1e-6, 1e6)
+                self.actor_net.kl_beta = torch.clamp(self.actor_net.kl_beta, 1e-6, 1e3)
             self.kl_losses.append(kl_loss.item())            
             losses["kl_loss"] = np.mean(self.kl_losses)
         losses["total_loss"] = total_loss
