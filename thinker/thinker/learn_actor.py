@@ -182,6 +182,7 @@ class SActorLearner:
             if not self.ppo:
                 self.tar_actor_net = ActorNet(**actor_param)
                 self.tar_actor_net.to(self.device)
+                self.tar_actor_net.train(False)
                 self.update_target()
             self.kl_losses = collections.deque(maxlen=100)
             self.impact_is_abs = collections.deque(maxlen=100)
@@ -628,7 +629,10 @@ class SActorLearner:
                     new_actor_out.pri_param[:, :, new_actor_out.pri_param.shape[-1]//2:]
                 )            
             pri_kl_loss = torch.sum(pri_kl_loss)
-            #if impact_first_sample: print("pri_kl_loss", pri_kl_loss)
+            # if impact_first_sample: 
+                # print("new", new_actor_out.pri_param[:2, 4, :3])
+                # print("old", train_actor_out.pri_param[:2, 4, :3])
+                # print("pri_kl_loss", pri_kl_loss)
             kl_loss = pri_kl_loss
 
             if not self.disable_thinker:                

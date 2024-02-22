@@ -195,8 +195,6 @@ class ObsNorm(nn.Module):
 
     def forward(self, x):
         """Normalizes observations."""
-        if self.training:
-            self.update(x)
-        
         normalized_obs = (x - self.mean) / (torch.sqrt(self.var + 1e-8))
+        if self.training: self.update(x)
         return normalized_obs    
