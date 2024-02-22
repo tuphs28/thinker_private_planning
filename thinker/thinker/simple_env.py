@@ -6,9 +6,9 @@ import torch.nn.functional as F
 import thinker.util as util
 
 
-class SimWrapper():
+class SimWrapper(gym.Wrapper):
     def __init__(self, env, env_n, flags, model_net, device=None, timing=False):        
-
+        gym.Wrapper.__init__(self, env)
         if flags.test_rec_t > 0:
             self.rec_t = flags.test_rec_t
             self.rep_rec_t = flags.rec_t         
