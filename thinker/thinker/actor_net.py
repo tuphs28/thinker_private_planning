@@ -6,7 +6,7 @@ from torch.cuda.amp import autocast
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM
 from thinker.core.module import MLP, OneDResBlock
-from thinker.model_net import BaseNet, RVTran
+from thinker.model_net import RVTran
 from thinker.legacy import AFrameEncoderLegacy
 from gym import spaces
 
@@ -277,20 +277,104 @@ class RNNEncoder(nn.Module):
         d = self.rnn_out_fc(d)
         return d, core_state
     
-class ActorNetBaseSep(BaseNet):
-    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None):
-        super(ActorNetBaseSep, self).__init__()
-        self.actor = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=True, critic=False)
-        self.critic = ActorNetBase(obs_space, action_space, flags, tree_rep_meaning, actor=False, critic=True)
-        self.initial_state(1)
-        self.num_actions = self.actor.num_actions
-        self.dim_actions = self.actor.dim_actions
-        self.tuple_action = self.actor.tuple_action
-        self.discrete_action = self.actor.discrete_action
-        self.rv_tran = self.critic.rv_tran
+class ActorBaseNet(nn.Module):
+    # base class for all actor network
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=False, record_state=False):
+        super(ActorBaseNet, self).__init__()
+        self.disable_thinker = flags.wrapper_type == 1
+        self.record_state = record_state        
+
+        self.obs_space = obs_space
+        self.action_space = action_space
+        self.flags = flags      
+        self.tree_rep_meaning = tree_rep_meaning
+
+        self.float16 = flags.float16
+        self.num_rewards = 1
+        self.num_rewards += int(flags.im_cost > 0.0)
+        self.num_rewards += int(flags.cur_cost > 0.0)
+        self.enc_type = flags.critic_enc_type  
+        self.rv_tran = None
+        self.critic_zero_init = flags.critic_zero_init             
+
+        if not self.disable_thinker:
+            pri_action_space = action_space[0][0]            
+        else:
+            pri_action_space = action_space[0]
+
+        # action space processing
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(pri_action_space)
+        
+        self.ordinal = flags.actor_ordinal
+        if self.ordinal:
+            indices = torch.arange(self.num_actions).view(-1, 1)
+            ordinal_mask = (indices + indices.T) <= (self.num_actions - 1)
+            ordinal_mask = ordinal_mask.float()
+            self.register_buffer("ordinal_mask", ordinal_mask)
+
+        # state space processing
+        self.see_tree_rep = flags.see_tree_rep and not self.disable_thinker
+        if self.see_tree_rep:
+            self.tree_reps_shape = obs_space["tree_reps"].shape[1:]             
+            if self.legacy:
+                self.tree_reps_shape = list(self.tree_reps_shape)
+                self.tree_reps_shape[0] -= 2
+
+        self.see_h = flags.see_h and not self.disable_thinker
+        if self.see_h:
+            self.hs_shape = obs_space["hs"].shape[1:]
+        self.see_x = flags.see_x
+        if self.see_x and not self.disable_thinker:
+            self.xs_shape = obs_space["xs"].shape[1:]
+        self.see_real_state = flags.see_real_state        
+        
+        if flags.see_real_state:
+            assert obs_space["real_states"].dtype in ['uint8', 'float32'], f"Unupported observation sapce {obs_space['real_states']}"            
+            low = torch.tensor(obs_space["real_states"].low[0])
+            high = torch.tensor(obs_space["real_states"].high[0])
+            self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()            
+            if self.need_norm:
+                self.register_buffer("norm_low", low)
+                self.register_buffer("norm_high", high)
+            self.real_states_shape = obs_space["real_states"].shape[1:]     
+
         if getattr(flags, "impact_k", 1) > 1:
             kl_beta = torch.tensor(1.)
             self.register_buffer("kl_beta", kl_beta)
+
+    def normalize(self, x):
+        x.dtype == self.obs_space["real_states"].dtype
+        if self.need_norm:
+            x = (x.float() - self.norm_low) / \
+                (self.norm_high -  self.norm_low)
+        return x
+    
+    def ordinal_encode(self, logits):
+        norm_softm = F.sigmoid(logits)
+        norm_softm_tiled = torch.tile(norm_softm.unsqueeze(-1), [1,1,1,self.num_actions])
+        return torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
+
+    def get_weights(self):
+        return {k: v.cpu().numpy() for k, v in self.state_dict().items()}    
+
+    def set_weights(self, weights):
+        device = next(self.parameters()).device
+        tensor = isinstance(next(iter(weights.values())), torch.Tensor)
+        if not tensor:
+            self.load_state_dict(
+                {k: torch.tensor(v, device=device) for k, v in weights.items()}
+            )
+        else:
+            self.load_state_dict({k: v.to(device) for k, v in weights.items()})
+
+class ActorNetSep(ActorBaseNet):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):
+        super(ActorNetSep, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
+        self.actor = ActorNetSingle(obs_space, action_space, flags, tree_rep_meaning, record_state, actor=True, critic=False)
+        self.critic = ActorNetSingle(obs_space, action_space, flags, tree_rep_meaning, record_state, actor=False, critic=True)
+        self.initial_state(1)
+        self.rv_tran = self.critic.rv_tran
 
     def initial_state(self, batch_size, device=None):
         actor_state = self.actor.initial_state(batch_size, device)
@@ -321,71 +405,18 @@ class ActorNetBaseSep(BaseNet):
         core_state = actor_state + critic_state
         return actor_out, core_state
 
-class ActorNetBase(BaseNet):
-    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, actor=True, critic=True, record_state=False):
-        super(ActorNetBase, self).__init__()
+class ActorNetSingle(ActorBaseNet):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False, actor=True, critic=True):
+        super(ActorNetSingle, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)      
+        self.legacy = getattr(flags, "legacy", False)            
+        self.actor = actor
+        self.critic = critic
 
-        self.disable_thinker = flags.wrapper_type == 1
-        self.see_double = flags.return_double
-        self.legacy = getattr(flags, "legacy", False)
-        self.record_state = record_state
-
-        self.see_tree_rep = flags.see_tree_rep and not self.disable_thinker
-        if self.see_tree_rep:
-            self.tree_reps_shape = obs_space["tree_reps"].shape[1:]             
-            if self.legacy:
-                self.tree_reps_shape = list(self.tree_reps_shape)
-                self.tree_reps_shape[0] -= 2
-
-        self.see_h = flags.see_h and not self.disable_thinker
-        if self.see_h:
-            self.hs_shape = obs_space["hs"].shape[1:]
-        self.see_x = flags.see_x
-        if self.see_x and not self.disable_thinker:
-            self.xs_shape = obs_space["xs"].shape[1:]
-        self.see_real_state = flags.see_real_state        
-        if flags.see_real_state:
-            if obs_space["real_states"].dtype == 'uint8':
-                self.state_dtype_n = 0
-            elif obs_space["real_states"].dtype == 'float32':
-                self.state_dtype_n = 1
-            else:
-                raise Exception(f"Unupported observation sapce", obs_space["real_states"])            
-            low = torch.tensor(obs_space["real_states"].low[0])
-            high = torch.tensor(obs_space["real_states"].high[0])
-            self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()            
-            if self.need_norm:
-                self.register_buffer("norm_low", low)
-                self.register_buffer("norm_high", high)
-            self.real_states_shape = obs_space["real_states"].shape[1:]
-
-        if not self.disable_thinker:
-            pri_action_space = action_space[0][0]            
-        else:
-            pri_action_space = action_space[0]
-
-        if type(pri_action_space) == spaces.discrete.Discrete:                        
-            self.num_actions = pri_action_space.n    
-            self.dim_actions = 1
-            self.dim_rep_actions = self.num_actions
-            self.tuple_action = False        
-            self.discrete_action = True
-        elif type(pri_action_space) == spaces.tuple.Tuple:              
-            self.num_actions = pri_action_space[0].n    
-            self.dim_actions = len(pri_action_space)    
-            self.dim_rep_actions = self.dim_actions
-            self.tuple_action = True
-            self.discrete_action = True
-        elif type(pri_action_space) == spaces.Box:  
-            self.num_actions = 1   
-            self.dim_actions = pri_action_space.shape[0] 
-            self.dim_rep_actions = self.dim_actions
-            self.tuple_action = True
-            self.discrete_action = False
+        if not self.discrete_action and self.actor:
             min_log_var = 2 * torch.log(torch.tensor(flags.actor_min_std))
             max_log_var = 2 * torch.log(torch.tensor(flags.actor_max_std))
             self.register_buffer("min_log_var", min_log_var)
-            self.register_buffer("max_log_var", max_log_var)
+            self.register_buffer("max_log_var", max_log_var)   
 
         self.tran_dim = flags.tran_dim 
         self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep         
@@ -393,21 +424,9 @@ class ActorNetBase(BaseNet):
         self.x_rnn = flags.x_rnn and flags.see_x  
         self.real_state_rnn = flags.real_state_rnn and flags.see_real_state 
 
-        self.num_rewards = 1
-        self.num_rewards += int(flags.im_cost > 0.0)
-        self.num_rewards += int(flags.cur_cost > 0.0)
-
-        self.enc_type = flags.critic_enc_type  
-        self.critic_zero_init = flags.critic_zero_init        
-
         self.sep_im_head = flags.sep_im_head
         self.last_layer_n = flags.last_layer_n
-
-        self.float16 = flags.float16
-        self.flags = flags        
-        self.actor = actor
-        self.critic = critic
-
+          
         # encoder for state or encoding output
         last_out_size = self.dim_rep_actions + self.num_rewards
         if self.legacy: last_out_size += self.dim_rep_actions
@@ -415,6 +434,7 @@ class ActorNetBase(BaseNet):
         if not self.disable_thinker:
             last_out_size += 2
 
+        self.see_double = flags.return_double
         if self.see_h:
             FrameEncoder = AFrameEncoder if not self.legacy else AFrameEncoderLegacy
             self.h_encoder = FrameEncoder(
@@ -520,12 +540,6 @@ class ActorNetBase(BaseNet):
                     if not self.discrete_action:
                         self.im_policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
                 self.reset = nn.Linear(last_out_size, 2)
-            self.ordinal = flags.actor_ordinal
-            if self.ordinal:
-                indices = torch.arange(self.num_actions).view(-1, 1)
-                ordinal_mask = (indices + indices.T) <= (self.num_actions - 1)
-                ordinal_mask = ordinal_mask.float()
-                self.register_buffer("ordinal_mask", ordinal_mask)
 
         if self.critic:
             self.rv_tran = None
@@ -548,10 +562,6 @@ class ActorNetBase(BaseNet):
                 nn.init.constant_(self.baseline.bias, 0.0)
 
         self.initial_state(batch_size=1) # initialize self.state_idx        
-        if self.actor and self.critic:
-            if getattr(flags, "impact_k", 1) > 1:
-                kl_beta = torch.tensor(1.)
-                self.register_buffer("kl_beta", kl_beta)
 
     def initial_state(self, batch_size, device=None):
         self.state_idx = {}
@@ -861,42 +871,12 @@ class ActorNetBase(BaseNet):
             misc=misc,
         )
         core_state = tuple(new_core_state)
-        return actor_out, core_state
-    
-    def normalize(self, x):
-        if self.state_dtype_n == 0: assert x.dtype == torch.uint8
-        if self.state_dtype_n == 1: assert x.dtype == torch.float32
-        if self.need_norm:
-            x = (x.float() - self.norm_low) / \
-                (self.norm_high -  self.norm_low)
-        return x
-    
-    def ordinal_encode(self, logits):
-        norm_softm = F.sigmoid(logits)
-        norm_softm_tiled = torch.tile(norm_softm.unsqueeze(-1), [1,1,1,self.num_actions])
-        return torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
+        return actor_out, core_state    
 
-class DRCNet(BaseNet):
-    def __init__(self, obs_space, action_space, flags, record_state=False):
-        super(DRCNet, self).__init__()
+class DRCNet(ActorBaseNet):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):
+        super(DRCNet, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
         assert flags.wrapper_type == 1
-
-        self.obs_space = obs_space
-        self.real_state_shape = obs_space["real_states"].shape[1:]
-        self.action_space = action_space
-        self.record_state = record_state
-
-        pri_action_space = action_space[0]
-        if type(pri_action_space) == spaces.discrete.Discrete:    
-            self.tuple_action = False                
-            self.num_actions = pri_action_space.n    
-            self.dim_actions = 1
-            self.dim_rep_actions = self.num_actions
-        else:
-            self.tuple_action = True
-            self.num_actions = pri_action_space[0].n    
-            self.dim_actions = len(pri_action_space)    
-            self.dim_rep_actions = self.dim_actions
 
         self.encoder = nn.Sequential(
             nn.Conv2d(
@@ -911,7 +891,7 @@ class DRCNet(BaseNet):
             ((w + 2 * padding - kernel) // stride + 1),
         )
 
-        h, w = output_shape(self.real_state_shape[1], self.real_state_shape[2], 8, 4, 2)
+        h, w = output_shape(self.real_states_shape[1], self.real_states_shape[2], 8, 4, 2)
         h, w = output_shape(h, w, 4, 2, 1)
 
         self.core = ConvAttnLSTM(            
@@ -940,20 +920,13 @@ class DRCNet(BaseNet):
     def initial_state(self, batch_size, device=None):
         return self.core.initial_state(batch_size, device=device)
 
-    def forward(self, 
-                env_out, 
-                core_state=(), 
-                clamp_action=None, 
-                compute_loss=False,
-                greedy=False,
-                dbg_mode=0,
-                ):
+    def forward(self, env_out, core_state=(), clamp_action=None, compute_loss=False, greedy=False):
         done = env_out.done
         assert (
             len(done.shape) == 2
         ), f"done shape should be (T, B) instead of {done.shape}"
         T, B = done.shape
-        x = env_out.real_states.float() / 255.0
+        x = self.normalize(env_out.real_states.float())
         x = torch.flatten(x, 0, 1)
         x_enc = self.encoder(x)
         core_input = x_enc.view(*((T, B) + x_enc.shape[1:]))
@@ -1025,18 +998,10 @@ class DRCNet(BaseNet):
 
 class MCTS():
     def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):
-        super(MCTS, self).__init__()
-        self.flags = flags
-        self.tree_rep_meaning = tree_rep_meaning
+        super(MCTS, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
         assert flags.wrapper_type in [0, 2], "MCTS only support wrapper_type 0, 2"
         assert not flags.tree_carry, "MCTS does not support tree carry"
-        pri_action_space = action_space[0][0]            
-        if type(pri_action_space) == spaces.discrete.Discrete:  
-            self.tuple_action = False
-            self.num_actions = pri_action_space.n   
-            self.dim_actions = 1            
-        else:
-            raise Exception(f"Unsupported action space f{pri_action_space}")
+        assert type(action_space[0][0]) == spaces.discrete.Discrete, f"Unsupported action space f{action_space}"
         
         self.temp = 1
         self.dir_dist = None
@@ -1159,7 +1124,7 @@ class MCTS():
         return
     
     def get_weights(self):
-        return None
+        return {}
     
     def to(self, device):
         return self
@@ -1172,12 +1137,11 @@ class MCTS():
 
 def ActorNet(*args, **kwargs):
     if getattr(kwargs["flags"], "drc", False):        
-        if "tree_rep_meaning" in kwargs: kwargs.pop("tree_rep_meaning")
         return DRCNet(*args, **kwargs)
     elif getattr(kwargs["flags"], "mcts", False):  
         return MCTS(*args, **kwargs)
     else:        
         if not getattr(kwargs["flags"], "sep_actor_critic", False):
-            return ActorNetBase(*args, **kwargs)
+            return ActorNetSingle(*args, **kwargs)
         else:
-            return ActorNetBaseSep(*args, **kwargs)
+            return ActorNetSep(*args, **kwargs)

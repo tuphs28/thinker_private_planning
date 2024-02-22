@@ -13,6 +13,7 @@ import sys
 import math
 import logging
 from matplotlib import pyplot as plt
+from gym import spaces
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -535,6 +536,27 @@ def encode_action(action, tuple_action, num_actions):
         return action.float() / num_actions
     else:
         return F.one_hot(action.squeeze(-1), num_classes=num_actions).float()
+    
+def process_action_space(pri_action_space):
+    if type(pri_action_space) == spaces.discrete.Discrete:                        
+        num_actions = pri_action_space.n    
+        dim_actions = 1
+        dim_rep_actions = num_actions
+        tuple_action = False        
+        discrete_action = True
+    elif type(pri_action_space) == spaces.tuple.Tuple:              
+        num_actions = pri_action_space[0].n    
+        dim_actions = len(pri_action_space)    
+        dim_rep_actions = dim_actions
+        tuple_action = True
+        discrete_action = True
+    elif type(pri_action_space) == spaces.Box:  
+        num_actions = 1   
+        dim_actions = pri_action_space.shape[0] 
+        dim_rep_actions = dim_actions
+        tuple_action = True
+        discrete_action = False
+    return num_actions, dim_actions, dim_rep_actions, tuple_action, discrete_action
 
 def plot_raw_state(x, ax=None, title=None, savepath=None):
     if ax is None:

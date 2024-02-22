@@ -368,9 +368,11 @@ cdef class cWrapper():
         if type(action_space) == spaces.discrete.Discrete:                    
             self.raw_num_actions = action_space.n    
             self.raw_dim_actions = 1
-        else:
+        elif type(action_space) == spaces.tuple.Tuple:
             self.raw_num_actions = action_space[0].n    
-            self.raw_dim_actions = len(action_space)            
+            self.raw_dim_actions = len(action_space)  
+        else:
+            raise Exception(f"action type {action_space} not supported by cWrapper")          
 
         if not self.sample:      
             self.num_actions = self.raw_num_actions
@@ -667,7 +669,10 @@ cdef class cWrapper():
         return self.env.step(*args, **kwargs)
 
     def get_action_meanings(self):
-        return self.env.get_action_meanings()           
+        return self.env.get_action_meanings()  
+
+    def __getattr__(self, name):
+        return getattr(self.env, name)        
 
 cdef class cModelWrapper(cWrapper):
 

@@ -4,6 +4,7 @@ import cv2
 import torch
 import gym
 from gym import spaces
+import thinker.util as util
 
 class DummyWrapper(gym.Wrapper):
     """DummyWrapper that represents the core wrapper for the real env;
@@ -25,23 +26,10 @@ class DummyWrapper(gym.Wrapper):
         else:
             raise Exception(f"Unupported observation sapce", env.observation_space)
 
-        low = torch.tensor(self.env.observation_space.low[0])
-        high = torch.tensor(self.env.observation_space.high[0])
-        self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()
-        self.norm_low = low.to(device)
-        self.norm_high = high.to(device)
-
         self.train_model = self.flags.train_model
         action_space =  env.action_space[0]
-        if type(action_space) == spaces.discrete.Discrete:    
-            self.dim_actions = 1
-            self.tuple_action = False
-        elif type(action_space) == spaces.tuple.Tuple:  
-            self.dim_actions = len(action_space)    
-            self.tuple_action = True
-        elif type(action_space) == spaces.Box:  
-            self.dim_actions = action_space.shape[0]
-            self.tuple_action = True
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(action_space)
 
     def reset(self, model_net):
         obs = self.env.reset()
@@ -105,24 +93,7 @@ class DummyWrapper(gym.Wrapper):
                 self.per_state = model_net_out.state
                 self.baseline = model_net_out.vs[-1]
         
-        return (states, 
-                reward, 
-                done, 
-                info)
-    
-    def unnormalize(self, x):
-        assert x.dtype == torch.float or x.dtype == torch.float32
-        if self.need_norm:
-            ch = x.shape[-3]
-            x = torch.clamp(x, 0, 1)
-            x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
-        return x
-    
-    def normalize(self, x):
-        if self.need_norm:            
-            x = (x.float() - self.norm_low) / \
-                (self.norm_high -  self.norm_low)
-        return x
+        return states, reward, done, info
     
 class PostWrapper(gym.Wrapper):
     """Wrapper for recording episode return, clipping rewards"""
@@ -130,6 +101,12 @@ class PostWrapper(gym.Wrapper):
         gym.Wrapper.__init__(self, env)
         self.reset_called = False
         self.reward_clip = reward_clip
+        
+        low = torch.tensor(self.env.observation_space["real_states"].low[0])
+        high = torch.tensor(self.env.observation_space["real_states"].high[0])
+        self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()
+        self.norm_low = low
+        self.norm_high = high
     
     def reset(self, model_net):
         state = self.env.reset(model_net)
@@ -175,7 +152,23 @@ class PostWrapper(gym.Wrapper):
         return state, reward, done, info
     
     def render(self, *args, **kwargs):  
-        return self.env.render(*args, **kwargs)
+        return self.env.render(*args, **kwargs)    
+    
+    def unnormalize(self, x):
+        assert x.dtype == torch.float or x.dtype == torch.float32
+        if self.need_norm:
+            ch = x.shape[-3]
+            x = torch.clamp(x, 0, 1)
+            x = x * (self.norm_high[-ch:] -  self.norm_low[-ch:]) + self.norm_low[-ch:]
+        return x
+    
+    def normalize(self, x):
+        if self.need_norm:    
+            if self.norm_low.device != x.device or self.norm_high.device != x.device:
+                self.norm_low = self.norm_low.to(x.device)
+                self.norm_high = self.norm_high.to(x.device)
+            x = (x.float() - self.norm_low) / (self.norm_high -  self.norm_low)
+        return x
 
 def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_action_n=0, atari=False):
     if discrete_k > 0: env = DiscretizeActionWrapper(env, K=discrete_k)
@@ -597,11 +590,11 @@ class StateWrapper(gym.Wrapper):
         self.env.restore_state(state["ale_state"])
 
 class ScaledFloatFrame(gym.ObservationWrapper):
-    """
-    An environment wrapper that scales observations from uint8 to float32 and
-    normalizes them if they are uint8. If observations are float64, it converts them to float32 without normalization.
-    """
-    def __init__(self, env):
+    def __init__(self, env):        
+        """
+        An environment wrapper that scales observations from uint8 to float32 and
+        normalizes them if they are uint8. If observations are float64, it converts them to float32 without normalization.
+        """
         super(ScaledFloatFrame, self).__init__(env)
         assert self.env.observation_space.dtype in [np.uint8, np.float64]
 
@@ -621,29 +614,6 @@ class ScaledFloatFrame(gym.ObservationWrapper):
         # Normalize only if the original observation space was uint8
         if self.is_uint8: observation = observation / 255.0
         return observation
-
-def wrap_deepmind(
-    env,
-    episode_life=True,
-    clip_rewards=True,
-    frame_stack=False,
-    scale=False,
-    grayscale=False,
-    frame_wh=96,
-):
-    """Configure environment for DeepMind-style Atari."""
-    if episode_life:
-        env = EpisodicLifeEnv(env)
-    if "FIRE" in env.unwrapped.get_action_meanings():
-        env = FireResetEnv(env)
-    env = WarpFrame(env, width=frame_wh, height=frame_wh, grayscale=grayscale)
-    if scale:
-        env = ScaledFloatFrame(env)
-    if clip_rewards:
-        env = ClipRewardEnv(env)
-    if frame_stack:
-        env = FrameStack(env, 4)
-    return env
 
 class RepeatActionWrapper(gym.Wrapper):
     def __init__(self, env, repeat_action_n):
@@ -712,7 +682,95 @@ class DiscretizeActionWrapper(gym.ActionWrapper):
         action = np.array(action)  # Ensure action is a NumPy array
         discrete_to_cont = (action / (self.K - 1)) * (self.max_action - self.min_action) + self.min_action
         return discrete_to_cont
-    
+
+
+# wrapper for normalization
+
+class RunningMeanStd:
+    """Tracks the mean, variance and count of values."""
+
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    def __init__(self, epsilon=1e-4, shape=()):
+        """Tracks the mean, variance and count of values."""
+        self.mean = np.zeros(shape, "float64")
+        self.var = np.ones(shape, "float64")
+        self.count = epsilon
+
+    def update(self, x):
+        """Updates the mean, var and count from a batch of samples."""
+        batch_mean = np.mean(x, axis=0)
+        batch_var = np.var(x, axis=0)
+        batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        """Updates from batch mean, variance and count moments."""
+        self.mean, self.var, self.count = update_mean_var_count_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count
+        )
+
+# https://github.com/openai/gym/blob/master/gym/wrappers/normalize.py
+def update_mean_var_count_from_moments(
+    mean, var, count, batch_mean, batch_var, batch_count
+):
+    """Updates the mean, var and count using the previous mean, var, count and batch values."""
+    delta = batch_mean - mean
+    tot_count = count + batch_count
+
+    new_mean = mean + delta * batch_count / tot_count
+    m_a = var * count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
+    new_var = M2 / tot_count
+    new_count = tot_count
+
+    return new_mean, new_var, new_count
+
+class NormalizeObservation(gym.core.Wrapper):
+    """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
+
+    Note:
+        The normalization depends on past trajectories and observations will not be normalized correctly if the wrapper was
+        newly instantiated or the policy was changed recently.
+    """
+
+    def __init__(self, env: gym.Env, epsilon: float = 1e-8):
+        """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
+
+        Args:
+            env (Env): The environment to apply the wrapper
+            epsilon: A stability parameter that is used when scaling the observations.
+        """
+        super().__init__(env)
+        self.is_vector_env = getattr(env, "is_vector_env", False)
+        if self.is_vector_env:
+            self.obs_rms = RunningMeanStd(shape=self.single_observation_space.shape)
+        else:
+            self.obs_rms = RunningMeanStd(shape=self.observation_space.shape)
+        self.epsilon = epsilon
+
+    def step(self, action):
+        obs, rews, dones, infos = self.env.step(action)
+        if self.is_vector_env:
+            obs = self.normalize(obs)
+        else:
+            obs = self.normalize(np.array([obs]))[0]
+        return obs, rews, dones, infos    
+
+    def reset(self, inds=None):
+        """Resets the environment and normalizes the observation."""
+        obs = self.env.reset(inds=inds)
+
+        if self.is_vector_env:
+            return self.normalize(obs)
+        else:
+            return self.normalize(np.array([obs]))[0]
+
+    def normalize(self, obs):
+        """Normalises the observation using the running mean and variance of the observations."""
+        self.obs_rms.update(obs)
+        return (obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.epsilon)   
+
 # wrapper for DM control
     
 def convert_dm_control_to_gym_space(dm_control_space):    
@@ -734,6 +792,29 @@ def convert_dm_control_to_gym_space(dm_control_space):
         space = spaces.Dict({key: convert_dm_control_to_gym_space(value)
                              for key, value in dm_control_space.items()})
         return space
+
+def wrap_deepmind(
+    env,
+    episode_life=True,
+    clip_rewards=True,
+    frame_stack=False,
+    scale=False,
+    grayscale=False,
+    frame_wh=96,
+):
+    """Configure environment for DeepMind-style Atari."""
+    if episode_life:
+        env = EpisodicLifeEnv(env)
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+    env = WarpFrame(env, width=frame_wh, height=frame_wh, grayscale=grayscale)
+    if scale:
+        env = ScaledFloatFrame(env)
+    if clip_rewards:
+        env = ClipRewardEnv(env)
+    if frame_stack:
+        env = FrameStack(env, 4)
+    return env
 
 class DMSuiteEnv(gym.Env):
     def __init__(self, domain_name, task_name, task_kwargs=None, environment_kwargs=None, visualize_reward=False, flatten=True, rgb=False):
@@ -823,90 +904,4 @@ class DMSuiteEnv(gym.Env):
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
-        return self.env.close()
-    
-class RunningMeanStd:
-    """Tracks the mean, variance and count of values."""
-
-    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
-    def __init__(self, epsilon=1e-4, shape=()):
-        """Tracks the mean, variance and count of values."""
-        self.mean = np.zeros(shape, "float64")
-        self.var = np.ones(shape, "float64")
-        self.count = epsilon
-
-    def update(self, x):
-        """Updates the mean, var and count from a batch of samples."""
-        batch_mean = np.mean(x, axis=0)
-        batch_var = np.var(x, axis=0)
-        batch_count = x.shape[0]
-        self.update_from_moments(batch_mean, batch_var, batch_count)
-
-    def update_from_moments(self, batch_mean, batch_var, batch_count):
-        """Updates from batch mean, variance and count moments."""
-        self.mean, self.var, self.count = update_mean_var_count_from_moments(
-            self.mean, self.var, self.count, batch_mean, batch_var, batch_count
-        )
-
-# https://github.com/openai/gym/blob/master/gym/wrappers/normalize.py
-def update_mean_var_count_from_moments(
-    mean, var, count, batch_mean, batch_var, batch_count
-):
-    """Updates the mean, var and count using the previous mean, var, count and batch values."""
-    delta = batch_mean - mean
-    tot_count = count + batch_count
-
-    new_mean = mean + delta * batch_count / tot_count
-    m_a = var * count
-    m_b = batch_var * batch_count
-    M2 = m_a + m_b + np.square(delta) * count * batch_count / tot_count
-    new_var = M2 / tot_count
-    new_count = tot_count
-
-    return new_mean, new_var, new_count
-
-class NormalizeObservation(gym.core.Wrapper):
-    """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
-
-    Note:
-        The normalization depends on past trajectories and observations will not be normalized correctly if the wrapper was
-        newly instantiated or the policy was changed recently.
-    """
-
-    def __init__(self, env: gym.Env, epsilon: float = 1e-8):
-        """This wrapper will normalize observations s.t. each coordinate is centered with unit variance.
-
-        Args:
-            env (Env): The environment to apply the wrapper
-            epsilon: A stability parameter that is used when scaling the observations.
-        """
-        super().__init__(env)
-        self.num_envs = getattr(env, "num_envs", 1)
-        self.is_vector_env = getattr(env, "is_vector_env", False)
-        if self.is_vector_env:
-            self.obs_rms = RunningMeanStd(shape=self.single_observation_space.shape)
-        else:
-            self.obs_rms = RunningMeanStd(shape=self.observation_space.shape)
-        self.epsilon = epsilon
-
-    def step(self, action):
-        obs, rews, dones, infos = self.env.step(action)
-        if self.is_vector_env:
-            obs = self.normalize(obs)
-        else:
-            obs = self.normalize(np.array([obs]))[0]
-        return obs, rews, dones, infos    
-
-    def reset(self, inds=None):
-        """Resets the environment and normalizes the observation."""
-        obs = self.env.reset(inds=inds)
-
-        if self.is_vector_env:
-            return self.normalize(obs)
-        else:
-            return self.normalize(np.array([obs]))[0]
-
-    def normalize(self, obs):
-        """Normalises the observation using the running mean and variance of the observations."""
-        self.obs_rms.update(obs)
-        return (obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.epsilon)    
+        return self.env.close() 
