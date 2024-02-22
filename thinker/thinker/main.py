@@ -3,6 +3,7 @@ import shutil
 import time
 from collections import namedtuple
 import ray
+import numpy as np
 import torch
 import thinker.util as util
 from thinker.buffer import ModelBuffer, SModelBuffer, GeneralBuffer
@@ -13,6 +14,8 @@ from thinker.wrapper import PreWrapper, DummyWrapper, PostWrapper
 from thinker.cenv import cModelWrapper, cPerfectWrapper
 from thinker.simple_env import SimWrapper
 import gym
+from gym.wrappers import NormalizeObservation
+
 TrainModelOut = namedtuple(
     "TrainModelOut",
     [
@@ -56,7 +59,7 @@ class Env(gym.Wrapper):
                  env_n=1, 
                  gpu=True,
                  load_net=True, 
-                 time=False,
+                 timing=False,
                  **kwargs):
         assert name is not None or env_fn is not None, \
             "need either env or env-making function"        
@@ -84,6 +87,7 @@ class Env(gym.Wrapper):
         else:
             self.rank = 0
         self.counter = 0
+        self.ckp_start_time = int(time.strftime("%M")) // 10
 
         self._logger.info(
             "Initializing env %d with device %s"
@@ -223,6 +227,15 @@ class Env(gym.Wrapper):
             
         # create batched asyn. environments
         env = AsyncVectorEnv([env_fn for _ in range(env_n)]) 
+        if self.flags.obs_norm:
+            assert env.observation_space.dtype == np.float32
+            self.ckp_path = os.path.join(self.flags.ckpdir, "ckp_env.npz")
+            env = NormalizeObservation(env)
+            if self.flags.ckp:
+                with np.load(self.ckp_path) as data:
+                    env.obs_rms.mean = data['mean']
+                    env.obs_rms.var = data['var']
+                    env.obs_rms.count = data['count']
         env.seed([i for i in range(
             self.rank * env_n + self.flags.base_seed, 
             self.rank * env_n + self.flags.base_seed + env_n)])       
@@ -246,7 +259,7 @@ class Env(gym.Wrapper):
                         flags=self.flags, 
                         model_net=self.model_net, 
                         device=self.device, 
-                        time=time)
+                        timing=timing)
         
         # wrap the env with a wrapper that computes episode
         # return and episode step for logging purpose;
@@ -449,7 +462,11 @@ class Env(gym.Wrapper):
             if self.status["finish"]:                 
                 if self.rank == 0 and self.train_model: 
                     self._logger.info("Finish training model")
-                self.train_model = False      
+                self.train_model = False   
+
+        if self.rank == 0 and int(time.strftime("%M")) // 10 != self.ckp_start_time:
+            self.save_checkpoint()
+            self.ckp_start_time = int(time.strftime("%M")) // 10
         info["model_status"] = self.status
         self.counter += 1
         return state, reward, done, info       
@@ -546,6 +563,13 @@ class Env(gym.Wrapper):
             elif self.flags.wrapper_type in [0, 2]:
                 self.tree_rep_meaning = util.slice_tree_reps(self.num_actions, self.dim_actions, self.flags.sample_n, self.flags.rec_t)        
         return self.tree_rep_meaning
+    
+    def save_checkpoint(self):
+        if self.flags.obs_norm:
+            mean = self.env.obs_rms.mean
+            var = self.env.obs_rms.var
+            count = self.env.obs_rms.count
+            np.savez(self.ckp_path, mean=mean, var=var, count=count)
 
 def make(*args, **kwargs):
     return Env(*args, **kwargs)

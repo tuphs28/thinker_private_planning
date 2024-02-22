@@ -4,8 +4,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.cuda.amp import autocast
 from thinker import util
-from thinker.core.rnn import ConvAttnLSTM, LSTMReset
-from thinker.core.module import MLP, OneDResBlock, ObsNorm
+from thinker.core.rnn import ConvAttnLSTM
+from thinker.core.module import MLP, OneDResBlock
 from thinker.model_net import BaseNet, RVTran
 from thinker.legacy import AFrameEncoderLegacy
 from gym import spaces
@@ -387,7 +387,6 @@ class ActorNetBase(BaseNet):
             self.register_buffer("min_log_var", min_log_var)
             self.register_buffer("max_log_var", max_log_var)
 
-        self.obs_norm = getattr(flags, "obs_norm", False)
         self.tran_dim = flags.tran_dim 
         self.tree_rep_rnn = flags.tree_rep_rnn and flags.see_tree_rep         
         self.se_lstm_table = getattr(flags, "se_lstm_table", False) and flags.see_tree_rep    
@@ -460,13 +459,6 @@ class ActorNetBase(BaseNet):
                 r_out_size = flags.tran_dim   
             last_out_size += r_out_size       
 
-        if self.obs_norm and (self.see_x or self.see_real_state):
-            if self.see_x:
-                in_shape = self.xs_shape 
-            elif self.see_real_state:
-                in_shape = self.real_states_shape
-            self.obs_norm_layer = ObsNorm(shape=in_shape) 
-                    
         if self.see_tree_rep:            
             self.tree_rep_meaning = tree_rep_meaning
             in_size = self.tree_reps_shape[0]
@@ -671,7 +663,6 @@ class ActorNetBase(BaseNet):
 
         if self.see_x:
             xs = torch.flatten(env_out.xs, 0, 1)
-            if self.obs_norm: xs = self.obs_norm_layer(xs)
             with autocast(enabled=self.float16):                
                 encoded_x = self.x_encoder_pre(xs)
             if self.float16: encoded_x = encoded_x.float()
@@ -687,7 +678,6 @@ class ActorNetBase(BaseNet):
         if self.see_real_state:
             real_states = torch.flatten(env_out.real_states, 0, 1)   
             real_states = self.normalize(real_states)
-            if self.obs_norm: real_states = self.obs_norm_layer(real_states)
             with autocast(enabled=self.float16):      
                 encoded_real_state = self.real_state_encoder(real_states)
             if self.float16: encoded_real_state = encoded_real_state.float()

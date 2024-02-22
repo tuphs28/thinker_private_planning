@@ -35,7 +35,6 @@ see_tree_rep: true # whether to see tree representation
 see_h: true # whether to see model's hidden state
 see_x: false # whether to see the model's predicted state
 legacy: false # whether to use legacy version
-obs_norm: false # whether to normalize obs by avg mean and std
 sep_actor_critic: false # whether to separate actor and critic
 drc: false # whether to use the drc baseline
 mcts: false # whether to use the mcts baseline

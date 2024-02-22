@@ -10,7 +10,7 @@ class DummyWrapper(gym.Wrapper):
     the only function is to convert returning var into tensor
     and reset the env when it is done.
     """
-    def __init__(self, env, env_n, flags, model_net, device=None, time=False):   
+    def __init__(self, env, env_n, flags, model_net, device=None, timing=False):   
         gym.Wrapper.__init__(self, env)
         self.env_n = env_n
         self.flags = flags
@@ -621,19 +621,6 @@ class ScaledFloatFrame(gym.ObservationWrapper):
         # Normalize only if the original observation space was uint8
         if self.is_uint8: observation = observation / 255.0
         return observation
-
-class ScaledFloatFrame(gym.ObservationWrapper):
-    def __init__(self, env):
-        gym.ObservationWrapper.__init__(self, env)
-        self.observation_space = gym.spaces.Box(
-            low=0, high=1, shape=env.observation_space.shape, dtype=np.float32
-        )
-
-    def observation(self, observation):
-        # careful! This undoes the memory optimization, use
-        # with smaller replay buffers only.
-        return np.array(observation).astype(np.float32) / 255.0
-
 
 def wrap_deepmind(
     env,

@@ -7,7 +7,7 @@ import thinker.util as util
 
 
 class SimWrapper():
-    def __init__(self, env, env_n, flags, model_net, device=None, time=False):        
+    def __init__(self, env, env_n, flags, model_net, device=None, timing=False):        
 
         if flags.test_rec_t > 0:
             self.rec_t = flags.test_rec_t
@@ -46,7 +46,7 @@ class SimWrapper():
         self.return_h = flags.return_h  
         self.return_x = flags.return_x
         self.im_enable = flags.im_enable        
-        self.time = time        
+        self.time = timing        
 
         assert not flags.cur_enable 
         assert flags.sample_n <= 0

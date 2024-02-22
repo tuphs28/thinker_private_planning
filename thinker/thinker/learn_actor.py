@@ -182,7 +182,7 @@ class SActorLearner:
             if not self.ppo:
                 self.tar_actor_net = ActorNet(**actor_param)
                 self.tar_actor_net.to(self.device)
-                #self.tar_actor_net.train(False)
+                self.tar_actor_net.train(False)
                 self.update_target()
             self.kl_losses = collections.deque(maxlen=100)
             self.impact_is_abs = collections.deque(maxlen=100)

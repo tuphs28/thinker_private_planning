@@ -74,7 +74,7 @@ class SelfPlayWorker:
                 ray_obj = ray_obj_env,
                 env_n = env_n,
                 gpu = gpu,
-                time = self.time,
+                timing = self.time,
             )
         else:
             self.env = Env(gpu = gpu, **vars(flags))

@@ -337,7 +337,7 @@ cdef class cWrapper():
     cdef int internal_counter
     
 
-    def __init__(self, env, env_n, flags, model_net, device=None, time=False):        
+    def __init__(self, env, env_n, flags, model_net, device=None, timing=False):        
            
         if flags.test_rec_t > 0:
             self.rec_t = flags.test_rec_t
@@ -410,7 +410,7 @@ cdef class cWrapper():
             self.cur_done_elapse = flags.cur_done_elapse
 
         self.stat_mask_type = flags.stat_mask_type
-        self.time = time        
+        self.time = timing        
         
         self.device = torch.device("cpu") if device is None else device        
         self.env = env  
