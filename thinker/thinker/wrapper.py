@@ -36,8 +36,11 @@ class DummyWrapper(gym.Wrapper):
         if type(action_space) == spaces.discrete.Discrete:    
             self.dim_actions = 1
             self.tuple_action = False
-        else:
+        elif type(action_space) == spaces.tuple.Tuple:  
             self.dim_actions = len(action_space)    
+            self.tuple_action = True
+        elif type(action_space) == spaces.Box:  
+            self.dim_actions = action_space.shape[0]
             self.tuple_action = True
 
     def reset(self, model_net):
