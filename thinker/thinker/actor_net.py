@@ -1130,7 +1130,7 @@ class MCTS():
 
         actor_out = ActorOut(
             pri=pri,
-            pri_logits=None,
+            pri_param=None,
             reset=reset,
             reset_logits=None,
             action=action,

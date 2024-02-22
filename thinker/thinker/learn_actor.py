@@ -577,7 +577,7 @@ class SActorLearner:
             baseline_losses.append(baseline_loss)
 
         # sum all the losses
-        total_loss = pg_losses[0]
+        total_loss = pg_losses[0] / self.actor_net.dim_actions
         total_loss += self.flags.baseline_cost * baseline_losses[0]
 
         losses = {
@@ -591,7 +591,7 @@ class SActorLearner:
                 n += 1
                 if getattr(self.flags, "%s_cost_anneal" % prefix):
                     cost *= self.anneal_c
-                total_loss += cost * pg_losses[n]
+                total_loss += cost * pg_losses[n] / self.actor_net.dim_actions
                 total_loss += (cost * self.flags.baseline_cost * 
                             baseline_losses[n])
                 losses["%s_pg_loss" % prefix] = pg_losses[n]
@@ -603,13 +603,13 @@ class SActorLearner:
         entropy_loss = f_entropy_loss * last_step_real.float()
         entropy_loss = torch.sum(entropy_loss)        
         losses["entropy_loss"] = entropy_loss
-        total_loss += self.flags.entropy_cost * entropy_loss
+        total_loss += self.flags.entropy_cost * entropy_loss / self.actor_net.dim_actions
 
         if not self.disable_thinker:
             im_entropy_loss = f_entropy_loss * (~last_step_real).float()
             im_entropy_loss = torch.sum(im_entropy_loss)
             total_loss += self.flags.im_entropy_cost * im_entropy_loss
-            losses["im_entropy_loss"] = im_entropy_loss
+            losses["im_entropy_loss"] = im_entropy_loss / self.actor_net.dim_actions
 
         reg_loss = torch.sum(new_actor_out.reg_loss)
         losses["reg_loss"] = reg_loss
