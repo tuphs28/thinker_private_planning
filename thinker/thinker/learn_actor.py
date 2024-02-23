@@ -370,12 +370,12 @@ class SActorLearner:
                 ]
                 for k in print_stats:
                     print_str += " %s %.2f" % (k.replace("actor/", ""), stats[k])
-                if self.flags.return_norm_type != -1:
+                if self.flags.return_norm_type in [0, 1]:
                     print_str += " norm_diff %.4f/%.4f" % (
                         stats["actor/norm_diff"],
                         stats.get("actor/im_norm_diff", 0.),
                     )
-                if self.flags.cur_return_norm_type != -1:
+                if self.flags.cur_return_norm_type in [0, 1]:
                     print_str += " cur_norm_diff %.4f" % (
                         stats.get("actor/cur_norm_diff", 0.),
                     )
@@ -734,7 +734,7 @@ class SActorLearner:
                 if v is not None:
                     stats["actor/"+k] = v.item()
 
-        if self.flags.return_norm_type != -1:
+        if self.flags.return_norm_type in [0, 1]:
             n = self.rewards_ls.index("re")
             stats["actor/norm_diff"] = (
                 self.norm_stats[n][1] - self.norm_stats[n][0]
@@ -746,7 +746,7 @@ class SActorLearner:
                     self.norm_stats[n][1] - self.norm_stats[n][0]
                 ).item()
                 stats["norm_rmean_im_episode_return"] = (stats["rmean_im_episode_return"] / self.norm_stats[n][2]).item()
-        if self.flags.cur_return_norm_type != -1:
+        if self.flags.cur_return_norm_type in [0, 1]:
             if "cur" in self.rewards_ls:
                 n = self.rewards_ls.index("cur")
                 stats["actor/cur_norm_diff"] = (

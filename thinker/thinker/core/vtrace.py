@@ -101,7 +101,7 @@ def compute_v_trace(
         else:
             clipped_pg_rhos = rhos
         target_values = rewards + discounts * vs_t_plus_1
-        if return_norm_type == -1:
+        if return_norm_type != [0, 1]:
             norm_stat = None
         else:
             if return_norm_type == 0:
@@ -127,10 +127,13 @@ def compute_v_trace(
 
         pg_advantages_nois = adv_l2(target_values, values)
         pg_advantages = clipped_pg_rhos * pg_advantages_nois
-        if not return_norm_type == -1:
+        if return_norm_type in [0, 1]:
             # pg_advantages = torch.clamp(pg_advantages, norm_stat[0], norm_stat[1])
             pg_advantages = pg_advantages / norm_factor
             pg_advantages_nois = pg_advantages_nois / norm_factor
+        elif return_norm_type == 2:
+            pg_advantages = (pg_advantages - pg_advantages.mean()) / (pg_advantages.std() + 1e-8)
+
 
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, 

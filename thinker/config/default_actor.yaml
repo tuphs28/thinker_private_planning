@@ -15,7 +15,7 @@ actor_unroll_len: 201 # unroll length used to update actor
 actor_use_rms: false # whether to use rms (default: adam) as optimizer
 actor_grad_norm_clipping: 0.5 # gradient clipping norm; non-positive for no clipping
 actor_adam_eps: 0.00000001 # eps for Adam optimizer
-return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
+return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization, 2 for standard adv normalization
 cur_return_norm_type: -1 # return norm type; -1 for no normalization, 0 for value normalization, 1 for advantage normalization
 v_trace_lamb: 1. # lambda used in v-trace
 # cost setting
@@ -28,6 +28,7 @@ entropy_r_cost: 0. # entropy cost added to reward
 entropy_cost: 0.001 # entropy cost for real actions
 im_entropy_cost: 0.0001 # entropy cost for imaginary actions
 reg_cost: 0.001 # regularization cost
+clip_v_loss: false # whether to clip v loss
 # actor setting
 # - general
 see_real_state: false # whether to see root real state
