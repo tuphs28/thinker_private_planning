@@ -531,31 +531,40 @@ def mask_tree_rep(tree_reps, num_actions, rec_t):
     tree_reps_m[:, 4+rec_t:] = tree_reps[:, d["action_seq"]]
     return tree_reps_m
 
-def encode_action(action, tuple_action, num_actions):
-    if tuple_action:
-        return action.float() / num_actions
-    else:
-        return F.one_hot(action.squeeze(-1), num_classes=num_actions).float()
+def encode_action(action, action_space, one_hot=False):
+    if type(action_space) == spaces.discrete.Discrete:       
+        if one_hot:
+            return action
+        else:
+            return F.one_hot(action.squeeze(-1), num_classes=action_space.n).float()
+    elif type(action_space) == spaces.tuple.Tuple:   
+            if one_hot:
+                action = torch.sum(action * torch.arange(action_space[0].n, device=action.device), dim=-1)   
+            return action.float()/action_space[0].n
+    elif type(action_space) == spaces.Box:  
+            return action.float()
     
-def process_action_space(pri_action_space):
-    if type(pri_action_space) == spaces.discrete.Discrete:                        
-        num_actions = pri_action_space.n    
+def process_action_space(action_space):
+    if type(action_space) == spaces.discrete.Discrete:                        
+        num_actions = action_space.n    
         dim_actions = 1
         dim_rep_actions = num_actions
         tuple_action = False        
         discrete_action = True
-    elif type(pri_action_space) == spaces.tuple.Tuple:              
-        num_actions = pri_action_space[0].n    
-        dim_actions = len(pri_action_space)    
+    elif type(action_space) == spaces.tuple.Tuple:              
+        num_actions = action_space[0].n    
+        dim_actions = len(action_space)    
         dim_rep_actions = dim_actions
         tuple_action = True
         discrete_action = True
-    elif type(pri_action_space) == spaces.Box:  
+    elif type(action_space) == spaces.Box:  
         num_actions = 1   
-        dim_actions = pri_action_space.shape[0] 
+        dim_actions = action_space.shape[0] 
         dim_rep_actions = dim_actions
         tuple_action = True
         discrete_action = False
+    else:
+        raise AssertionError(f"Unsupported action space {action_space}")
     return num_actions, dim_actions, dim_rep_actions, tuple_action, discrete_action
 
 def plot_raw_state(x, ax=None, title=None, savepath=None):

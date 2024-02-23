@@ -21,12 +21,11 @@ class SimWrapper(gym.Wrapper):
         self.env = env        
         self.device = torch.device("cpu") if device is None else device       
 
-        action_space =  env.action_space[0]
-
+        self.pri_action_space =  env.action_space[0]
         self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
-            util.process_action_space(action_space)
+            util.process_action_space(self.pri_action_space)
         
-        if type(action_space) == spaces.discrete.Discrete:      
+        if type(self.pri_action_space) == spaces.discrete.Discrete:      
             self.pri_action_shape = (self.env_n)
         else:
             self.pri_action_shape = (self.env_n, self.dim_actions)        
@@ -121,13 +120,13 @@ class SimWrapper(gym.Wrapper):
         if self.perfect_model:
             self.root_env_state = self.env.clone_state()
 
-        pri_action = util.encode_action(pri_action, self.tuple_action, self.num_actions)
+        pri_action = util.encode_action(pri_action, self.pri_action_space)
 
         self.root_td = real_reward + self.discounting * model_net_out.vs[-1] - self.root_v
         self.root_action = pri_action
         self.root_r = real_reward
         self.root_v = model_net_out.vs[-1] # (self.env_n)
-        self.root_logits = model_net_out.logits[-1] # (self.env_n, self.dim_actions, self.num_actions)
+        self.root_policy = model_net_out.policy[-1] # (self.env_n, self.dim_actions, self.num_actions)
 
         if torch.any(done):
             self.root_r = self.root_r.clone()
@@ -140,7 +139,7 @@ class SimWrapper(gym.Wrapper):
         self.cur_r = self.root_r
         self.cur_v = self.root_v
         self.last_v = self.cur_v
-        self.cur_logits = self.root_logits            
+        self.cur_policy = self.root_policy            
 
         self.cur_reset = torch.zeros(self.env_n, device=self.device)
 
@@ -250,16 +249,16 @@ class SimWrapper(gym.Wrapper):
                                               )                    
                     reset_action[im_done] = 1  
                 self.tmp_state = model_net_out.state    
-                im_logits = model_net_out.logits[-1]
+                im_policy = model_net_out.policy[-1]
                 im_v = model_net_out.vs[-1]
                 
-                self.cur_action = util.encode_action(pri_action, self.tuple_action, self.num_actions)
+                self.cur_action = util.encode_action(pri_action, self.pri_action_shape)
                 self.cur_r = im_r
                 self.cur_r[self.rollout_done] = 0.                  
                 if torch.any(self.rollout_done):
-                    self.cur_logits = torch.where(self.rollout_done.unsqueeze(-1).unsqueeze(-1), self.cur_logits, im_logits)
+                    self.cur_policy = torch.where(self.rollout_done.unsqueeze(-1).unsqueeze(-1), self.cur_policy, im_policy)
                 else:
-                    self.cur_logits = im_logits
+                    self.cur_policy = im_policy
                 # todo - test if this should be done after updating rollout_done
                 
                 self.rollout_done = torch.logical_or(self.rollout_done, im_done) # cur_r should not be masked when just done
@@ -421,8 +420,8 @@ class SimWrapper(gym.Wrapper):
     def prepare_state(self, model_net_out, real_state):
         self.one_hot_k = torch.zeros(self.env_n, self.rec_t, device=self.device)
         self.one_hot_k[:, self.k] = 1
-        root_stat = ["root_td", "root_action", "root_r", "root_v", "root_logits"]
-        cur_stat = ["cur_td", "cur_action", "cur_r", "cur_v", "cur_logits"]
+        root_stat = ["root_td", "root_action", "root_r", "root_v", "root_policy"]
+        cur_stat = ["cur_td", "cur_action", "cur_r", "cur_v", "cur_policy"]
         misc = ["cur_reset", "one_hot_k", "rollout_return", "max_rollout_return", "rollout_done"]
         root_tables = ["root_action_table", "root_td_table"]
         action_seq = ["action_seq"]   

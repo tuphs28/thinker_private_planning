@@ -10,7 +10,7 @@ import math
 OutNetOut = namedtuple(
     "OutNetOut",
     [
-        "rs", "r_enc_logits", "dones", "done_logits", "vs", "v_enc_logits", "logits"
+        "rs", "r_enc_logits", "dones", "done_logits", "vs", "v_enc_logits", "policy"
     ],
 )
 SRNetOut = namedtuple(
@@ -20,11 +20,11 @@ SRNetOut = namedtuple(
 VPNetOut = namedtuple(
     "VPNetOut",
     ["rs", "r_enc_logits", "dones", "done_logits", "vs", "v_enc_logits",
-        "logits", "hs", "pred_zs", "true_zs", "state",
+        "policy", "hs", "pred_zs", "true_zs", "state",
     ],
 )
 DualNetOut = namedtuple(
-    "DualNetOut", ["rs", "dones", "vs", "v_enc_logits", "logits", "xs", "hs", "zs", "state"]
+    "DualNetOut", ["rs", "dones", "vs", "v_enc_logits", "policy", "xs", "hs", "zs", "state"]
 )
 
 class BaseNet(nn.Module):
@@ -51,7 +51,7 @@ class FrameEncoder(nn.Module):
     def __init__(
         self,
         prefix,
-        actions_ch,
+        dim_rep_actions,
         input_shape,
         size_nn=1,
         downscale_c=2,
@@ -64,7 +64,7 @@ class FrameEncoder(nn.Module):
     ):
         super(FrameEncoder, self).__init__()
         self.prefix = prefix
-        self.actions_ch = actions_ch
+        self.dim_rep_actions = dim_rep_actions
         self.size_nn = size_nn
         self.downscale_c = downscale_c
         self.decoder = decoder
@@ -77,7 +77,7 @@ class FrameEncoder(nn.Module):
         stride = 2 if downscale else 1
         frame_channels = input_shape[0]
         if self.concat_action:
-            in_channels = frame_channels + actions_ch
+            in_channels = frame_channels + dim_rep_actions
         else:
             in_channels = frame_channels
 
@@ -85,7 +85,7 @@ class FrameEncoder(nn.Module):
             h, w = input_shape[1:]
             frame_channels, h, w = input_shape
             if self.concat_action:
-                in_channels = frame_channels + actions_ch
+                in_channels = frame_channels + dim_rep_actions
             else:
                 in_channels = frame_channels
 
@@ -206,7 +206,7 @@ class FrameEncoder(nn.Module):
         """
         Args:
           x (tensor): frame with shape B, C, H, W or B, C
-          action (tensor): action with shape B, actions_ch (converted after convert_action)
+          action (tensor): action with shape B, dim_rep_actions (encoded action)
         """
         assert x.dtype in [torch.float, torch.float16]
         if self.concat_action: assert actions.dtype in [torch.float, torch.float16]
@@ -253,8 +253,6 @@ class FrameEncoder(nn.Module):
     def forward(self, x, done, actions, state, flatten=False):
         
         new_state = {}
-        #x_ = x
-        #actions_ = actions
 
         x = self.forward_pre_mem(x=x, actions=actions, flatten=flatten)        
         if self.has_memory:
@@ -265,15 +263,10 @@ class FrameEncoder(nn.Module):
                 if not flatten: 
                     x = x.unsqueeze(0)
                     if done is not None: done = done.unsqueeze(0)
-                if done is None: done = torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)        
-                #x = x.unsqueeze(-1).unsqueeze(-1)
+                if done is None: done = torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)                        
                 x, enc_state = self.rnn(x, done, enc_state)                
-                #x = x.squeeze(-1).squeeze(-1)   
-                #x = self.rnn_fc(x)             
                 if not flatten: x = x.squeeze(0)
                 for i in range(self.per_state_len): new_state[f"per_{self.prefix}_{i}"] = enc_state[i]
-                #new_state[f"per_{self.prefix}_dbg_state"] = x_[-1] if flatten else x_
-                #new_state[f"per_{self.prefix}_dbg_action"] = actions_[-1] if flatten else actions_
         return x, new_state
 
     def decode(self, z, flatten=False):
@@ -298,7 +291,7 @@ class FrameEncoder(nn.Module):
 class DynamicModel(nn.Module):
     def __init__(
         self,
-        actions_ch,
+        dim_rep_actions,
         inplanes,
         oned_input,
         size_nn=1,
@@ -307,7 +300,7 @@ class DynamicModel(nn.Module):
         disable_bn=False,
     ):
         super(DynamicModel, self).__init__()
-        self.actions_ch = actions_ch
+        self.dim_rep_actions = dim_rep_actions
         self.inplanes = inplanes
         self.size_nn = size_nn
         self.disable_half_grad = disable_half_grad
@@ -318,7 +311,7 @@ class DynamicModel(nn.Module):
         if not self.oned_input:
             res = [
                 ResBlock(
-                    inplanes=inplanes + actions_ch,
+                    inplanes=inplanes + dim_rep_actions,
                     outplanes=outplanes,
                     disable_bn=disable_bn,
                 )
@@ -330,7 +323,7 @@ class DynamicModel(nn.Module):
         else:
             n_block = 2 * size_nn
             self.input_block = nn.Sequential(
-                nn.Linear(inplanes + actions_ch, outplanes),
+                nn.Linear(inplanes + dim_rep_actions, outplanes),
                 nn.LayerNorm(outplanes),
                 nn.ReLU()
             )
@@ -393,8 +386,7 @@ class NoiseModel(nn.Module):
 class OutputNet(nn.Module):
     def __init__(
         self,
-        num_actions,
-        dim_actions,
+        action_space,
         input_shape,
         value_clamp,
         enc_type,
@@ -408,8 +400,9 @@ class OutputNet(nn.Module):
     ):
         super(OutputNet, self).__init__()
 
-        self.num_actions = num_actions
-        self.dim_actions = dim_actions
+        self.action_space = action_space
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(action_space)
         self.input_shape = input_shape        
         self.oned_input = len(self.input_shape) == 1
         self.size_nn = size_nn
@@ -443,7 +436,7 @@ class OutputNet(nn.Module):
             fc_in = self.input_shape[0]
 
         if predict_v_pi:
-            self.fc_logits = nn.Linear(fc_in, num_actions*dim_actions)
+            self.fc_logits = nn.Linear(fc_in, self.dim_actions*(self.num_actions if self.discrete_action else 2))
             self.fc_v = nn.Linear(fc_in, out_n)
             if zero_init:
                 nn.init.constant_(self.fc_v.weight, 0.0)
@@ -477,15 +470,15 @@ class OutputNet(nn.Module):
             x_ = torch.flatten(x_, start_dim=1)
         else:
             x_ = self.res(x)
-        x_v, x_logits, x_done = x_, x_, x_
+        x_v, x_policy, x_done = x_, x_, x_
 
         if self.predict_v_pi:
-            logits = self.fc_logits(x_logits)
-            logits = logits.view(b, self.dim_actions, self.num_actions)
-            if self.ordinal:
-                norm_softm = F.sigmoid(logits)
+            policy = self.fc_logits(x_policy)
+            policy = policy.view(b, self.dim_actions, -1)
+            if self.ordinal and self.discrete_action:
+                norm_softm = F.sigmoid(policy)
                 norm_softm_tiled = torch.tile(norm_softm.unsqueeze(-1), [1,1,1,self.num_actions])
-                logits = torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
+                policy = torch.sum(torch.log(norm_softm_tiled + 1e-8) * self.ordinal_mask + torch.log(1 - norm_softm_tiled + 1e-8) * (1 - self.ordinal_mask), dim=-1)
 
             if self.enc_type in [2, 3]:
                 v_enc_logit = self.fc_v(x_v)
@@ -497,7 +490,7 @@ class OutputNet(nn.Module):
                 if self.value_clamp is not None and self.value_clamp > 0:
                     v = torch.clamp(v, -self.value_clamp, self.value_clamp)
         else:
-            v, v_enc_logit, logits = None, None, None
+            v, v_enc_logit, policy = None, None, None
 
         if self.predict_done:
             done_logit = self.fc_done(x_done).squeeze(-1)
@@ -524,31 +517,34 @@ class OutputNet(nn.Module):
             done_logits=done_logit,
             vs=v,
             v_enc_logits=v_enc_logit,
-            logits=logits,
+            policy=policy,
         )
         return out
 
 class SRNet(nn.Module):
-    def __init__(self, obs_shape, num_actions, dim_actions, flags, frame_stack_n=1):
+    def __init__(self, obs_shape, action_space, flags, frame_stack_n=1):
         super(SRNet, self).__init__()
         self.flags = flags
         self.obs_shape = obs_shape
         self.oned_input = len(obs_shape) == 1
-        self.num_actions = num_actions
-        self.dim_actions = dim_actions
-        self.actions_ch = self.num_actions if dim_actions <=1 else self.dim_actions
+        self.action_space = action_space
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(action_space)
+        
         self.enc_type = flags.model_enc_type
         self.size_nn = flags.model_size_nn
         self.downscale_c = flags.model_downscale_c        
         self.noise_enable = flags.noise_enable
         self.has_memory = flags.model_has_memory
+
         self.frame_stack_n = frame_stack_n        
         assert self.obs_shape[0] % self.frame_stack_n == 0, \
             f"obs channel {self.obs_shape[0]} should be divisible by frame stacking number {self.frame_stack_n}"        
         self.copy_n = self.obs_shape[0] // self.frame_stack_n
+
         self.encoder = FrameEncoder(
             prefix="sr",
-            actions_ch=self.actions_ch,
+            dim_rep_actions=self.dim_rep_actions,
             input_shape=obs_shape,
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
@@ -562,7 +558,7 @@ class SRNet(nn.Module):
         if self.noise_enable:
             inplanes += self.flags.noise_n
         self.RNN = DynamicModel(
-            actions_ch=self.actions_ch,
+            dim_rep_actions=self.dim_rep_actions,
             inplanes=inplanes,
             oned_input=self.oned_input,
             size_nn=self.size_nn,
@@ -575,8 +571,7 @@ class SRNet(nn.Module):
         else:
             value_clamp = None
         self.out = OutputNet(
-            num_actions=num_actions,
-            dim_actions=dim_actions,
+            action_space=self.action_space,
             input_shape=self.hidden_shape,
             value_clamp=value_clamp,
             enc_type=self.enc_type,
@@ -657,7 +652,7 @@ class SRNet(nn.Module):
         """
         k, b, *_ = actions.shape
         k = k - 1
-        actions = self.convert_action(actions, one_hot)       
+        actions = util.encode_action(actions, self.action_space, one_hot)       
         new_state = {}
         h, enc_state = self.encoder(x, done, actions[0], state)
         new_state.update(enc_state)
@@ -731,7 +726,7 @@ class SRNet(nn.Module):
         """
         new_state = {}
         new_state.update({k:v for k, v in state.items() if k.startswith(f"per_sr")})
-        action = self.convert_action(action, one_hot)            
+        action = util.encode_action(action, self.action_space, one_hot)            
         h = state["sr_h"]        
         
         if self.noise_enable:
@@ -774,7 +769,7 @@ class SRNet(nn.Module):
             loss(tensor): scalar self-supervised loss
         """
         k, b, *_ = hs.shape
-        actions = self.convert_action(actions, one_hot)      
+        actions = util.encode_action(actions, self.action_space, one_hot)      
 
         hs = torch.flatten(hs, 0, 1)
         hs = torch.flatten(hs, 1)
@@ -831,30 +826,16 @@ class SRNet(nn.Module):
         else:
             noise_loss = None
         
-        return h, noise_loss
-    
-    def convert_action(self, action, one_hot):        
-        if not one_hot:
-            assert action.dtype == torch.long
-            action = F.one_hot(action, self.num_actions).float()
-        else:
-            assert action.dtype in [torch.float16, torch.float32]
-        if self.dim_actions <= 1:
-            action = action[..., 0, :]
-        else:
-            action = torch.sum(action * torch.arange(self.num_actions, device=action.device), dim=-1)
-            action = action / self.num_actions
-        return action
+        return h, noise_loss    
 
 class VPNet(nn.Module):
-    def __init__(self, obs_shape, num_actions, dim_actions, flags):
+    def __init__(self, obs_shape, action_space, flags):
         super(VPNet, self).__init__()
         self.flags = flags
         self.obs_shape = obs_shape
         self.oned_input = len(self.obs_shape) == 1
-        self.num_actions = num_actions
-        self.dim_actions = dim_actions
-        self.actions_ch = self.num_actions if dim_actions <=1 else self.dim_actions        
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(action_space)  
         self.enc_type = flags.model_enc_type
         self.has_memory = flags.model_has_memory
         self.size_nn = flags.model_size_nn # size_nn: int to adjust for size of model net
@@ -867,7 +848,7 @@ class VPNet(nn.Module):
 
         self.encoder = FrameEncoder(
             prefix="vr",
-            actions_ch=self.actions_ch,
+            dim_rep_actions=self.dim_rep_actions,
             input_shape=obs_shape,
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
@@ -879,7 +860,7 @@ class VPNet(nn.Module):
         
         if self.use_rnn:
             self.RNN = DynamicModel(
-                actions_ch=self.actions_ch,
+                dim_rep_actions=self.dim_rep_actions,
                 inplanes=inplanes * 2 if self.receive_z else inplanes,
                 oned_input=self.oned_input, 
                 outplanes=inplanes,
@@ -892,8 +873,7 @@ class VPNet(nn.Module):
         else:
             value_clamp = None
         self.out = OutputNet(
-            num_actions=num_actions,
-            dim_actions=dim_actions,
+            action_space=action_space,
             input_shape=self.hidden_shape,
             value_clamp=value_clamp,
             enc_type=self.enc_type,
@@ -963,7 +943,7 @@ class VPNet(nn.Module):
             assert not self.receive_z
             xs = xs.unsqueeze(0)
 
-        actions = self.convert_action(actions, one_hot)  
+        actions = util.encode_action(actions, self.action_space, one_hot)
         new_state = {}
         if done is None:
             done = torch.zeros(b, dtype=torch.bool, device=xs.device)
@@ -1009,7 +989,7 @@ class VPNet(nn.Module):
             done_logits=util.safe_concat(outs[1:], "done_logits", 0),
             vs=util.safe_concat(outs, "vs", 0),
             v_enc_logits=util.safe_concat(outs, "v_enc_logits", 0),
-            logits=util.safe_concat(outs, "logits", 0),
+            policy=util.safe_concat(outs, "policy", 0),
             hs=hs,
             true_zs=zs,
             pred_zs=pred_zs,
@@ -1025,7 +1005,7 @@ class VPNet(nn.Module):
             one_hot (bool): whether to the action use one-hot encoding
         """
         new_state = {}
-        action = self.convert_action(action, one_hot)          
+        action = util.encode_action(action, self.action_space, one_hot)          
         if self.receive_z:
             z, enc_state = self.encoder(x, None, action, state, flatten=False)
             new_state.update(enc_state)
@@ -1047,32 +1027,21 @@ class VPNet(nn.Module):
             done_logits=util.safe_unsqueeze(out.done_logits, 0),
             vs=util.safe_unsqueeze(out.vs, 0),
             v_enc_logits=util.safe_unsqueeze(out.v_enc_logits, 0),
-            logits=util.safe_unsqueeze(out.logits, 0),
+            policy=util.safe_unsqueeze(out.policy, 0),
             hs=util.safe_unsqueeze(h, 0),
             true_zs=None,
             pred_zs=util.safe_unsqueeze(pred_z, 0),
             state=new_state,
         )
-    
-    def convert_action(self, action, one_hot):        
-        if not one_hot:
-            action = F.one_hot(action, self.num_actions).float()
-        if self.dim_actions <= 1:
-            action = action[..., 0, :]
-        else:
-            action = torch.sum(action * torch.arange(self.num_actions, device=action.device), dim=-1)
-            action = action / self.num_actions
-        return action
 
 class ModelNet(BaseNet):
-    def __init__(self, obs_space, num_actions, dim_actions, flags, frame_stack_n=1):
+    def __init__(self, obs_space, action_space, flags, frame_stack_n=1):
         super(ModelNet, self).__init__()
         self.rnn = False
         self.flags = flags
         self.obs_shape = obs_space.shape
-        self.oned_input = len(self.obs_shape) == 1
-        self.num_actions = num_actions
-        self.dim_actions = dim_actions
+        self.action_space = action_space
+        self.oned_input = len(self.obs_shape) == 1        
         self.enc_type = flags.model_enc_type
         self.size_nn = flags.model_size_nn
         self.dual_net = flags.dual_net
@@ -1092,10 +1061,10 @@ class ModelNet(BaseNet):
             self.register_buffer("norm_low", low)
             self.register_buffer("norm_high", high)
 
-        self.vp_net = VPNet(self.obs_shape, num_actions, dim_actions, flags)
+        self.vp_net = VPNet(self.obs_shape, action_space, flags)
         self.hidden_shape = list(self.vp_net.hidden_shape)
         if self.dual_net:
-            self.sr_net = SRNet(self.obs_shape, num_actions, dim_actions, flags, frame_stack_n)
+            self.sr_net = SRNet(self.obs_shape, action_space, flags, frame_stack_n)
             self.hidden_shape[0] += self.sr_net.hidden_shape[0]
         self.copy_n = self.obs_shape[0] // frame_stack_n
 
@@ -1138,7 +1107,7 @@ class ModelNet(BaseNet):
             rs(tensor): predicted reward with shape (k, B, ...), in the form of r_{t+1}, r_{t+2}, ..., r_{t+k}
             done(tensor): predicted done with shape (k, B, ...), in the form of d_{t+1}, d_{t+2}, ..., d_{t+k}
             vs(tensor): predicted value with shape (k+1, B, ...), in the form of v_{t}, v_{t+1}, v_{t+2}, ..., v_{t+k}
-            logits(tensor): predicted policy with shape (k+1, B, ...), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
+            policy(tensor): predicted policy with shape (k+1, B, ...), in the form of pi_{t}, pi_{t+1}, pi_{t+2}, ..., pi_{t+k}
             xs(tensor): predicted states with shape (k+1, B, ...), in the form of x_{t}, x_{t+1}, x_{t+2}, ..., x_{t+k}
             zs(tensor): predicted encoding in vp-net with shape (k+1, B, ...), in the form of z_{t}, z_{t+1}, z_{t+2}, ..., z_{t+k}
             hs(tensor): model's hidden state with shape (k+1, B, ...), in the form of h_{t}, h_{t+1}, h_{t+2}, ..., h_{t+k}
@@ -1207,7 +1176,7 @@ class ModelNet(BaseNet):
             dones=rd_out.dones,
             vs=vp_net_out.vs,
             v_enc_logits=vp_net_out.v_enc_logits,
-            logits=vp_net_out.logits,
+            policy=vp_net_out.policy,
             xs=xs,
             hs=hs,
             zs=zs,

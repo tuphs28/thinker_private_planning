@@ -141,34 +141,26 @@ class Env(gym.Wrapper):
         self.real_state_space  = env.observation_space
         self.real_state_shape = env.observation_space.shape
 
-        if type(env.action_space) == gym.spaces.discrete.Discrete:            
-            self.num_actions = env.action_space.n
-            self.dim_actions = 1
-            self.tuple_action = False
-            self.discrete_action = True
-        elif type(env.action_space) == gym.spaces.tuple.Tuple:
-            self.num_actions = env.action_space[0].n
-            self.dim_actions = len(env.action_space)
-            self.tuple_action = True
-            self.discrete_action = True
-        elif isinstance(env.action_space, gym.spaces.Box):
-            self.num_actions = 1
-            self.dim_actions = env.action_space.shape[0]
-            self.tuple_action = True
-            self.discrete_action = False
+        self.pri_action_space = env.action_space
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(self.pri_action_space)
+
+        if isinstance(self.pri_action_space, gym.spaces.Box):
             assert (env.action_space.low == -1.).all() and (env.action_space.high == 1.).all(), f"Invalid action space {env.action_space}"
             assert len(env.action_space.shape) == 1, f"Invalid action space {env.action_space}"
-        else:
-            raise AssertionError(f"Unsupported action space {env.action_space}")
         
         self.sample = self.flags.sample_n > 0
         self.sample_n = self.flags.sample_n
 
         if not self.sample and self.tuple_action:
             self.pri_action_shape = (self.env_n, self.dim_actions)
+            if self.discrete_action:
+                self.action_prob_shape = self.pri_action_shape + (self.num_actions,)
+            else:
+                self.action_prob_shape = self.pri_action_shape + (2,) # mean and var of Gaussian dist
         else:
             self.pri_action_shape = (self.env_n,)
-        self.action_prob_shape = self.pri_action_shape + (self.num_actions if not self.sample else self.sample_n,)
+            self.action_prob_shape = self.pri_action_shape + (self.sample_n,)
 
         self.frame_stack_n = env.frame_stack_n if hasattr(env, "frame_stack_n") else 1
         self.model_mem_unroll_len = self.flags.model_mem_unroll_len
@@ -187,8 +179,7 @@ class Env(gym.Wrapper):
         if self.has_model:
             model_param = {
                 "obs_space": self.real_state_space,                
-                "num_actions": self.num_actions, 
-                "dim_actions": self.dim_actions, 
+                "action_space": self.pri_action_space, 
                 "flags": self.flags,
                 "frame_stack_n": self.frame_stack_n
             }
@@ -350,7 +341,7 @@ class Env(gym.Wrapper):
                 device=self.device,
             ),
             action_prob=torch.zeros(
-                pre_shape + (self.dim_actions, self.num_actions,),
+                pre_shape + self.action_prob_shape[1:],
                 dtype=torch.float32,
                 device=self.device,
             ),

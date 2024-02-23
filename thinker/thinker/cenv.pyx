@@ -709,7 +709,7 @@ cdef class cModelWrapper(cWrapper):
                                       ret_hs=self.return_h)  
             self.update_per_state(model_net_out, inds=None)
             vs = model_net_out.vs.cpu()
-            logits = model_net_out.logits[-1]    
+            logits = model_net_out.policy[-1]    
             if self.sample: 
                 sampled_action, logits = self.sample_from_dist(logits)
             else:
@@ -919,8 +919,8 @@ cdef class cModelWrapper(cWrapper):
                         pred_model_net_out_1.rs[pred_model_net_out_1.dones] = 0.
                         cur_reward += self.cur_reward_cost * torch.square(torch.tensor(reward, device=self.device) * (1-done_mask) - pred_model_net_out_1.rs[-1])
                     if self.cur_pi_cost > 0.:
-                        target_log_probs = torch.nn.functional.log_softmax(model_net_out_1.logits[-1], dim=-1)
-                        log_probs = torch.nn.functional.log_softmax(pred_model_net_out_1.logits[-1], dim=-1)
+                        target_log_probs = torch.nn.functional.log_softmax(model_net_out_1.policy[-1], dim=-1)
+                        log_probs = torch.nn.functional.log_softmax(pred_model_net_out_1.policy[-1], dim=-1)
                         pi_loss = torch.sum(torch.nn.functional.kl_div(log_probs, target_log_probs, reduction='none', log_target=True), dim=-1)
                         cur_reward += self.cur_pi_cost * pi_loss
 
@@ -965,7 +965,7 @@ cdef class cModelWrapper(cWrapper):
                     cur_reward = cur_reward.float().cpu().numpy()   
                     
             vs_1 = model_net_out_1.vs[-1].float().cpu().numpy()
-            logits_1_ = model_net_out_1.logits[-1].float()
+            logits_1_ = model_net_out_1.policy[-1].float()
             if self.sample: 
                 sampled_action_1, logits_1_ = self.sample_from_dist(logits_1_)            
             else:
@@ -991,7 +991,7 @@ cdef class cModelWrapper(cWrapper):
                     ret_hs=self.return_h)  
             rs_4 = model_net_out_4.rs[-1].float().cpu().numpy()
             vs_4 = model_net_out_4.vs[-1].float().cpu().numpy()
-            logits_4_ = model_net_out_4.logits[-1].float()
+            logits_4_ = model_net_out_4.policy[-1].float()
             if self.sample: 
                 sampled_action_4, logits_4_ = self.sample_from_dist(logits_4_)
             else:
@@ -1219,7 +1219,7 @@ cdef class cPerfectWrapper(cWrapper):
                                       ret_zs=False,
                                       ret_hs=self.return_h)  
             vs = model_net_out.vs.cpu()
-            logits = model_net_out.logits[-1]    
+            logits = model_net_out.policy[-1]    
             if self.sample: 
                 sampled_action, logits = self.sample_from_dist(logits)
             else:
@@ -1385,7 +1385,7 @@ cdef class cPerfectWrapper(cWrapper):
                                           ret_zs=False,
                                           ret_hs=self.return_h)  
             vs = model_net_out.vs[-1].float().cpu().numpy()
-            logits_ = model_net_out.logits[-1].float()
+            logits_ = model_net_out.policy[-1].float()
             if self.sample: 
                 sampled_action, logits_ = self.sample_from_dist(logits_)            
             else:

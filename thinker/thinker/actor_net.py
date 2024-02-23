@@ -258,8 +258,12 @@ class ActorBaseNet(nn.Module):
         self.disable_thinker = flags.wrapper_type == 1
         self.record_state = record_state        
 
-        self.obs_space = obs_space
-        self.action_space = action_space
+        self.obs_space = obs_space        
+        if not self.disable_thinker:
+            self.pri_action_space = action_space[0][0]            
+        else:
+            self.pri_action_space = action_space[0]
+
         self.flags = flags      
         self.tree_rep_meaning = tree_rep_meaning
 
@@ -271,14 +275,10 @@ class ActorBaseNet(nn.Module):
         self.rv_tran = None
         self.critic_zero_init = flags.critic_zero_init             
 
-        if not self.disable_thinker:
-            pri_action_space = action_space[0][0]            
-        else:
-            pri_action_space = action_space[0]
 
         # action space processing
         self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
-            util.process_action_space(pri_action_space)
+            util.process_action_space(self.pri_action_space)
         
         self.ordinal = flags.actor_ordinal
         if self.ordinal:
@@ -597,7 +597,7 @@ class ActorNetSingle(ActorBaseNet):
         
         last_pri = torch.flatten(env_out.last_pri, 0, 1)
         if not self.tuple_action: last_pri = last_pri.unsqueeze(-1)
-        last_pri = util.encode_action(last_pri, self.tuple_action, self.num_actions)   
+        last_pri = util.encode_action(last_pri, self.pri_action_space)   
         final_out.append(last_pri)
         if self.legacy:
             final_out.append(last_pri)
@@ -743,7 +743,7 @@ class ActorNetSingle(ActorBaseNet):
                 pri_param = pri_logits
             else:
                 pri_mean = pri_mean.view(T, B, self.dim_actions)
-                pri_log_var = pri_log_var.view(T, B, self.dim_actions)
+                pri_log_var = pri_log_var.view(T, B, self.dim_actions)                
                 pri_std = torch.exp(pri_log_var / 2)
                 pri_std = pri_std.view(T, B, self.dim_actions)
                 normal_dist = torch.distributions.Normal(pri_mean, pri_std)
@@ -752,7 +752,7 @@ class ActorNetSingle(ActorBaseNet):
                 else:
                     pri_pre_tanh = pri_mean
                 pri = torch.tanh(pri_pre_tanh)
-                pri_param = torch.concat([pri_mean, pri_log_var], dim=-1)
+                pri_param = torch.stack((pri_mean, pri_log_var), dim=-1)
 
             if not self.disable_thinker:
                 reset = sample(reset_logits, greedy=greedy, dim=-1)

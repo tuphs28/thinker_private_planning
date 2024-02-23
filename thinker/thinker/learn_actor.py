@@ -468,8 +468,8 @@ class SActorLearner:
                 base_stat["pri_logits"] = base_actor_out.pri_param.detach()
             else:
                 pri_param = base_actor_out.pri_param.detach()
-                base_stat["pri_mean"] = pri_param[:, :, :pri_param.shape[-1]//2]
-                base_stat["pri_log_var"] = pri_param[:, :, pri_param.shape[-1]//2:]
+                base_stat["pri_mean"] = pri_param[:, :, :, 0]
+                base_stat["pri_log_var"] = pri_param[:, :, :, 1]
             if not self.disable_thinker:
                 base_stat["reset_logits"] = base_actor_out.reset_logits.detach()
         rewards = train_actor_out.reward
@@ -625,8 +625,8 @@ class SActorLearner:
                 pri_kl_loss = guassian_kl_div(
                     base_stat["pri_mean"], 
                     base_stat["pri_log_var"],
-                    new_actor_out.pri_param[:, :, :new_actor_out.pri_param.shape[-1]//2],
-                    new_actor_out.pri_param[:, :, new_actor_out.pri_param.shape[-1]//2:]
+                    new_actor_out.pri_param[:, :, :, 0],
+                    new_actor_out.pri_param[:, :, :, 1]
                 )            
             pri_kl_loss = torch.sum(pri_kl_loss)
             # if impact_first_sample: 
