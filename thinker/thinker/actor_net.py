@@ -53,51 +53,16 @@ def atanh(x, eps=1e-6):
     x = torch.clamp(x, -1.0+eps, 1.0-eps)
     return 0.5 * (x.log1p() - (-x).log1p())
 
-class ShallowAFrameEncoder(nn.Module):
-    # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
-    def __init__(self, 
-                 input_shape, 
-                 out_size=256,
-                 downscale=True):
-        super(ShallowAFrameEncoder, self).__init__()
-        self.input_shape = input_shape
-        self.out_size = out_size
-
-        c, h, w = self.input_shape
-        compute_hw = lambda h, w, k, s: ((h - k) // s + 1,  (h - k) // s + 1)
-        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4 if downscale else 1)
-        h, w = compute_hw(h, w, 8, 4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2 if downscale else 1)
-        h, w = compute_hw(h, w, 4, 2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1 if downscale else 1)
-        h, w = compute_hw(h, w, 3, 1)
-        fc_in_size = h * w * 64
-        # Fully connected layer.
-        self.fc = nn.Linear(fc_in_size, out_size)
-
-    def forward(self, x):
-        """encode the state or model's encoding inside the actor network
-        args:
-            x: input tensor of shape (B, C, H, W); can be state or model's encoding
-        return:
-            output: output tensor of shape (B, self.out_size)"""
-
-        assert x.dtype in [torch.float, torch.float16]
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = torch.flatten(x, start_dim=1)
-        x = self.fc(x)
-        return x
-
 class AFrameEncoder(nn.Module):
     # processor for 3d inputs; can be applied to model's hidden state or predicted real state
     def __init__(self, 
                  input_shape, 
+                 flags,
                  downpool=False, 
                  firstpool=False,    
                  out_size=256,
-                 see_double=False):
+                 see_double=False,                 
+                 ):
         super(AFrameEncoder, self).__init__()
         if see_double:
             input_shape = (input_shape[0] // 2,) + tuple(input_shape[1:])
@@ -105,9 +70,13 @@ class AFrameEncoder(nn.Module):
         self.downpool = downpool
         self.firstpool = firstpool
         self.out_size = out_size
-        self.see_double = see_double        
+        self.see_double = see_double    
+        self.shallow_enc = flags.shallow_enc        
+        self.flags = flags    
 
         self.oned_input = len(self.input_shape) == 1
+        if self.shallow_enc and self.oned_input: self.out_size = 64
+        
         in_channels = input_shape[0]
         if not self.oned_input:
             # following code is from Torchbeast, which is the same as Impala deep model            
@@ -182,16 +151,21 @@ class AFrameEncoder(nn.Module):
             # out shape after conv is: (num_ch, input_shape[1], input_shape[2])
             core_out_size = num_ch * conv_out_h * conv_out_w
         else:
-            n_block = 2 
-            hidden_size = 256
-            self.hidden_size = hidden_size
-            self.input_block = nn.Sequential(
-                nn.Linear(in_channels, hidden_size),
-                nn.LayerNorm(hidden_size),
-                nn.Tanh()
-            )            
-            self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
-            core_out_size = hidden_size
+            if not self.shallow_enc:
+                n_block = 2 
+                hidden_size = 256
+                self.hidden_size = hidden_size
+                self.input_block = nn.Sequential(
+                    nn.Linear(in_channels, hidden_size),
+                    nn.LayerNorm(hidden_size),
+                    nn.Tanh()
+                )            
+                self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+                core_out_size = hidden_size
+            else:
+                self.input_block = nn.Sequential(nn.Linear(in_channels, 64), nn.Tanh())            
+                self.res = nn.Identity()   
+                core_out_size = 64      
         
         mlp_out_size = self.out_size if not self.see_double else self.out_size // 2
         self.fc = nn.Sequential(nn.Linear(core_out_size, mlp_out_size), nn.ReLU())
@@ -438,8 +412,9 @@ class ActorNetSingle(ActorBaseNet):
         if self.see_h:
             FrameEncoder = AFrameEncoder if not self.legacy else AFrameEncoderLegacy
             self.h_encoder = FrameEncoder(
-                input_shape=self.hs_shape,                                 
-                see_double=self.see_double
+                input_shape=self.hs_shape,                    
+                flags=flags,                             
+                see_double=self.see_double,
             )
             h_out_size = self.h_encoder.out_size
             last_out_size += h_out_size
@@ -447,10 +422,11 @@ class ActorNetSingle(ActorBaseNet):
         if self.see_x:
             FrameEncoder = AFrameEncoder if not self.legacy else AFrameEncoderLegacy
             self.x_encoder_pre = FrameEncoder(
-                input_shape=self.xs_shape, 
+                input_shape=self.xs_shape,                 
+                flags=flags,
                 downpool=True,
                 firstpool=flags.x_enc_first_pool,
-                see_double=self.see_double
+                see_double=self.see_double,
             )
             x_out_size = self.x_encoder_pre.out_size
             if self.x_rnn:
@@ -464,10 +440,11 @@ class ActorNetSingle(ActorBaseNet):
 
         if self.see_real_state:
             self.real_state_encoder =  AFrameEncoder(
-                input_shape=self.real_states_shape, 
+                input_shape=self.real_states_shape,                 
+                flags=flags,
                 downpool=True,
                 firstpool=flags.x_enc_first_pool,
-                see_double=self.see_double
+                see_double=self.see_double,
             )
             r_out_size = self.real_state_encoder.out_size
             if self.real_state_rnn:
@@ -996,7 +973,7 @@ class DRCNet(ActorBaseNet):
         )
         return actor_out, core_state
 
-class MCTS():
+class MCTS(ActorBaseNet):
     def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):
         super(MCTS, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
         assert flags.wrapper_type in [0, 2], "MCTS only support wrapper_type 0, 2"
@@ -1136,12 +1113,14 @@ class MCTS():
         return self.forward(*args, **kwargs)
 
 def ActorNet(*args, **kwargs):
+
     if getattr(kwargs["flags"], "drc", False):        
-        return DRCNet(*args, **kwargs)
+        Net = DRCNet
     elif getattr(kwargs["flags"], "mcts", False):  
-        return MCTS(*args, **kwargs)
-    else:        
-        if not getattr(kwargs["flags"], "sep_actor_critic", False):
-            return ActorNetSingle(*args, **kwargs)
-        else:
-            return ActorNetSep(*args, **kwargs)
+        Net = MCTS
+    elif not getattr(kwargs["flags"], "sep_actor_critic", False):
+        Net = ActorNetSingle
+    else:
+        Net = ActorNetSep
+
+    return Net(*args, **kwargs)

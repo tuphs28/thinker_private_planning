@@ -7,10 +7,11 @@ from thinker.core.module import ResBlock
 class AFrameEncoderLegacy(nn.Module):
     def __init__(self,
                  input_shape, 
+                 flags,
                  downpool=False, 
                  firstpool=False,    
                  out_size=256,
-                 see_double=False
+                 see_double=False,
                  ):
         
         super(AFrameEncoderLegacy, self).__init__()
@@ -253,4 +254,42 @@ class FrameEncoder(nn.Module):
         x = self.d_conv(z)
         if flatten:
             x = x.view(input_shape[:2] + x.shape[1:])
+        return x
+
+
+class ShallowAFrameEncoder(nn.Module):
+    # shallow processor for 3d inputs; can be applied to model's hidden state or predicted real state
+    def __init__(self, 
+                 input_shape, 
+                 out_size=256,
+                 downscale=True):
+        super(ShallowAFrameEncoder, self).__init__()
+        self.input_shape = input_shape
+        self.out_size = out_size
+
+        c, h, w = self.input_shape
+        compute_hw = lambda h, w, k, s: ((h - k) // s + 1,  (h - k) // s + 1)
+        self.conv1 = nn.Conv2d(c, 32, kernel_size=8, stride=4 if downscale else 1)
+        h, w = compute_hw(h, w, 8, 4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2 if downscale else 1)
+        h, w = compute_hw(h, w, 4, 2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1 if downscale else 1)
+        h, w = compute_hw(h, w, 3, 1)
+        fc_in_size = h * w * 64
+        # Fully connected layer.
+        self.fc = nn.Linear(fc_in_size, out_size)
+
+    def forward(self, x):
+        """encode the state or model's encoding inside the actor network
+        args:
+            x: input tensor of shape (B, C, H, W); can be state or model's encoding
+        return:
+            output: output tensor of shape (B, self.out_size)"""
+
+        assert x.dtype in [torch.float, torch.float16]
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = torch.flatten(x, start_dim=1)
+        x = self.fc(x)
         return x

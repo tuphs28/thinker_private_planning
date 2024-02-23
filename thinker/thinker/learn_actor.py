@@ -450,7 +450,7 @@ class SActorLearner:
                 bootstrap_value = tar_actor_out.baseline[-1]
             else:
                 bootstrap_value = new_actor_out.baseline[-1]
-        if not self.impact_enable:
+        elif not self.impact_enable:
             bootstrap_value = new_actor_out.baseline[-1]        
     
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
