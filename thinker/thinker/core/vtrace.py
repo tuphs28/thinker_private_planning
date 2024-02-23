@@ -101,7 +101,7 @@ def compute_v_trace(
         else:
             clipped_pg_rhos = rhos
         target_values = rewards + discounts * vs_t_plus_1
-        if return_norm_type != [0, 1]:
+        if not return_norm_type in [0, 1]:
             norm_stat = None
         else:
             if return_norm_type == 0:

@@ -22,18 +22,14 @@ class SimWrapper(gym.Wrapper):
         self.device = torch.device("cpu") if device is None else device       
 
         action_space =  env.action_space[0]
-        if type(action_space) == spaces.discrete.Discrete:    
-            self.tuple_action = False                
-            self.num_actions = action_space.n    
-            self.dim_actions = 1
-            self.dim_rep_actions = self.num_actions
-            self.pri_action_shape = (self.env_n,)
+
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(action_space)
+        
+        if type(action_space) == spaces.discrete.Discrete:      
+            self.pri_action_shape = (self.env_n)
         else:
-            self.tuple_action = True
-            self.num_actions = action_space[0].n    
-            self.dim_actions = len(action_space)    
-            self.dim_rep_actions = self.dim_actions
-            self.pri_action_shape = (self.env_n, self.dim_actions)
+            self.pri_action_shape = (self.env_n, self.dim_actions)        
         self.reset_action_shape = (self.env_n,)
         
         if env.observation_space.dtype == 'uint8':
