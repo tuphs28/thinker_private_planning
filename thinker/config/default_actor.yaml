@@ -27,7 +27,7 @@ baseline_cost: 0.5 # cost for computing baseline
 entropy_r_cost: 0. # entropy cost added to reward
 entropy_cost: 0.001 # entropy cost for real actions
 im_entropy_cost: 0.0001 # entropy cost for imaginary actions
-reg_cost: 0.001 # regularization cost
+reg_cost: 0. # regularization cost
 clip_v_loss: false # whether to clip v loss
 # actor setting
 # - general
