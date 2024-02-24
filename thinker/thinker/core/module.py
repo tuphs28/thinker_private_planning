@@ -159,3 +159,12 @@ class OneDResBlock(nn.Module):
         out = F.relu(self.linear2(out))
         out = out + x  # Skip connection
         return out    
+
+def guassian_kl_div(tar_mean, tar_log_var, mean, log_var, reduce="sum"):
+    tar_var, var = torch.exp(tar_log_var), torch.exp(log_var)
+    tar_log_std, log_std = tar_log_var / 2, log_var / 2
+    kl = log_std - tar_log_std + (tar_var + (tar_mean - mean).pow(2)) / (2 * var) - 0.5
+    if reduce == "sum":
+        return torch.sum(kl, dim=-1)
+    else:
+        return torch.mean(kl, dim=-1)

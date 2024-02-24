@@ -252,7 +252,7 @@ class SimWrapper(gym.Wrapper):
                 im_policy = model_net_out.policy[-1]
                 im_v = model_net_out.vs[-1]
                 
-                self.cur_action = util.encode_action(pri_action, self.pri_action_shape)
+                self.cur_action = util.encode_action(pri_action, self.pri_action_space)
                 self.cur_r = im_r
                 self.cur_r[self.rollout_done] = 0.                  
                 if torch.any(self.rollout_done):

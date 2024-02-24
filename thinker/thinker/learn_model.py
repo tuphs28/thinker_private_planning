@@ -8,19 +8,31 @@ import torch
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from thinker.core.file_writer import FileWriter
+from thinker.core.module import guassian_kl_div
 from thinker.model_net import ModelNet
 import thinker.util as util
 import gc
 
-def compute_cross_entropy_loss(logits, target_policy, is_weights, mask=None):
-    k, b, d, _ = logits.shape
-    loss = torch.nn.CrossEntropyLoss(reduction="none")(
-        input=torch.flatten(logits, 0, 2), target=torch.flatten(target_policy, 0, 2)
-    )
-    loss = loss.view(k, b, d)
-    loss = torch.mean(loss, dim=2)
-    if mask is not None:
-        loss = loss * mask
+def compute_cross_entropy_loss(policy, target_policy, discrete_action, require_prob, is_weights, mask=None):
+    k, b, d, _ = policy.shape
+    if discrete_action:
+        loss = torch.nn.CrossEntropyLoss(reduction="none")(
+            input=torch.flatten(policy, 0, 2), target=torch.flatten(target_policy, 0, 2)
+        )
+        loss = loss.view(k, b, d)
+        loss = torch.mean(loss, dim=2)
+    elif require_prob:
+        tar_mean = target_policy[:, :, :, 0]
+        tar_log_var = target_policy[:, :, :, 1]
+        mean = policy[:, :, :, 0]
+        log_var = policy[:, :, :, 1]
+        loss = guassian_kl_div(
+            tar_mean, tar_log_var, mean, log_var, reduce="mean"
+        )
+    else:
+        loss = 0.5 * (log_var + ((policy - mean) ** 2) /  torch.exp(log_var))
+        loss = torch.mean(loss, dim=-1)
+    if mask is not None: loss = loss * mask
     loss = torch.sum(loss, dim=0)
     loss = is_weights * loss
     return torch.sum(loss)
@@ -35,7 +47,6 @@ class SModelLearner:
             self.model_buffer = ray_obj["model_buffer"]
             self.param_buffer = ray_obj["param_buffer"]
             self.signal_buffer = ray_obj["signal_buffer"]
-            self.num_actions = model_param["num_actions"]
             self.model_net = ModelNet(**model_param)
             self.refresh_model()
             self.model_net.train(True)
@@ -46,7 +57,6 @@ class SModelLearner:
         else:
             assert model_net is not None, "actor_net is required for non-parallel mode"
             assert device is not None, "device is required for non-parallel mode"
-            self.num_actions = model_param["num_actions"]
             self.model_net = model_net
             self.device = device
 
@@ -407,7 +417,7 @@ class SModelLearner:
             past_real_state = train_model_out.initial_per_state["past_real_state"]
             past_done = train_model_out.initial_per_state["past_done"]
             past_action = train_model_out.initial_per_state["past_action"]
-            past_action = self.model_net.sr_net.convert_action(past_action, one_hot=False)
+            past_action = util.encode_action(past_action, self.model_net.action_space, one_hot=False)
             _, per_state = self.model_net.sr_net.encoder(past_real_state, past_done, past_action, initial_per_state, flatten=True)
 
             #dbg_per_state = {sk: sv[-1] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
@@ -438,7 +448,7 @@ class SModelLearner:
             img_loss = None
         if self.flags.model_fea_loss_cost > 0.:
             with torch.no_grad():
-                action = self.model_net.vp_net.convert_action(train_model_out.action[1 : k + 1], one_hot=False)
+                action = util.encode_action(train_model_out.action[1 : k + 1], self.model_net.action_space, one_hot=False)
                 target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
                     target["xs"], action, flatten=True
                 )
@@ -499,7 +509,7 @@ class SModelLearner:
             past_real_state = train_model_out.initial_per_state["past_real_state"]
             past_done = train_model_out.initial_per_state["past_done"]
             past_action = train_model_out.initial_per_state["past_action"]
-            past_action = self.model_net.vp_net.convert_action(past_action, one_hot=False)
+            past_action = util.encode_action(past_action, self.model_net.action_space, one_hot=False)
             _, per_state = self.model_net.vp_net.encoder(past_real_state, past_done, past_action, initial_per_state, flatten=True)
         else:
             per_state = initial_per_state
@@ -520,7 +530,7 @@ class SModelLearner:
             )
             vs = out.vs.view(k, b)
             v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
-            logits = out.logits.view((k, b) + out.logits.shape[2:])
+            policy = out.policy.view((k, b) + out.policy.shape[2:])
         else:
             out = self.model_net.vp_net.forward(
                 xs=xs[: k + 1],  # s_0, ..., s_k
@@ -534,7 +544,7 @@ class SModelLearner:
                 v_enc_logits = util.safe_view(out.v_enc_logits[:-1], (k, b, -1))
             else:
                 v_enc_logits = None
-            logits = out.logits[:-1]
+            policy = out.policy[:-1]
 
         done_mask = target["done_mask"]
         if self.model_net.vp_net.predict_rd:
@@ -558,16 +568,21 @@ class SModelLearner:
         vs_loss = vs_loss * is_weights
         vs_loss = torch.sum(vs_loss)
 
-        # compute logit loss
+        # compute policy loss
         if self.flags.require_prob:
             target_policy = target["action_probs"].detach()
         else:
-            target_policy = F.one_hot(
-                target["actions"], self.num_actions).detach().float()
+            if self.model_net.discrete_action:
+                target_policy = F.one_hot(
+                    target["actions"], self.model_net.num_actions).detach().float()
+            else:
+                target_policy = target["actions"].detach().float()
 
-        logits_loss = compute_cross_entropy_loss(
-            logits, 
+        policy_loss = compute_cross_entropy_loss(
+            policy, 
             target_policy, 
+            self.model_net.discrete_action,
+            self.flags.require_prob,
             is_weights, 
             mask=done_mask[:-1], 
         )
@@ -587,12 +602,12 @@ class SModelLearner:
 
         losses = {
             "vs_loss": vs_loss,
-            "logits_loss": logits_loss,
+            "policy_loss": policy_loss,
             "reg_loss": reg_loss,
         }
         total_loss = (
             self.flags.model_vs_loss_cost * vs_loss
-            + self.flags.model_logits_loss_cost * logits_loss
+            + self.flags.model_policy_loss_cost * policy_loss
         )
         if self.model_net.vp_net.predict_rd:
             total_loss = total_loss + self.flags.model_rs_loss_cost * rs_loss

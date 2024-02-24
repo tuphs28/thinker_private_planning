@@ -11,8 +11,9 @@ import torch
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler
 
-from thinker.core.vtrace import compute_v_trace, FifoBuffer
+from thinker.core.vtrace import compute_v_trace
 from thinker.core.file_writer import FileWriter
+from thinker.core.module import guassian_kl_div
 from thinker.actor_net import ActorNet
 import thinker.util as util
 from thinker.buffer import RetBuffer
@@ -51,12 +52,6 @@ def compute_baseline_enc_loss(
         loss = loss.view(baseline_enc.shape[:2])
     if mask is not None: loss = loss * mask
     return torch.sum(loss)
-
-def guassian_kl_div(tar_mean, tar_log_var, mean, log_var):
-    tar_var, var = torch.exp(tar_log_var), torch.exp(log_var)
-    tar_log_std, log_std = tar_log_var / 2, log_var / 2
-    kl = log_std - tar_log_std + (tar_var + (tar_mean - mean).pow(2)) / (2 * var) - 0.5
-    return torch.sum(kl, dim=-1)
 
 class SActorLearner:
     def __init__(self, ray_obj, actor_param, flags, actor_net=None, device=None):

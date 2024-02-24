@@ -19,7 +19,7 @@ model_self_bootstrap: false # whether to boostrap itself as target
 model_warm_up_n: 200000 # number of augmented step before model starts to be trained
 model_buffer_n: 200000 # capacity of replay buffer in number of augmented step 
 # cost setting in training
-model_logits_loss_cost: 0.5 # cost for training model's policy
+model_policy_loss_cost: 0.5 # cost for training model's policy
 model_vs_loss_cost: 0.25 # cost for training model's values
 model_rs_loss_cost: 1.0 # cost for training model's reward
 model_done_loss_cost: 1.0 # cost for training model's done signal

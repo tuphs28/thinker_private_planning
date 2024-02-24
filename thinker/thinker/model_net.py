@@ -834,6 +834,7 @@ class VPNet(nn.Module):
         self.flags = flags
         self.obs_shape = obs_shape
         self.oned_input = len(self.obs_shape) == 1
+        self.action_space = action_space
         self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
             util.process_action_space(action_space)  
         self.enc_type = flags.model_enc_type
@@ -1041,6 +1042,8 @@ class ModelNet(BaseNet):
         self.flags = flags
         self.obs_shape = obs_space.shape
         self.action_space = action_space
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(action_space)  
         self.oned_input = len(self.obs_shape) == 1        
         self.enc_type = flags.model_enc_type
         self.size_nn = flags.model_size_nn

@@ -76,7 +76,7 @@ class AFrameEncoder(nn.Module):
 
         self.oned_input = len(self.input_shape) == 1
         if self.shallow_enc and self.oned_input: self.out_size = 64
-        
+
         in_channels = input_shape[0]
         if not self.oned_input:
             # following code is from Torchbeast, which is the same as Impala deep model            
@@ -273,8 +273,8 @@ class ActorBaseNet(nn.Module):
         self.num_rewards += int(flags.cur_cost > 0.0)
         self.enc_type = flags.critic_enc_type  
         self.rv_tran = None
-        self.critic_zero_init = flags.critic_zero_init             
-
+        self.critic_zero_init = flags.critic_zero_init         
+        self.legacy = getattr(flags, "legacy", False)  
 
         # action space processing
         self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
@@ -382,7 +382,7 @@ class ActorNetSep(ActorBaseNet):
 class ActorNetSingle(ActorBaseNet):
     def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False, actor=True, critic=True):
         super(ActorNetSingle, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)      
-        self.legacy = getattr(flags, "legacy", False)            
+                  
         self.actor = actor
         self.critic = critic
 
@@ -790,8 +790,12 @@ class ActorNetSingle(ActorBaseNet):
             if not self.disable_thinker:
                 action = (pri_env, reset[-1])            
             else:
-                action = pri_env           
-            action_prob = F.softmax(pri_logits, dim=-1)    
+                action = pri_env        
+
+            if self.discrete_action:   
+                action_prob = F.softmax(pri_logits, dim=-1)    
+            else:
+                action_prob = pri_param
             if not self.tuple_action: action_prob = action_prob[:, :, 0]    
 
         if self.critic:
