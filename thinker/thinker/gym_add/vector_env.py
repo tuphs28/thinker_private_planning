@@ -50,7 +50,7 @@ class VectorEnv(gym.Env):
     def reset_wait(self, **kwargs):
         raise NotImplementedError()
 
-    def reset(self, inds=None, seed=None, options=None):
+    def reset(self, idx=None, seed=None, options=None):
         r"""Reset all sub-environments and return a batch of initial observations.
 
         Returns
@@ -58,7 +58,7 @@ class VectorEnv(gym.Env):
         observations : sample from `observation_space`
             A batch of observations from the vectorized environment.
         """
-        self.reset_async(inds=inds)
+        self.reset_async(idx=idx)
         return self.reset_wait()
 
     def step_async(self, actions):
@@ -67,7 +67,7 @@ class VectorEnv(gym.Env):
     def step_wait(self, **kwargs):
         raise NotImplementedError()
 
-    def step(self, actions, inds=None):
+    def step(self, actions, idx=None):
         r"""Take an action for each sub-environments.
 
         Parameters
@@ -90,19 +90,19 @@ class VectorEnv(gym.Env):
             A list of auxiliary diagnostic information dicts from sub-environments.
         """
 
-        self.step_async(actions, inds)
+        self.step_async(actions, idx)
         return self.step_wait()
 
-    def clone_state(self, inds=None):
-        self.clone_state_async(inds)
+    def clone_state(self, idx=None):
+        self.clone_state_async(idx)
         return self.clone_state_wait()
 
-    def restore_state(self, data, inds=None):
-        self.restore_state_async(data, inds)
+    def restore_state(self, data, idx=None):
+        self.restore_state_async(data, idx)
         return self.restore_state_wait()
     
-    def render(self, inds=None, *args, **kwargs):
-        self.render_async(inds, *args, **kwargs)
+    def render(self, idx=None, *args, **kwargs):
+        self.render_async(idx, *args, **kwargs)
         return self.render_wait()
 
     def close_extras(self, **kwargs):

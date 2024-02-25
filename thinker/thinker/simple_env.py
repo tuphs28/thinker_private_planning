@@ -26,7 +26,7 @@ class SimWrapper(gym.Wrapper):
             util.process_action_space(self.pri_action_space)
         
         if type(self.pri_action_space) == spaces.discrete.Discrete:      
-            self.pri_action_shape = (self.env_n)
+            self.pri_action_shape = (self.env_n, )
         else:
             self.pri_action_shape = (self.env_n, self.dim_actions)        
         self.reset_action_shape = (self.env_n,)
@@ -83,6 +83,9 @@ class SimWrapper(gym.Wrapper):
         self.observation_space = spaces.Dict(self.observation_space)        
         reset_space = spaces.Tuple((spaces.Discrete(2),)*self.env_n)
         self.action_space = spaces.Tuple((env.action_space, reset_space))
+
+        default_info = self.env.default_info()
+        self.default_info = util.dict_map(default_info, lambda x: torch.tensor(x, device=self.device))
 
 
     def reset(self, model_net):
@@ -323,8 +326,8 @@ class SimWrapper(gym.Wrapper):
                         self.tmp_state[k][reset_bool] = self.root_per_state[k][reset_bool]
                     # self.im_reward[reset_bool] = 0
                     if self.perfect_model:
-                        inds = np.arange(self.env_n)[reset_bool.cpu().numpy()]
-                        self.env.restore_state([self.root_env_state[i] for i in inds], inds=inds)
+                        idx = np.arange(self.env_n)[reset_bool.cpu().numpy()]
+                        self.env.restore_state([self.root_env_state[i] for i in idx], idx=idx)
 
                 if self.query_cur:                    
                     # shift table
@@ -351,18 +354,16 @@ class SimWrapper(gym.Wrapper):
 
                 real_reward =  torch.zeros(self.env_n, device=self.device)
                 done = torch.zeros(self.env_n, device=self.device, dtype=torch.bool)
-                truncated_done = done
-                real_done = done
-                cost = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
-
+                info = self.default_info
                 baseline = None
             else:
                 # real step
                 baseline = self.sum_rollout_return / self.rec_t 
                 if self.perfect_model: self.env.restore_state(self.root_env_state)
                 real_state, real_reward, done, info = self.env.step(pri_action.detach().cpu().numpy())
+                info = util.dict_map(info, lambda x: torch.tensor(x, device=self.device))
                 if np.any(done): 
-                    new_real_state = self.env.reset(self.np_batch_idx[done])
+                    new_real_state = self.env.reset(idx=self.np_batch_idx[done])
                     real_state[done] = new_real_state
                 real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
                 real_reward = torch.tensor(real_reward, dtype=torch.float, device=self.device)
@@ -372,23 +373,6 @@ class SimWrapper(gym.Wrapper):
                 if not self.tuple_action: pri_action = pri_action.unsqueeze(-1)        
                 model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, initial_per_state)
                 state = self.prepare_state(model_net_out, real_state)
-                if "real_done" in info[0].keys():
-                    real_done = [m["real_done"] for m in info]
-                    real_done = torch.tensor(real_done, dtype=torch.bool, device=self.device)
-                else:
-                    real_done = done
-
-                if "truncated_done" in info[0].keys():
-                    truncated_done = [m["truncated_done"] for m in info]
-                    truncated_done = torch.tensor(truncated_done, dtype=torch.bool, device=self.device)
-                else:
-                    truncated_done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
-
-                if "cost" in info[0].keys():
-                    cost = [m["cost"] for m in info]
-                    cost = torch.tensor(cost, dtype=torch.bool, device=self.device)
-                else:
-                    cost = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
 
             last_step_real = self.k == 0
             next_step_real = self.k >= self.rec_t - 1
@@ -397,16 +381,13 @@ class SimWrapper(gym.Wrapper):
             if not last_step_real and next_step_real: step_status[:] = 2
             if last_step_real and next_step_real: step_status[:] = 3      
 
-            info = {
-                "real_done": real_done,
-                "truncated_done": truncated_done,
+            info.update({
                 "step_status": step_status,
                 "max_rollout_depth": self.last_max_rollout_depth,
                 "baseline": baseline,
                 "initial_per_state": initial_per_state,
                 "im_reward": self.im_reward,
-                "cost": cost,
-            }
+            })
 
             return state, real_reward, done, info
         
@@ -574,11 +555,11 @@ class SimWrapper(gym.Wrapper):
     def seed(self, x):
         self.env.seed(x)
     
-    def clone_state(self, inds=None):
-        return self.env.clone_state(inds)
+    def clone_state(self, idx=None):
+        return self.env.clone_state(idx)
 
-    def restore_state(self, state, inds=None):
-        self.env.restore_state(state, inds)
+    def restore_state(self, state, idx=None):
+        self.env.restore_state(state, idx)
 
     def unwrapped_step(self, *args, **kwargs):
         return self.env.step(*args, **kwargs)

@@ -43,6 +43,9 @@ grayscale: false # whether to apply grayscale for atari
 atari: false # whether to use atari wrapper
 discrete_k: -1 # bin used to discretize the action space; -1 for no discretizing
 obs_norm: false # whether to normalize obs by running avg mean and std
+obs_clip: -1 # observation clipping; if positve, the obs is clipped within the absolute value of this values; set to negative number for no clipping
+reward_norm: false # whether to normalize reward by running avg mean and std
+reward_clip: -1 # reward clipping; if positve, the reward is clipped within the absolute value of this values; set to negative number for no clipping
 # wrapper to be used
 require_prob: false # whether to use prob to train model instead of sampled action
 wrapper_type: 0 # 0: default Thinker; 1: raw env; 2: Thinker w/ perfect model; 3: simple env
@@ -67,7 +70,6 @@ sample_temp: 4 # whether to use sampled action in imagination
 sample_replace: true # whether to have replcaement when sampling action
 # reward-related
 discounting: 0.97 # discount rate of the raw MDP
-reward_clip: -1 # reward clipping; if positve, the reward is clipped within the absolute value of this values; set to negative number for no clipping
 im_enable: true # whether to return imagainary reward
 stat_mask_type: 0 # masking hint in tree representation: 0: no masking, 1 for masking all auxiliary stat, 2 for masking all auxiliary node stat + v and pi
 # curiosity-related

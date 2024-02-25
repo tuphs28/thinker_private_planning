@@ -10,7 +10,7 @@ from thinker.buffer import ModelBuffer, SModelBuffer, GeneralBuffer
 from thinker.learn_model import ModelLearner, SModelLearner
 from thinker.model_net import ModelNet
 from thinker.gym_add.asyn_vector_env import AsyncVectorEnv
-from thinker.wrapper import PreWrapper, DummyWrapper, PostWrapper, NormalizeObservation
+import thinker.wrapper as wrapper
 from thinker.cenv import cModelWrapper, cPerfectWrapper
 from thinker.simple_env import SimWrapper
 import gym
@@ -117,7 +117,7 @@ class Env(gym.Wrapper):
                 fn = gym.make
                 args = {"id": name}
 
-            env_fn = lambda: PreWrapper(
+            env_fn = lambda: wrapper.PreWrapper(
                 fn(**args), 
                 name=name, 
                 grayscale=self.flags.grayscale, 
@@ -152,7 +152,10 @@ class Env(gym.Wrapper):
         self.sample = self.flags.sample_n > 0
         self.sample_n = self.flags.sample_n
 
-        if not self.sample and self.tuple_action:
+        if self.sample:
+            self.pri_action_shape = (self.env_n,)
+            self.action_prob_shape = (self.env_n, self.sample_n,)
+        elif self.tuple_action:
             self.pri_action_shape = (self.env_n, self.dim_actions)
             if self.discrete_action:
                 self.action_prob_shape = self.pri_action_shape + (self.num_actions,)
@@ -160,7 +163,7 @@ class Env(gym.Wrapper):
                 self.action_prob_shape = self.pri_action_shape + (2,) # mean and var of Gaussian dist
         else:
             self.pri_action_shape = (self.env_n,)
-            self.action_prob_shape = self.pri_action_shape + (self.sample_n,)
+            self.action_prob_shape = (self.env_n, self.num_actions,)
 
         self.frame_stack_n = env.frame_stack_n if hasattr(env, "frame_stack_n") else 1
         self.model_mem_unroll_len = self.flags.model_mem_unroll_len
@@ -218,15 +221,31 @@ class Env(gym.Wrapper):
             
         # create batched asyn. environments
         env = AsyncVectorEnv([env_fn for _ in range(env_n)]) 
-        if self.flags.obs_norm:
+        env = wrapper.InfoConcat(env)
+        env = wrapper.RecordEpisodeStatistics(env)
+        if self.flags.obs_norm or self.flags.reward_norm:
             assert env.observation_space.dtype == np.float32
             self.ckp_path = os.path.join(self.flags.ckpdir, "ckp_env.npz")
-            env = NormalizeObservation(env)
-            if self.flags.ckp:
-                with np.load(self.ckp_path) as data:
-                    env.obs_rms.mean = data['mean']
-                    env.obs_rms.var = data['var']
-                    env.obs_rms.count = data['count']
+            if self.flags.obs_norm:
+                env = wrapper.NormalizeObservation(env)
+                if self.flags.ckp:
+                    with np.load(self.ckp_path) as data:
+                        env.obs_rms.mean = data['obs_mean']
+                        env.obs_rms.var = data['obs_var']
+                        env.obs_rms.count = data['obs_count']
+            if self.flags.reward_norm:
+                env = wrapper.NormalizeReward(env)
+                if self.flags.ckp:
+                    with np.load(self.ckp_path) as data:
+                        env.return_rms.mean = data['return_mean']
+                        env.return_rms.var = data['return_var']
+                        env.return_rms.count = data['return_count']
+
+        if self.flags.obs_clip > 0:
+            env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -self.flags.obs_clip, self.flags.obs_clip))
+        if self.flags.reward_clip > 0:
+            env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -self.flags.reward_clip, self.flags.reward_clip))
+
         env.seed([i for i in range(
             self.rank * env_n + self.flags.base_seed, 
             self.rank * env_n + self.flags.base_seed + env_n)])       
@@ -234,7 +253,7 @@ class Env(gym.Wrapper):
         if self.flags.wrapper_type == 0:
             core_wrapper = cModelWrapper
         elif self.flags.wrapper_type == 1:
-            core_wrapper = DummyWrapper
+            core_wrapper = wrapper.DummyWrapper
         elif self.flags.wrapper_type == 2:
             core_wrapper = cPerfectWrapper
         elif self.flags.wrapper_type in [3, 4, 5]:
@@ -255,8 +274,7 @@ class Env(gym.Wrapper):
         # wrap the env with a wrapper that computes episode
         # return and episode step for logging purpose;
         # also clip the reward afterwards if set
-        env = PostWrapper(env, 
-                        reward_clip=self.flags.reward_clip) 
+        env = wrapper.PostWrapper(env) 
         gym.Wrapper.__init__(self, env)    
 
         # create local buffer for transitions
@@ -341,7 +359,7 @@ class Env(gym.Wrapper):
                 device=self.device,
             ),
             action_prob=torch.zeros(
-                pre_shape + self.action_prob_shape[1:],
+                pre_shape + (self.dim_actions, self.num_actions),
                 dtype=torch.float32,
                 device=self.device,
             ),
@@ -556,11 +574,16 @@ class Env(gym.Wrapper):
         return self.tree_rep_meaning
     
     def save_checkpoint(self):
+        data = {}
         if self.flags.obs_norm:
-            mean = self.env.obs_rms.mean
-            var = self.env.obs_rms.var
-            count = self.env.obs_rms.count
-            np.savez(self.ckp_path, mean=mean, var=var, count=count)
+            data["obs_mean"] = self.env.obs_rms.mean
+            data["obs_var"] = self.env.obs_rms.var
+            data["obs_count"] = self.env.obs_rms.count
+        if self.flags.reward_norm:
+            data["return_mean"] = self.env.return_rms.mean
+            data["return_var"] = self.env.return_rms.var
+            data["return_count"] = self.env.return_rms.count        
+        np.savez(self.ckp_path, **data)
 
 def make(*args, **kwargs):
     return Env(*args, **kwargs)
