@@ -512,7 +512,9 @@ class SelfPlayBuffer:
             self.rewards_ls += ["cur"]
         self.num_rewards = len(self.rewards_ls)
 
-        self.step, self.real_step, self.tot_eps = 0, 0, 0
+        self.step, self.real_step, self.tot_eps = 0, 0, 0        
+        self.ckp_path = os.path.join(flags.ckpdir, "ckp_self_play.tar")
+        if flags.ckp: self.load_checkpoint(self.ckp_path)
 
         self.timer = timeit.default_timer
         self.start_time = self.timer()
@@ -522,8 +524,6 @@ class SelfPlayBuffer:
         self.sps_start_time, self.sps_start_step = self.start_time, self.step
         self.ckp_start_time = int(time.strftime("%M")) // 10
         
-        self.ckp_path = os.path.join(flags.ckpdir, "ckp_self_play.tar")
-        if flags.ckp: self.load_checkpoint(self.ckp_path)
 
     def insert(self, step_status, episode_return, episode_step, real_done, actor_id):
 
