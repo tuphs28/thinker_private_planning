@@ -234,7 +234,7 @@ class Env(gym.Wrapper):
                         env.obs_rms.var = data['obs_var']
                         env.obs_rms.count = data['obs_count']
             if self.flags.reward_norm:
-                env = wrapper.NormalizeReward(env)
+                env = wrapper.NormalizeReward(env, gamma=self.flags.discounting)
                 if self.flags.ckp:
                     with np.load(self.ckp_path) as data:
                         env.return_rms.mean = data['return_mean']
@@ -359,7 +359,7 @@ class Env(gym.Wrapper):
                 device=self.device,
             ),
             action_prob=torch.zeros(
-                pre_shape + (self.dim_actions, self.num_actions),
+                pre_shape + (self.dim_actions, self.num_actions if self.discrete_action else 2),
                 dtype=torch.float32,
                 device=self.device,
             ),
