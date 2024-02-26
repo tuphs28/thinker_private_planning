@@ -250,10 +250,12 @@ class SActorLearner:
         self.datas.append([data, None])
         self.impact_t += 1
         r = False
+        data_n = len(self.datas)
         if self.impact_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
-                ns = random.sample(range(len(self.datas)), len(self.datas))
+                ns = random.sample(range(data_n), data_n)
+                ns = [data_n-1] + random.sample(range(data_n-1), data_n-1)
                 for k, n in enumerate(ns):
                     data, base_stat = self.datas[n]
                     #print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, base_stat is None)
