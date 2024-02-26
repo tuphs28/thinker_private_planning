@@ -574,16 +574,17 @@ class Env(gym.Wrapper):
         return self.tree_rep_meaning
     
     def save_checkpoint(self):
-        data = {}
-        if self.flags.obs_norm:
-            data["obs_mean"] = self.env.obs_rms.mean
-            data["obs_var"] = self.env.obs_rms.var
-            data["obs_count"] = self.env.obs_rms.count
-        if self.flags.reward_norm:
-            data["return_mean"] = self.env.return_rms.mean
-            data["return_var"] = self.env.return_rms.var
-            data["return_count"] = self.env.return_rms.count        
-        np.savez(self.ckp_path, **data)
+        if self.flags.obs_norm or self.flags.reward_norm:
+            data = {}
+            if self.flags.obs_norm:
+                data["obs_mean"] = self.env.obs_rms.mean
+                data["obs_var"] = self.env.obs_rms.var
+                data["obs_count"] = self.env.obs_rms.count
+            if self.flags.reward_norm:
+                data["return_mean"] = self.env.return_rms.mean
+                data["return_var"] = self.env.return_rms.var
+                data["return_count"] = self.env.return_rms.count        
+            np.savez(self.ckp_path, **data)
 
 def make(*args, **kwargs):
     return Env(*args, **kwargs)

@@ -168,3 +168,34 @@ def guassian_kl_div(tar_mean, tar_log_var, mean, log_var, reduce="sum"):
         return torch.sum(kl, dim=-1)
     else:
         return torch.mean(kl, dim=-1)
+    
+def tile_and_concat_tensors(tensor_list):
+    # Step 1: Determine the maximum H and W
+    max_H = max(tensor.shape[2] for tensor in tensor_list)
+    max_W = max(tensor.shape[3] for tensor in tensor_list)
+
+    tiled_tensors = []
+
+    for tensor in tensor_list:
+        # Step 2: Calculate the tiling factor for each dimension
+        tile_factor_H = max_H // tensor.shape[2]
+        tile_factor_W = max_W // tensor.shape[3]
+
+        # Step 3: Tile the tensor
+        tiled_tensor = tensor.repeat(1, 1, tile_factor_H, tile_factor_W)
+
+        # Ensure that the tensor is cropped or padded to match the exact size (max_H, max_W)
+        if tiled_tensor.shape[2] < max_H or tiled_tensor.shape[3] < max_W:
+            padding_H = max_H - tiled_tensor.shape[2]
+            padding_W = max_W - tiled_tensor.shape[3]
+            tiled_tensor = torch.nn.functional.pad(tiled_tensor, (0, padding_W, 0, padding_H), mode='constant', value=0)
+        
+        # Then, crop if the tensor is too large
+        tiled_tensor = tiled_tensor[:, :, :max_H, :max_W]
+
+        tiled_tensors.append(tiled_tensor)
+
+    # Step 4: Concatenate all tensors along the channel dimension
+    concatenated_tensor = torch.cat(tiled_tensors, dim=1)
+
+    return concatenated_tensor    

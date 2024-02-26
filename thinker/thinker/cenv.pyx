@@ -686,7 +686,34 @@ cdef class cWrapper():
         return self.env.get_action_meanings()  
 
     def __getattr__(self, name):
-        return getattr(self.env, name)        
+        return getattr(self.env, name)   
+
+    def most_visited_path(self, n):
+        cdef vector[Node*] nodes, new_nodes
+        cdef Node node, child
+        cdef Node* ptop_child
+        cdef int i, j, m, most_visited, visit_count
+
+        actions = np.zeros((n, self.env_n), dtype=np.intc)
+        nodes = self.root_nodes
+
+        for m in range(n):            
+            for i in range(self.env_n):
+                most_visited, visit_count = 0, 0
+                node = nodes[i][0]
+                ptop_child = nodes[i]
+                for j in range(int(node.ppchildren[0].size())):
+                    child = node.ppchildren[0][j][0]
+                    if child.rollout_n > visit_count:
+                        most_visited = j
+                        visit_count = child.rollout_n
+                        ptop_child = node.ppchildren[0][j]
+                new_nodes.push_back(ptop_child)
+                actions[m, i] = most_visited
+            nodes = new_nodes
+            new_nodes.clear()
+
+        return actions
 
 cdef class cModelWrapper(cWrapper):
 

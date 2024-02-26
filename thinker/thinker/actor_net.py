@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch.cuda.amp import autocast
 from thinker import util
 from thinker.core.rnn import ConvAttnLSTM
-from thinker.core.module import MLP, OneDResBlock
+from thinker.core.module import MLP, OneDResBlock, tile_and_concat_tensors
 from thinker.model_net import RVTran
 from thinker.legacy import AFrameEncoderLegacy
 from gym import spaces
@@ -171,15 +171,15 @@ class AFrameEncoder(nn.Module):
         self.fc = nn.Sequential(nn.Linear(core_out_size, mlp_out_size), nn.ReLU())
             
 
-    def forward(self, x):
+    def forward(self, x, record_state=False):
         if not self.see_double:
-            return self.forward_single(x)
+            return self.forward_single(x, record_state=record_state)
         else:
-            out_1 = self.forward_single(x[:, :self.input_shape[0]])
+            out_1 = self.forward_single(x[:, :self.input_shape[0]], record_state=record_state)
             out_2 = self.forward_single(x[:, self.input_shape[0]:])            
             return torch.concat([out_1, out_2], dim=1)
 
-    def forward_single(self, x):
+    def forward_single(self, x, record_state=False):
         """encode the state or model's encoding inside the actor network
         args:
             x: input tensor of shape (B, C, H, W); can be state or model's encoding
@@ -189,7 +189,8 @@ class AFrameEncoder(nn.Module):
         if not self.oned_input:
             if self.firstpool:
                 x = self.down_pool_conv(x)
-            for i, fconv in enumerate(self.feat_convs):
+            if record_state: self.hidden_state = []
+            for i, fconv in enumerate(self.feat_convs):                
                 x = fconv(x)
                 res_input = x
                 x = self.resnet1[i](x)
@@ -197,11 +198,13 @@ class AFrameEncoder(nn.Module):
                 res_input = x
                 x = self.resnet2[i](x)
                 x += res_input
+                if record_state: self.hidden_state.append(x)
             x = torch.flatten(x, start_dim=1)
         else:
             x = self.input_block(x)
             x = self.res(x)
         x = self.fc(F.relu(x))
+        if record_state: self.hidden_state = tile_and_concat_tensors(self.hidden_state)
         return x
 
 class RNNEncoder(nn.Module):
@@ -666,7 +669,7 @@ class ActorNetSingle(ActorBaseNet):
             real_states = torch.flatten(env_out.real_states, 0, 1)   
             real_states = self.normalize(real_states)
             with autocast(enabled=self.float16):      
-                encoded_real_state = self.real_state_encoder(real_states)
+                encoded_real_state = self.real_state_encoder(real_states, record_state=self.record_state)
             if self.float16: encoded_real_state = encoded_real_state.float()
 
             if self.real_state_rnn:
@@ -675,6 +678,8 @@ class ActorNetSingle(ActorBaseNet):
                     encoded_real_state, done, core_state_, record_state=self.record_state)
                 new_core_state[self.state_idx['r']] = core_state_
                 if self.record_state: self.hidden_state = self.r_encoder_rnn.rnn.hidden_state
+            else:
+                if self.record_state: self.hidden_state = self.real_state_encoder.hidden_state
 
             final_out.append(encoded_real_state)
 

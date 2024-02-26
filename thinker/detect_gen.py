@@ -9,7 +9,6 @@ from thinker.main import Env
 import thinker.util as util
 from thinker.self_play import init_env_out, create_env_out
 
-
 class DetectBuffer:
     def __init__(self, outdir, t, rec_t, logger, delay_n=5):
         """
@@ -69,13 +68,13 @@ class DetectBuffer:
         # obtain the first N planning stage and the corresponding target_y in data
         xs, y, done, step_status = self._collect_data(t)
         future_y, future_done = self._collect_data(self.delay_n, y_done_only=True)
-        y = torch.concat([y, future_y], dim=0)
+        y = torch.concat([y, future_y], dim=0)        
         done = torch.concat([done, future_done], dim=0)                
         
         last_step_real = (step_status == 0) | (step_status == 3)
         assert last_step_real[0], "cur_t should start with 0"
         assert last_step_real.shape[0] == t*self.rec_t, \
-            f" step_status.shape is {last_step_real.shape}, expected {t*self.rec_t} for the first dimension."        
+            f" last_step_real.shape is {last_step_real.shape}, expected {t*self.rec_t} for the first dimension."        
         assert y.shape[0] == (t + self.delay_n)*self.rec_t, \
             f" y.shape is {y.shape}, expected {(t + self.delay_n)*self.rec_t} for the first dimension."        
         
@@ -128,6 +127,7 @@ class DetectBuffer:
             target_y = target_y | (not_done_cum[m] & y[m+1:m+1+t])
         return target_y
 
+
 def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
     _logger = util.logger()
@@ -141,7 +141,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
     config_path = os.path.join(ckpdir, 'config_c.yaml')
     flags = util.create_flags(config_path, save_flags=False)
-    disable_thinker = flags.wrapper_type == 1    
+    flags.shallow_enc = False
 
     env = Env(
             name=flags.name,
@@ -156,6 +156,10 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             return_h=True,
         )
 
+    disable_thinker = flags.wrapper_type == 1   
+    im_rollout = disable_thinker and env.has_model
+    mcts = flags.mcts
+
     obs_space = env.observation_space
     action_space = env.action_space 
 
@@ -168,21 +172,24 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
     }
     actor_net = ActorNet(**actor_param)
 
-    path = os.path.join(ckpdir, "ckp_actor.tar")
-    checkpoint = torch.load(path, map_location=torch.device("cpu"))
-    actor_net.set_weights(checkpoint["actor_net_state_dict"])
-    actor_net.to(device)
-    actor_net.train(False)
+    if not mcts:
+        path = os.path.join(ckpdir, "ckp_actor.tar")
+        checkpoint = torch.load(path, map_location=torch.device("cpu"))
+        actor_net.set_weights(checkpoint["actor_net_state_dict"])
+        actor_net.to(device)
+        actor_net.train(False)
 
     state = env.reset()
     env_out = init_env_out(state, flags=flags, dim_actions=actor_net.dim_actions, tuple_action=actor_net.tuple_action)  
     actor_state = actor_net.initial_state(batch_size=env_n, device=device)
 
+    file_idx = 0
+
     # create dir
 
     n = 0
     while True:
-        name = "%s-%d-%d" % (xpid, checkpoint["real_step"], n)
+        name = "%s-%d" % (xpid, n)
         outdir_ = os.path.join(outdir, name)
         if not os.path.exists(outdir_):
             os.makedirs(outdir_)
@@ -191,11 +198,12 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
         n += 1
     outdir = outdir_
 
-    detect_buffer = DetectBuffer(outdir=outdir, t=12800//env_n, rec_t=flags.rec_t, logger=_logger, delay_n=delay_n)
+    rec_t=flags.rec_t if not im_rollout and not mcts else delay_n + 1
+    detect_buffer = DetectBuffer(outdir=outdir, t=12800//env_n, rec_t=rec_t, logger=_logger, delay_n=delay_n)
     file_n = total_n // (env_n * detect_buffer.t) + 1
     _logger.info(f"Data output directory: {outdir}")
     _logger.info(f"Number of file to be generated: {file_n}")
-    
+
     with torch.set_grad_enabled(False):
         
         actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
@@ -219,10 +227,13 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
             "hidden_state_shape": list(hidden_state_shape) if disable_thinker else None,
             "rec_t": flags.rec_t,
+            "delay_n": delay_n,
             "ckpdir": ckpdir,
             "xpid": xpid,        
             "dxpid": name,
             "disable_thinker": disable_thinker,
+            "im_rollout": im_rollout,      
+            "mcts": mcts,
         }
 
         yaml_file_path = os.path.join(outdir, 'config_detect.yaml')
@@ -242,6 +253,52 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             env_out = create_env_out(actor_out.action, state, reward, done, info, flags=flags)
             if torch.any(done):
                 rets.extend(info["episode_return"][done].cpu().tolist())
+
+            step_status = info['step_status'][0].item() if not im_rollout else 0        
+            if im_rollout or (mcts and step_status in [2, 3]):
+                # generate imaginary rollout or most visited rollout (mcts)
+                if im_rollout: 
+                    action = actor_out.action.unsqueeze(0)
+                else:
+                    action = actor_out.action[0].unsqueeze(0)
+                model_net_out = env.model_net(
+                    x=env_out.real_states[0],
+                    done=env_out.done[0],
+                    actions=action,
+                    state=None,
+                    one_hot=False,
+                    ret_xs=True
+                )
+                new_env_out = env_out
+                if mcts:
+                    most_visited_actions = torch.tensor(env.most_visited_path(delay_n), dtype=torch.long, device=device)
+                for m in range(delay_n):
+                    if not mcts:
+                        actor_out, actor_state = actor_net(env_out=new_env_out, core_state=actor_state, greedy=greedy)   
+                        action = actor_out.action
+                    else:
+                        action = most_visited_actions[m]
+                    model_net_out = env.model_net.forward_single(
+                        state=model_net_out.state,
+                        action=action,
+                        one_hot=False,
+                        ret_xs=True,
+                    )
+                    new_state = {"real_states": (torch.clamp(model_net_out.xs,0,1)*255).to(torch.uint8)[0]}
+                    new_env_out = create_env_out(action, new_state, reward, done, info, flags=flags)
+                    xs = {
+                        "env_state": model_net_out.xs[0].half(),
+                        "pri_action": action,            
+                        "cost": torch.zeros_like(info["cost"]),
+                    }
+                    if im_rollout: xs["hidden_state"] = actor_net.hidden_state
+                    if mcts: xs["reset_action"] = torch.zeros_like(actor_out.action[1])
+                    file_idx = detect_buffer.insert(
+                        xs, 
+                        torch.zeros_like(y), 
+                        torch.zeros_like(done), 
+                        1 if m < delay_n - 1 else 2
+                    )
 
             actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
             if not disable_thinker:
@@ -263,20 +320,18 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                 "cost": info["cost"],
             }
             if not disable_thinker:
-                xs.update({
-                    "tree_rep": state["tree_reps"],
-                    "reset_action": actor_out.action[1],
-                })
+                if not mcts: xs.update({"tree_rep": state["tree_reps"]})
+                xs.update({"reset_action": actor_out.action[1]})
             else:
                 if disable_thinker:
                     xs.update({
                         "hidden_state": actor_net.hidden_state
                     })       
             y = info['cost']
-            done = done
-            step_status = info['step_status'][0].item()
+            done = done        
 
-            file_idx = detect_buffer.insert(xs, y, done, step_status)
+            if not (mcts and step_status != 0): # no recording for non-real mcts
+                file_idx = detect_buffer.insert(xs, y, done, step_status)
             
             if file_idx >= file_n: 
                 # last file is for validation
