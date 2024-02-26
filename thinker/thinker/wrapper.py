@@ -888,8 +888,10 @@ class RecordEpisodeStatistics(gym.Wrapper):
                 self.episode_return[real_done] = 0.
                 self.episode_step[real_done] = 0
             else:
-                self.episode_return[idx][real_done] = 0.
-                self.episode_step[idx][real_done] = 0
+                idx_b = np.zeros(self.num_envs, np.bool_)
+                idx_b[idx] = True
+                self.episode_return[idx_b & real_done] = 0.
+                self.episode_step[idx_b & real_done] = 0
                 
         info["episode_return"] = episode_return
         info["episode_step"] = episode_step
