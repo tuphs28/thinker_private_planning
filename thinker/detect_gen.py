@@ -254,7 +254,10 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             if torch.any(done):
                 rets.extend(info["episode_return"][done].cpu().tolist())
 
+            y = info['cost']
+            done = done 
             step_status = info['step_status'][0].item() if not im_rollout else 0        
+            
             if im_rollout or (mcts and step_status in [2, 3]):
                 # generate imaginary rollout or most visited rollout (mcts)
                 if im_rollout: 
@@ -326,9 +329,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                 if disable_thinker:
                     xs.update({
                         "hidden_state": actor_net.hidden_state
-                    })       
-            y = info['cost']
-            done = done        
+                    })                          
 
             if not (mcts and step_status != 0): # no recording for non-real mcts
                 file_idx = detect_buffer.insert(xs, y, done, step_status)
