@@ -7,12 +7,13 @@ import argparse
 import re
 import gc
 
+import gym
 import math
 import torch
 from torch import nn
 from torch.nn import functional as F
 from thinker.model_net import BaseNet, FrameEncoder
-from thinker.actor_net import ShallowAFrameEncoder
+from thinker.legacy import ShallowAFrameEncoder
 from thinker import util
 from thinker.core.file_writer import FileWriter
 
@@ -146,7 +147,7 @@ class DetectFrameEncoder(nn.Module):
         self.out_size = out_size
         self.oned_input = len(input_shape) == 1
         self.encoder = FrameEncoder(prefix="se",
-                                    actions_ch=None,
+                                    dim_rep_actions=None,
                                     input_shape=input_shape,                             
                                     size_nn=1,             
                                     downscale_c=2,    
@@ -187,7 +188,6 @@ class DetectNet(BaseNet):
         dim_actions,
         num_actions,
         tuple_actions,
-        detect_ab=(0,0),
         clone=False,
         tran_layer_n=3,
         tran_ff_n=512,
@@ -198,37 +198,40 @@ class DetectNet(BaseNet):
         
         self.env_state_shape = env_state_shape # in (C, H, W) 
         self.tree_rep_shape = tree_rep_shape # in (C,) 
+        self.see_tree_rep = self.tree_rep_shape is not None 
         self.hidden_state_shape = hidden_state_shape # in (inner_t, C, H, W)
+        self.see_hidden_state = self.hidden_state_shape is not None 
         self.dim_actions = dim_actions
         self.num_actions = num_actions
         self.tuple_actions = tuple_actions
+        if not self.tuple_actions:
+            self.action_space = gym.spaces.Discrete(num_actions)
+        else:
+            self.action_space = gym.spaces.Tuple((gym.spaces.Discrete(num_actions),)*self.dim_actions)
         self.dim_rep_actions = self.dim_actions if self.dim_actions > 1 else self.num_actions
 
-        self.detect_ab = detect_ab
         self.clone = clone
         self.disable_thinker = disable_thinker
 
-        self.enc_out_size = 128
-        tran_nhead = 8
-        if not self.disable_thinker:
-            reminder = tran_nhead - ((self.enc_out_size + tree_rep_shape[0] + self.dim_rep_actions + 1) % tran_nhead)
-        else:
-            reminder = tran_nhead - ((self.enc_out_size + self.dim_rep_actions) % tran_nhead)
-        self.enc_out_size += reminder
+        self.enc_out_size = 128  
+        self.embed_size = self.enc_out_size + self.dim_rep_actions
+        if not self.disable_thinker: self.embed_size += 1
+        if self.see_tree_rep: self.embed_size += tree_rep_shape[0]
 
+        tran_nhead = 8
+        reminder = tran_nhead - (self.embed_size % tran_nhead)              
+        self.enc_out_size += reminder
+        self.embed_size += reminder
+        
+        self.pos_encoder = PositionalEncoding(self.embed_size)
         FrameEncoder = ShallowAFrameEncoder if shallow_encode else DetectFrameEncoder
         self.true_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
-        if not self.disable_thinker:
-            self.pred_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
-        if hidden_state_shape is not None:
+        
+        if self.see_hidden_state:
             self.h_encoder = FrameEncoder(input_shape=hidden_state_shape[1:], out_size=self.enc_out_size, downscale=False)   
-
-        #self.pred_x_encoder = self.true_x_encoder
-        if not self.disable_thinker:
-            self.embed_size = self.enc_out_size + tree_rep_shape[0] + self.dim_rep_actions + 1
         else:
-            self.embed_size = self.enc_out_size + self.dim_rep_actions
-        self.pos_encoder = PositionalEncoding(self.embed_size)
+            self.pred_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
+        
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.embed_size, 
                                                    nhead=tran_nhead, 
@@ -253,35 +256,33 @@ class DetectNet(BaseNet):
             p: float Tensor in shape of (B); prob of classifier output
         """
         B, rec_t = env_state.shape[:2]
-        if self.detect_ab[0] in [1, 3] or self.detect_ab[1] in [1, 3]:
-            if self.clone: env_state = env_state.clone()                
-            if self.detect_ab[0] in [1, 3]:
-                env_state[:, 0] = 0.
-            if self.detect_ab[1] in [1, 3]:
-                env_state[:, 1:] = 0.
-        if self.detect_ab[0] in [2, 3] or self.detect_ab[1] in [2, 3]:
-            if self.clone: tree_rep = tree_rep.clone()
-            if self.detect_ab[0] in [2, 3]:
-                tree_rep[:, 0] = 0.
-            if self.detect_ab[1] in [2, 3]:
-                tree_rep[:, 1:] = 0.
         
-        action = util.encode_action(action, self.tuple_actions, self.num_actions)        
+        action = util.encode_action(action, self.action_space, one_hot=False)        
         true_proc_x = self.true_x_encoder(env_state[:,0])
         true_proc_x = true_proc_x.view(B, self.enc_out_size).unsqueeze(1) # (B, 1, C)
-        if not self.disable_thinker:
+        if not self.see_hidden_state:
             pred_proc_x = self.pred_x_encoder(
                 torch.flatten(env_state[:,1:], 0, 1),
                                             )            
             pred_proc_x = pred_proc_x.view(B, rec_t - 1, self.enc_out_size)  # (B, rec_t - 1, C)
-            proc_x = torch.concat([true_proc_x, pred_proc_x], dim=1) # (B, rec_t, C)            
-            embed = [proc_x, tree_rep, action, reset.unsqueeze(-1)]
+            proc_x = torch.concat([true_proc_x, pred_proc_x], dim=1) # (B, rec_t, C)      
         else:
             proc_h = self.h_encoder(torch.flatten(hidden_state[:,0], 0, 1))
             proc_h = proc_h.view(B, -1, self.enc_out_size)  # (B, inner_t, C)
             proc_x = torch.concat([true_proc_x, proc_h], dim=1) # (B, 1 + inner_t, C)
-            embed = [proc_x, torch.broadcast_to(action, (B, proc_x.shape[1], self.dim_rep_actions))]
-            
+
+        embed = [proc_x]
+        if not self.see_hidden_state:
+            embed.append(action)
+            if not self.disable_thinker: embed.append(reset.unsqueeze(-1))
+        else:
+            action = torch.broadcast_to(action, (B, proc_x.shape[1], self.dim_rep_actions))
+            embed.append(action)
+            if not self.disable_thinker: 
+                reset = torch.broadcast_to(reset.unsqueeze(-1), (B, proc_x.shape[1], self.dim_rep_actions))
+                embed.append(reset)
+
+        if self.see_tree_rep: embed.append(tree_rep)    
         embed = torch.concat(embed, dim=2) # (B, rec_t, embed_size)
         embed_pos = self.pos_encoder(embed)
         out = self.transformer_encoder(embed_pos)
@@ -347,6 +348,13 @@ def train_epoch(detect_net, dataloader, optimizer, device, flags, train=True):
         for xs, target_y in dataloader:
             xs = transform_data(xs, device, flags)
             target_y = target_y.to(device)
+
+            if flags.mask_im_state:
+                xs["env_state"] = xs["env_state"].clone()
+                xs["env_state"][:, 1:] = 0.
+
+            if flags.mask_hidden_state:
+                xs["hidden_state"] = torch.zeros_like(xs["hidden_state"])
             
             logit, pred_y = detect_net(**xs)
             n_mean_y = torch.mean((~target_y).float()).item()
@@ -380,22 +388,34 @@ def save_ckp(path, epoch, flags, optimizer, detect_net):
     }
     torch.save(d, path)
 
-def detect_train(flags):
+def load_ckp(path, optimizer, detect_net):
+    checkpoint = torch.load(path)
+    detect_net.load_state_dict(checkpoint['net_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    flags = checkpoint.get('flags', None) 
+    return epoch, flags
 
-    if not flags.ckp:
-        flags.datadir = os.path.abspath(os.path.expanduser(flags.datadir))
+def detect_train(flags):
+    project = flags.project
+    flags.datadir = os.path.abspath(os.path.expanduser(flags.datadir))
+    tdir = os.path.join(flags.datadir, "net")
+
+    if not os.path.exists(tdir): os.mkdir(tdir)
+
+    if not flags.ckp:        
         # create ckp dir
         xpid_n = 0
         while (True):
             xpid_ = flags.txpid if xpid_n == 0 else flags.txpid + f"_{xpid_n}"
-            ckpdir = os.path.join(flags.datadir, xpid_)
+            ckpdir = os.path.join(tdir, xpid_)
             xpid_n += 1
             if not os.path.exists(ckpdir):
                 os.mkdir(ckpdir) 
                 flags.txpid = xpid_
                 break    
     else:
-        ckpdir = os.path.join(flags.datadir, flags.txpid)
+        ckpdir = os.path.join(tdir, flags.txpid)
     flags.tckpdir = ckpdir
     flags.tckp_path = os.path.join(ckpdir, "ckp_detect.tar")
     flags.tckp_path_b = os.path.join(ckpdir, "ckp_detect_best.tar")
@@ -422,15 +442,15 @@ def detect_train(flags):
         overwrite=not flags.ckp,
     )
     flags.full_xpid = flags.dxpid + "_" + flags.txpid
-
+    flags.project = project
     if flags.use_wandb: wlogger = util.Wandb(flags)
 
     # initalize net
     device = torch.device("cuda")
     detect_net = DetectNet(
         env_state_shape = flags_data.env_state_shape,
-        tree_rep_shape = getattr(flags_data, "tree_rep_shape", None),
-        hidden_state_shape = getattr(flags_data, "hidden_state_shape", None),
+        tree_rep_shape = getattr(flags_data, "tree_rep_shape", None) if flags.see_tree_rep else None,
+        hidden_state_shape = getattr(flags_data, "hidden_state_shape", None) if flags.see_hidden_state else None,
         dim_actions = flags_data.dim_actions,
         num_actions = flags_data.num_actions,
         tuple_actions = flags_data.tuple_actions,
@@ -464,11 +484,13 @@ def detect_train(flags):
     best_val_loss = float('inf')
     epoch_since_improve = 0
 
+    stats = []
     while (epoch < flags.num_epochs):
         train_stat = train_epoch(detect_net, dataloader, optimizer, device, flags, train=True)
         val_stat = train_epoch(detect_net, val_dataloader, None, device, flags, train=False)
         stat = {**train_stat, **{'val/' + key: value for key, value in val_stat.items()}}
         stat["epoch"] = epoch
+        stats.append(stat)
         plogger.log(stat)
         if flags.use_wandb: wlogger.wandb.log(stat, step=stat['epoch'])
         
@@ -492,17 +514,28 @@ def detect_train(flags):
             
             if epoch_since_improve > flags.early_stop_n:
                 print(f"Stopping early at epoch {epoch} due to no improvement in validation loss for {flags.early_stop_n} consecutive epochs.")
+                load_ckp(flags.tckp_path_b, optimizer, detect_net)
                 break  # Stop the training loop
  
         if epoch % 5 == 0 or epoch >= flags.num_epochs:
             save_ckp(flags.tckp_path, epoch, flags, optimizer, detect_net)
             print(f"Checkpoint saved to {flags.tckp_path}")
-
-        if flags.use_wandb and (epoch % 10 == 0 or epoch >= flags.num_epochs):
-            wlogger.wandb.save(
-                os.path.join(flags.tckpdir, "*"), flags.tckpdir
-            )
     
+    # testing performance
+    test_dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=5000, prefix="test")
+    test_dataloader = DataLoader(test_dataset, batch_size=flags.batch_size, shuffle=True)
+    test_stat = train_epoch(detect_net, test_dataloader, None, device, flags, train=False)    
+    stat = {'test/' + key: value for key, value in test_stat.items()}
+    print_str = f'Test performance,'
+    for key in stat.keys():  print_str += f" {key}:{stat[key]:.4f}"
+    print(print_str)            
+    stat['epoch'] = epoch + 1
+    stats.append(stat)
+    plogger.log(stat)
+    if flags.use_wandb: wlogger.wandb.log(stat, step=stat['epoch'])
+    
+    if flags.use_wandb: wlogger.wandb.save(os.path.join(flags.tckpdir, "*"), flags.tckpdir)
+    np.save(os.path.join(flags.tckpdir, 'stats.npy'), np.array(stats, dtype=object))                
     plogger.close()    
     if flags.use_wandb: wlogger.wandb.finish()
 
@@ -515,6 +548,11 @@ if __name__ == "__main__":
     parser.add_argument("--txpid", default="test", help="training xpid of the run.")  
     parser.add_argument("--project", default="detect_post", help="Project of the run.")
     parser.add_argument("--chunk_n", default=1, type=int, help="Number of chunks; 1 for no chunking.")
+    # input setting
+    parser.add_argument("--see_tree_rep", action="store_true", help="See tree rep or not.")
+    parser.add_argument("--see_hidden_state", action="store_true", help="See hidden_state instead of future states")    
+    parser.add_argument("--mask_hidden_state", action="store_true", help="Whether masking hidden_state or not.")
+    parser.add_argument("--mask_im_state", action="store_true", help="Whether masking future env state or not.")
     # training setting
     parser.add_argument("--batch_size", default=128, type=int, help="Batch size in training.")
     parser.add_argument("--learning_rate", default=0.0001, type=float, help="Learning rate.")
