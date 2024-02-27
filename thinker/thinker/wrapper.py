@@ -109,8 +109,8 @@ class PostWrapper(gym.Wrapper):
         self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
             util.process_action_space(self.pri_action_space)
         if not self.discrete_action:
-            self.action_space_low = torch.tensor(self.pri_action_space.low, dypte=torch.float, device=device)
-            self.action_space_high = torch.tensor(self.pri_action_space.high, dypte=torch.float, device=device)
+            self.action_space_low = torch.tensor(self.pri_action_space.low, dtype=torch.float, device=device)
+            self.action_space_high = torch.tensor(self.pri_action_space.high, dtype=torch.float, device=device)
     
     def reset(self, model_net):
         state = self.env.reset(model_net)
