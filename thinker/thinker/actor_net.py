@@ -335,15 +335,15 @@ class ActorBaseNet(nn.Module):
     def get_weights(self):
         return {k: v.cpu().numpy() for k, v in self.state_dict().items()}    
 
-    def set_weights(self, weights):
+    def set_weights(self, weights, strict=True):
         device = next(self.parameters()).device
         tensor = isinstance(next(iter(weights.values())), torch.Tensor)
         if not tensor:
             self.load_state_dict(
-                {k: torch.tensor(v, device=device) for k, v in weights.items()}
+                {k: torch.tensor(v, device=device) for k, v in weights.items()}, strict=strict
             )
         else:
-            self.load_state_dict({k: v.to(device) for k, v in weights.items()})
+            self.load_state_dict({k: v.to(device) for k, v in weights.items()}, strict=strict)
 
 class ActorNetSep(ActorBaseNet):
     def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):

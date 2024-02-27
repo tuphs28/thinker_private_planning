@@ -175,7 +175,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
     if not mcts:
         path = os.path.join(ckpdir, "ckp_actor.tar")
         checkpoint = torch.load(path, map_location=torch.device("cpu"))
-        actor_net.set_weights(checkpoint["actor_net_state_dict"])
+        actor_net.set_weights(checkpoint["actor_net_state_dict"], strict=False)
         actor_net.to(device)
         actor_net.train(False)
 
@@ -257,7 +257,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             y = info['cost']
             done = done 
             step_status = info['step_status'][0].item() if not im_rollout else 0        
-            
+
             if im_rollout or (mcts and step_status in [2, 3]):
                 # generate imaginary rollout or most visited rollout (mcts)
                 if im_rollout: 
@@ -273,11 +273,12 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                     ret_xs=True
                 )
                 new_env_out = env_out
+                im_actor_state = actor_state
                 if mcts:
                     most_visited_actions = torch.tensor(env.most_visited_path(delay_n), dtype=torch.long, device=device)
                 for m in range(delay_n):
                     if not mcts:
-                        actor_out, actor_state = actor_net(env_out=new_env_out, core_state=actor_state, greedy=greedy)   
+                        actor_out, im_actor_state = actor_net(env_out=new_env_out, core_state=im_actor_state, greedy=greedy)   
                         action = actor_out.action
                     else:
                         action = most_visited_actions[m]

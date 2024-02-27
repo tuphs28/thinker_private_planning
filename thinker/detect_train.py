@@ -199,8 +199,16 @@ class DetectNet(BaseNet):
         self.env_state_shape = env_state_shape # in (C, H, W) 
         self.tree_rep_shape = tree_rep_shape # in (C,) 
         self.see_tree_rep = self.tree_rep_shape is not None 
-        self.hidden_state_shape = hidden_state_shape # in (inner_t, C, H, W)
+
+        self.hidden_state_shape = hidden_state_shape # in (inner_t, C, H, W)        
         self.see_hidden_state = self.hidden_state_shape is not None 
+        if self.see_hidden_state:
+            if len(hidden_state_shape) == 3:
+                hidden_state_shape = (1,) + hidden_state_shape
+                self.hidden_state_need_expand = True
+            else:
+                self.hidden_state_need_expand = False
+        
         self.dim_actions = dim_actions
         self.num_actions = num_actions
         self.tuple_actions = tuple_actions
@@ -267,6 +275,8 @@ class DetectNet(BaseNet):
             pred_proc_x = pred_proc_x.view(B, rec_t - 1, self.enc_out_size)  # (B, rec_t - 1, C)
             proc_x = torch.concat([true_proc_x, pred_proc_x], dim=1) # (B, rec_t, C)      
         else:
+            if self.hidden_state_need_expand:
+                hidden_state = hidden_state.unsqueeze(2)
             proc_h = self.h_encoder(torch.flatten(hidden_state[:,0], 0, 1))
             proc_h = proc_h.view(B, -1, self.enc_out_size)  # (B, inner_t, C)
             proc_x = torch.concat([true_proc_x, proc_h], dim=1) # (B, 1 + inner_t, C)
@@ -276,7 +286,7 @@ class DetectNet(BaseNet):
             embed.append(action)
             if not self.disable_thinker: embed.append(reset.unsqueeze(-1))
         else:
-            action = torch.broadcast_to(action, (B, proc_x.shape[1], self.dim_rep_actions))
+            action = torch.broadcast_to(action[:, [0], :], (B, proc_x.shape[1], self.dim_rep_actions))
             embed.append(action)
             if not self.disable_thinker: 
                 reset = torch.broadcast_to(reset.unsqueeze(-1), (B, proc_x.shape[1], self.dim_rep_actions))
@@ -522,6 +532,7 @@ def detect_train(flags):
             print(f"Checkpoint saved to {flags.tckp_path}")
     
     # testing performance
+    del dataloader, dataset, val_dataloader, val_dataset
     test_dataset = CustomDataset(datadir=flags.datadir, transform=None, data_n=5000, prefix="test")
     test_dataloader = DataLoader(test_dataset, batch_size=flags.batch_size, shuffle=True)
     test_stat = train_epoch(detect_net, test_dataloader, None, device, flags, train=False)    

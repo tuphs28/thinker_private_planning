@@ -63,6 +63,7 @@ critic_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 f
 sep_im_head: true # whether to use seperate head for computing imaginary logit
 last_layer_n: 0 # number of hidden layer after concat different branch
 actor_ordinal: false # whether to use ordinal representation in actor's policy
+tanh_action: true # whether to use tanh activation for action (continuous only)
 # -specific setting for continuous policy
 actor_min_std: 0.003 # minimum std of Gaussian policy
 actor_max_std: 10 # maximum std of Gaussian policy
