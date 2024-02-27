@@ -204,7 +204,7 @@ class DetectNet(BaseNet):
         self.see_hidden_state = self.hidden_state_shape is not None 
         if self.see_hidden_state:
             if len(hidden_state_shape) == 3:
-                hidden_state_shape = (1,) + hidden_state_shape
+                hidden_state_shape = [1,] + hidden_state_shape
                 self.hidden_state_need_expand = True
             else:
                 self.hidden_state_need_expand = False
