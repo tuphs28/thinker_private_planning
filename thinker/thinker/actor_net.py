@@ -541,6 +541,8 @@ class ActorNetSingle(ActorBaseNet):
                 nn.init.constant_(self.baseline.weight, 0.0)
                 nn.init.constant_(self.baseline.bias, 0.0)
 
+        self.tanh_action = flags.tanh_action
+
         self.initial_state(batch_size=1) # initialize self.state_idx        
 
     def initial_state(self, batch_size, device=None):
@@ -756,7 +758,10 @@ class ActorNetSingle(ActorBaseNet):
                     pri_pre_tanh = normal_dist.sample()
                 else:
                     pri_pre_tanh = pri_mean
-                pri = torch.tanh(pri_pre_tanh)
+                if self.tanh_action:
+                    pri = torch.tanh(pri_pre_tanh)
+                else:
+                    pri = pri_pre_tanh
                 pri_param = torch.stack((pri_mean, pri_log_var), dim=-1)
 
             if not self.disable_thinker:
@@ -773,15 +778,19 @@ class ActorNetSingle(ActorBaseNet):
                     reset[:clamp_action[1].shape[0]] = clamp_action[1]
                 else:
                     pri[:clamp_action.shape[0]] = clamp_action
-                if not self.discrete_action:                
-                    pri_pre_tanh = atanh(pri)
+                if not self.discrete_action:  
+                    if self.tanh_action:              
+                        pri_pre_tanh = atanh(pri)
+                    else:
+                        pri_pre_tanh = pri
 
             # compute chosen log porb
             if self.discrete_action:
                 c_action_log_prob = compute_discrete_log_prob(pri_logits, pri)     
             else:
                 c_action_log_prob = normal_dist.log_prob(pri_pre_tanh)
-                c_action_log_prob = c_action_log_prob - torch.log(1.0 - pri ** 2 + 1e-6)
+                if self.tanh_action:    
+                    c_action_log_prob = c_action_log_prob - torch.log(1.0 - pri ** 2 + 1e-6)
                 c_action_log_prob = torch.sum(c_action_log_prob, dim=-1)                
 
             if not self.disable_thinker:

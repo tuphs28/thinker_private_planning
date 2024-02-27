@@ -274,7 +274,7 @@ class Env(gym.Wrapper):
         # wrap the env with a wrapper that computes episode
         # return and episode step for logging purpose;
         # also clip the reward afterwards if set
-        env = wrapper.PostWrapper(env) 
+        env = wrapper.PostWrapper(env, self.flags, self.device) 
         gym.Wrapper.__init__(self, env)    
 
         # create local buffer for transitions

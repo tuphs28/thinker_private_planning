@@ -92,7 +92,7 @@ class DummyWrapper(gym.Wrapper):
     
 class PostWrapper(gym.Wrapper):
     """Wrapper for recording episode return, clipping rewards"""
-    def __init__(self, env):
+    def __init__(self, env, flags, device):
         gym.Wrapper.__init__(self, env)
         self.reset_called = False        
         low = torch.tensor(self.env.observation_space["real_states"].low[0])
@@ -100,6 +100,17 @@ class PostWrapper(gym.Wrapper):
         self.need_norm = torch.isfinite(low).all() and torch.isfinite(high).all()
         self.norm_low = low
         self.norm_high = high
+
+        self.disable_thinker = flags.wrapper_type == 1
+        if not self.disable_thinker:
+            self.pri_action_space = self.env.action_space[0][0]            
+        else:
+            self.pri_action_space = self.env.action_space[0]
+        self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
+            util.process_action_space(self.pri_action_space)
+        if not self.discrete_action:
+            self.action_space_low = torch.tensor(self.pri_action_space.low, dypte=torch.float, device=device)
+            self.action_space_high = torch.tensor(self.pri_action_space.high, dypte=torch.float, device=device)
     
     def reset(self, model_net):
         state = self.env.reset(model_net)
@@ -120,8 +131,17 @@ class PostWrapper(gym.Wrapper):
 
     def step(self, action, model_net):
         assert self.reset_called, "need to call reset ONCE before step"
+
+        if not self.discrete_action:            
+            if not self.disable_thinker:
+                pri_action, reset_action = action
+                pri_action = torch.clamp(pri_action, self.action_space_low, self.action_space_high)
+                action = (pri_action, reset_action)
+            else:
+                action = torch.clamp(action, self.action_space_low, self.action_space_high)
+
         state, reward, done, info = self.env.step(action, model_net)
-        real_done = info["real_done"]
+        real_done = info["real_done"]        
 
         for prefix in ["im", "cur"]:
             if prefix+"_reward" in info:
