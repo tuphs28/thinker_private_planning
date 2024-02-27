@@ -88,6 +88,7 @@ impact_beta: 0.5 # beta for is clipping
 impact_update_lambda: 0. # update lambda when refreshing target network; 0 for direct copy without ema
 impact_kl_coef: 0. # kl coef; i.e. loss cost for KL divergence between target policy and current policy
 impact_kl_targ: 0.04 # target kl divergence
+impact_early_stop: false # no more iteration if kl div exceed target
 impact_clip: 0.3 # clip for is ratio
 # checkpoint
 xpid: '' # name of the run, automatically set if not given

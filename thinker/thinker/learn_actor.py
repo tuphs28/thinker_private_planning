@@ -254,13 +254,21 @@ class SActorLearner:
         if self.impact_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
-                ns = random.sample(range(data_n), data_n)
-                ns = [data_n-1] + random.sample(range(data_n-1), data_n-1)
+                none_idx = [i for i, value in enumerate(self.datas) if value[1] is None]
+                not_none_idx = [i for i, value in enumerate(self.datas) if value[1] is not None]
+                random.shuffle(not_none_idx)
+                ns = none_idx + not_none_idx
                 for k, n in enumerate(ns):
                     data, base_stat = self.datas[n]
+                    if base_stat is not None and "early_stop" in base_stat: continue
                     #print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, base_stat is None)
                     update_beta = (k == len(ns) - 1)
                     r, base_stat = self.consume_data_single(data, timing=timing, base_stat=base_stat, update_beta=update_beta)
+                    
+                    if "early_stop" in base_stat:
+                        # no more training for all other seen mini-batch
+                        for i in len(self.datas):
+                            if self.datas[i][1] is not None: self.datas[i][1]["early_stop"] = True
                     self.datas[n][1] = base_stat     
         return r
 
@@ -648,6 +656,9 @@ class SActorLearner:
                         self.actor_net.kl_beta /= 2
                     elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
                         self.actor_net.kl_beta *= 2
+                if self.flags.impact_early_stop:
+                    if avg_kl_loss > self.flags.impact_kl_targ:
+                        base_stat["early_stop"] = True
                 self.actor_net.kl_beta = torch.clamp(self.actor_net.kl_beta, 1e-6, 1e3)
             self.kl_losses.append(kl_loss.item())            
             losses["kl_loss"] = np.mean(self.kl_losses)
