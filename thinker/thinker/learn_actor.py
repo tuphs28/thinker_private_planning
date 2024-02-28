@@ -254,10 +254,11 @@ class SActorLearner:
         if self.impact_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
-                none_idx = [i for i, value in enumerate(self.datas) if value[1] is None]
-                not_none_idx = [i for i, value in enumerate(self.datas) if value[1] is not None]
-                random.shuffle(not_none_idx)
-                ns = none_idx + not_none_idx
+                # none_idx = [i for i, value in enumerate(self.datas) if value[1] is None]
+                # not_none_idx = [i for i, value in enumerate(self.datas) if value[1] is not None]
+                # random.shuffle(not_none_idx)
+                # ns = none_idx + not_none_idx
+                ns = random.sample(range(data_n), data_n)
                 for k, n in enumerate(ns):
                     data, base_stat = self.datas[n]
                     if base_stat is not None and "early_stop" in base_stat: continue
