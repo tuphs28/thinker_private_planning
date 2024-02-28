@@ -146,7 +146,6 @@ class Env(gym.Wrapper):
             util.process_action_space(self.pri_action_space)
 
         if isinstance(self.pri_action_space, gym.spaces.Box):
-            assert (env.action_space.low == -1.).all() and (env.action_space.high == 1.).all(), f"Invalid action space {env.action_space}"
             assert len(env.action_space.shape) == 1, f"Invalid action space {env.action_space}"
         
         self.sample = self.flags.sample_n > 0

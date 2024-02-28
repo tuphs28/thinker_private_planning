@@ -135,7 +135,8 @@ class PostWrapper(gym.Wrapper):
         if not self.discrete_action:            
             if not self.disable_thinker:
                 pri_action, reset_action = action
-                pri_action = torch.clamp(pri_action, self.action_space_low, self.action_space_high)
+                pri_action = ((pri_action + 1) / 2) * (self.action_space_high - self.action_space_low) + self.action_space_low
+                pri_action = torch.clamp(pri_action, -1, +1)
                 action = (pri_action, reset_action)
             else:
                 action = torch.clamp(action, self.action_space_low, self.action_space_high)
