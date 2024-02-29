@@ -293,7 +293,7 @@ class SActorLearner:
                     ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]                       
                 else:                    
                     ns = random.sample(range(self.buffer_wrote_n // self.impact_b), self.buffer_wrote_n // self.impact_b)
-                    ns = [range(i*self.impact_b, i*self.impact_b+self.impact_b) for i in range(ns)]         
+                    ns = [range(i*self.impact_b, i*self.impact_b+self.impact_b) for i in ns]         
                     
                 for k, n in enumerate(ns):
                     out = {}
