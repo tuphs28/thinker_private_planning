@@ -300,7 +300,7 @@ class SActorLearner:
                         initial_actor_state.append(v[n])
                     
                     data = (train_actor_out, initial_actor_state)
-                    r, _ = self.consume_data_single(data, timing=timing, base_stat=None, first_iter=k==0, last_iter=k==len(ns)-1)
+                    r, _ = self.consume_data_single(data, timing=timing, base_stat=None, first_iter=k<=self.impact_update_freq, last_iter=k==len(ns)-1)
         return r
             
     def consume_data_(self, data, timing=None):
