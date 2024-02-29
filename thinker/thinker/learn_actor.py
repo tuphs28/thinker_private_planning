@@ -288,8 +288,13 @@ class SActorLearner:
             for m in range(self.impact_update_time):
                 if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()  
                 self.impact_update_t += 1
-                ns = random.sample(range(self.buffer_wrote_n), self.buffer_wrote_n)
-                ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]                
+                if self.flags.impact_bmix:
+                    ns = random.sample(range(self.buffer_wrote_n), self.buffer_wrote_n)
+                    ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]                       
+                else:                    
+                    ns = random.sample(range(self.buffer_wrote_n // self.impact_b), self.buffer_wrote_n // self.impact_b)
+                    ns = [range(i*self.impact_b, i*self.impact_b+self.impact_b) for i in range(ns)]         
+                    
                 for k, n in enumerate(ns):
                     out = {}
                     for k_ in TrainActorOut._fields:

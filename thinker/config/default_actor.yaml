@@ -90,6 +90,7 @@ impact_kl_coef: 0. # kl coef; i.e. loss cost for KL divergence between target po
 impact_kl_targ: 0.04 # target kl divergence
 impact_early_stop: false # no more iteration if kl div exceed target
 impact_syn: false # synchronized buffer
+impact_bmix: true # maxing different batch in mini-batch
 impact_clip: 0.3 # clip for is ratio
 # checkpoint
 xpid: '' # name of the run, automatically set if not given
