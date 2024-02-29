@@ -338,6 +338,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             if file_idx >= file_n: 
                 # last file is for validation
                 os.rename(f'{outdir}/data_{file_idx}.pt', f'{outdir}/val.pt')
+                os.rename(f'{outdir}/data_{file_idx-1}.pt', f'{outdir}/test.pt')
                 break
 
             if last_file_idx is not None and file_idx != last_file_idx:
