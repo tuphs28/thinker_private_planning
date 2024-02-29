@@ -299,9 +299,8 @@ class SActorLearner:
                     for v in self.impact_buffer_actor_state:
                         initial_actor_state.append(v[n])
                     
-                    update_beta = (k == len(ns) - 1)
                     data = (train_actor_out, initial_actor_state)
-                    r, _ = self.consume_data_single(data, timing=timing, base_stat=None, update_beta=update_beta)
+                    r, _ = self.consume_data_single(data, timing=timing, base_stat=None, first_iter=k==0, last_iter=k==len(ns)-1)
         return r
             
     def consume_data_(self, data, timing=None):
@@ -318,8 +317,7 @@ class SActorLearner:
                     data, base_stat = self.datas[n]
                     if base_stat is not None and "early_stop" in base_stat: continue
                     #print(self.impact_t, n, self.impact_update_tar_freq, self.impact_update_time, base_stat is None)
-                    update_beta = (k == len(ns) - 1)
-                    r, base_stat = self.consume_data_single(data, timing=timing, base_stat=base_stat, update_beta=update_beta)
+                    r, base_stat = self.consume_data_single(data, timing=timing, base_stat=None, first_iter=k==0, last_iter=k==len(ns)-1)
                     
                     if "early_stop" in base_stat:
                         # no more training for all other seen mini-batch
@@ -328,8 +326,7 @@ class SActorLearner:
                     self.datas[n][1] = base_stat     
         return r
 
-    def consume_data_single(self, data, timing=None, base_stat=None, update_beta=False):
-        impact_first_sample = base_stat is None and self.impact_enable
+    def consume_data_single(self, data, timing=None, base_stat=None, first_iter=True, last_iter=False):
 
         train_actor_out, initial_actor_state = data
         actor_id = train_actor_out.id
@@ -337,7 +334,7 @@ class SActorLearner:
 
         # compute losses
         out = self.compute_losses(
-            train_actor_out, initial_actor_state, base_stat, update_beta
+            train_actor_out, initial_actor_state, base_stat, first_iter, last_iter
         )
         if not self.impact_enable:
             losses, train_actor_out = out
@@ -383,7 +380,7 @@ class SActorLearner:
         self.scheduler.step()
         self.anneal_c = max(1 - self.real_step / self.flags.total_steps, 0)
         
-        if not self.impact_enable or impact_first_sample:
+        if not self.impact_enable or first_iter:
             # statistic output
             for k in losses: losses[k] = losses[k] / T / B
             total_norm = total_norm / T / B
@@ -474,7 +471,7 @@ class SActorLearner:
         else:
             return r, base_stat
 
-    def compute_losses(self, train_actor_out, initial_actor_state, base_stat=None, update_beta=False):
+    def compute_losses(self, train_actor_out, initial_actor_state, base_stat=None, first_iter=True, last_iter=False):
         # compute loss and then discard the first step in train_actor_out
 
         T, B = train_actor_out.done.shape
@@ -707,7 +704,7 @@ class SActorLearner:
             if self.flags.impact_kl_coef > 0.:
                 total_loss += self.flags.impact_kl_coef * self.actor_net.kl_beta * kl_loss         
                 avg_kl_loss = kl_loss / T / B  
-                if update_beta:                
+                if last_iter:                
                     if avg_kl_loss < self.flags.impact_kl_targ / 1.5:
                         self.actor_net.kl_beta /= 2
                     elif avg_kl_loss > self.flags.impact_kl_targ * 1.5:
