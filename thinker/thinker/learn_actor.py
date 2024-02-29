@@ -166,11 +166,11 @@ class SActorLearner:
             self.impact_n = self.flags.impact_n
             self.impact_k = self.flags.impact_k
             self.impact_b = self.flags.actor_batch_size
-            assert (self.impact_n > self.impact_k and self.impact_n % self.impact_k == 0) or (
-                self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0) or (
-                self.impact_n == self.impact_k
-                ), "impact_k and impact_n should be divisible"
-            if not self.impact_syn:
+            if not self.impact_syn:                
+                assert (self.impact_n > self.impact_k and self.impact_n % self.impact_k == 0) or (
+                    self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0) or (
+                    self.impact_n == self.impact_k
+                    ), "impact_k and impact_n should be divisible"
                 self.impact_update_freq = 1 if self.impact_k >= self.impact_n else self.impact_n // self.impact_k
                 self.impact_update_time = 1 if self.impact_n >= self.impact_k else self.impact_k // self.impact_n                        
             else:
