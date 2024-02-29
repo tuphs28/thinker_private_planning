@@ -166,7 +166,7 @@ class SActorLearner:
             self.impact_n = self.flags.impact_n
             self.impact_k = self.flags.impact_k
             self.impact_b = self.flags.actor_batch_size
-            if not self.impact_syn:                
+            if not self.flags.impact_syn:                
                 assert (self.impact_n > self.impact_k and self.impact_n % self.impact_k == 0) or (
                     self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0) or (
                     self.impact_n == self.impact_k
@@ -284,12 +284,12 @@ class SActorLearner:
         self.impact_t += 1        
         r = False                      
         if self.impact_t % self.impact_update_freq == 0:
+            self.impact_early_stop = False
             for m in range(self.impact_update_time):
                 if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()  
                 self.impact_update_t += 1
                 ns = random.sample(range(self.buffer_wrote_n), self.buffer_wrote_n)
-                ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]
-                self.impact_early_stop = False
+                ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]                
                 for k, n in enumerate(ns):
                     out = {}
                     for k_ in TrainActorOut._fields:
@@ -306,6 +306,7 @@ class SActorLearner:
                     data = (train_actor_out, initial_actor_state)
                     r = self.consume_data_single(data, timing=timing, first_iter=k<=self.impact_update_freq and m == 0, last_iter=k==len(ns)-1)
                     if self.impact_early_stop: break
+                if self.impact_early_stop: break
         return r
 
     def consume_data_single(self, data, timing=None, first_iter=True, last_iter=False):
