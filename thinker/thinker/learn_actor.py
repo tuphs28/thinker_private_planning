@@ -309,8 +309,8 @@ class SActorLearner:
                     data = (train_actor_out, initial_actor_state)
                     r = self.consume_data_single(data, timing=timing, first_iter=k<=self.impact_update_freq and m == 0, last_iter=k==len(ns)-1)
                     if self.impact_early_stop: break                
-                if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()  
                 self.impact_update_t += 1
+                if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()                  
                 if self.impact_early_stop: break            
         return r
 
