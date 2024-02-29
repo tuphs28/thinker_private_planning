@@ -286,8 +286,6 @@ class SActorLearner:
         if self.impact_t % self.impact_update_freq == 0:
             self.impact_early_stop = False
             for m in range(self.impact_update_time):
-                if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()  
-                self.impact_update_t += 1
                 if self.flags.impact_bmix:
                     ns = random.sample(range(self.buffer_wrote_n), self.buffer_wrote_n)
                     ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]                       
@@ -310,8 +308,10 @@ class SActorLearner:
                     
                     data = (train_actor_out, initial_actor_state)
                     r = self.consume_data_single(data, timing=timing, first_iter=k<=self.impact_update_freq and m == 0, last_iter=k==len(ns)-1)
-                    if self.impact_early_stop: break
-                if self.impact_early_stop: break
+                    if self.impact_early_stop: break                
+                if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()  
+                self.impact_update_t += 1
+                if self.impact_early_stop: break            
         return r
 
     def consume_data_single(self, data, timing=None, first_iter=True, last_iter=False):
