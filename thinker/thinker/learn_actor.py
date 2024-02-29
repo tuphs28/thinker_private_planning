@@ -165,6 +165,7 @@ class SActorLearner:
         if self.impact_enable:
             self.impact_n = self.flags.impact_n
             self.impact_k = self.flags.impact_k
+            self.impact_b = self.flags.actor_batch_size
             assert (self.impact_n > self.impact_k and self.impact_n % self.impact_k == 0) or (
                 self.impact_n < self.impact_k and self.impact_k % self.impact_n == 0) or (
                 self.impact_n == self.impact_k
@@ -173,6 +174,9 @@ class SActorLearner:
             self.impact_update_time = 1 if self.impact_n >= self.impact_k else self.impact_k // self.impact_n        
             self.impact_update_tar_freq = self.flags.impact_update_tar_freq
             self.impact_t = 0
+            self.impact_buffer = None
+            self.impact_buffer_n = self.impact_n * self.impact_b            
+
             self.datas = collections.deque(maxlen=self.impact_n)
             if not self.ppo:
                 self.tar_actor_net = ActorNet(**actor_param)
@@ -244,8 +248,63 @@ class SActorLearner:
             for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
                 tar_param.data.mul_(self.flags.impact_update_lambda).add_(new_param.data, alpha=1 - self.flags.impact_update_lambda)
 
-            
     def consume_data(self, data, timing=None):
+        if not self.impact_enable: return self.consume_data_single(data, timing)
+        train_actor_out, initial_actor_state = data
+        TrainActorOut= type(train_actor_out)
+
+        if self.impact_buffer is None:            
+            out = {}
+            for k in TrainActorOut._fields:
+                out[k] = None
+                v = getattr(train_actor_out, k)
+                if v is None: continue
+                out[k] = torch.zeros(size=(v.shape[0], self.impact_buffer_n) + v.shape[2:], dtype=v.dtype, device=self.device)
+            self.impact_buffer = TrainActorOut(**out)            
+            self.impact_buffer_actor_state = []
+            for v in initial_actor_state:
+                self.impact_buffer_actor_state.append(torch.zeros(size=(self.impact_buffer_n,)+v.shape[1:]), dtype=v.dtype, device=self.device)
+            self.buffer_idx = 0
+            self.buffer_wrote_n = 0
+
+        for k in TrainActorOut._fields:
+            v_ = getattr(self.impact_buffer, k)
+            if v_ is None: continue           
+            v = getattr(train_actor_out, k)
+            v_[:, self.buffer_idx:self.buffer_idx+self.impact_b] = v
+        for n, v in enumerate(initial_actor_state):
+            self.impact_buffer_actor_state[n][self.buffer_idx:self.buffer_idx+self.impact_b] = v
+
+        self.buffer_wrote_n = min(self.buffer_wrote_n + self.impact_b, self.impact_buffer_n) 
+        self.buffer_idx = (self.buffer_idx + self.impact_b) % self.impact_buffer_n
+        
+        self.impact_t += 1
+        r = False
+        
+        if self.impact_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()        
+        if self.impact_t % self.impact_update_freq == 0:
+            for m in range(self.impact_update_time):
+                ns = random.sample(range(self.buffer_wrote_n), self.buffer_wrote_n)
+                ns = [ns[i:i + self.impact_b] for i in range(0, len(ns), self.impact_b)]
+                for k, n in enumerate(ns):
+                    out = {}
+                    for k_ in TrainActorOut._fields:
+                        out[k_] = None
+                        v = getattr(self.impact_buffer, k_)
+                        if v is None: continue           
+                        out[k_] = v[:, n]
+                    train_actor_out = TrainActorOut(**out)  
+
+                    initial_actor_state = []       
+                    for v in self.impact_buffer_actor_state:
+                        initial_actor_state.append(v[n])
+                    
+                    update_beta = (k == len(ns) - 1)
+                    data = (train_actor_out, initial_actor_state)
+                    r, _ = self.consume_data_single(data, timing=timing, base_stat=None, update_beta=update_beta)
+        return r
+            
+    def consume_data_(self, data, timing=None):
         if not self.impact_enable: return self.consume_data_single(data, timing)
         self.datas.append([data, None])
         self.impact_t += 1
@@ -254,10 +313,6 @@ class SActorLearner:
         if self.impact_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()        
         if self.impact_t % self.impact_update_freq == 0:
             for m in range(self.impact_update_time):
-                # none_idx = [i for i, value in enumerate(self.datas) if value[1] is None]
-                # not_none_idx = [i for i, value in enumerate(self.datas) if value[1] is not None]
-                # random.shuffle(not_none_idx)
-                # ns = none_idx + not_none_idx
                 ns = random.sample(range(data_n), data_n)
                 for k, n in enumerate(ns):
                     data, base_stat = self.datas[n]
