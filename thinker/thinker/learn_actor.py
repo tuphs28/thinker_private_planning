@@ -436,7 +436,7 @@ class SActorLearner:
             clamp_action = clamp_action,
             compute_loss = True,
         )
-
+        if self.flags.impact_refresh_tar: base_stat = None
         impact_first_sample = base_stat is None and self.impact_enable
         if impact_first_sample:
             base_stat = {}

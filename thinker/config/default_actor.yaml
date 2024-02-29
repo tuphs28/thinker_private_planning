@@ -90,6 +90,7 @@ impact_kl_coef: 0. # kl coef; i.e. loss cost for KL divergence between target po
 impact_kl_targ: 0.04 # target kl divergence
 impact_early_stop: false # no more iteration if kl div exceed target
 impact_clip: 0.3 # clip for is ratio
+impact_refresh_tar: false # refresh target on every mini-batch
 # checkpoint
 xpid: '' # name of the run, automatically set if not given
 ckp: false # whether to load checkpoint; if set to true, will load checkpoint from savedir/xpid
