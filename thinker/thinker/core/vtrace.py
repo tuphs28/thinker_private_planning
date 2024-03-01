@@ -133,6 +133,7 @@ def compute_v_trace(
             pg_advantages_nois = pg_advantages_nois / norm_factor
         elif return_norm_type == 2:
             pg_advantages = (pg_advantages - pg_advantages.mean()) / (pg_advantages.std() + 1e-8)
+            pg_advantages_nois = (pg_advantages_nois - pg_advantages_nois.mean()) / (pg_advantages_nois.std() + 1e-8)
 
 
         # Make sure no gradients backpropagated through the returned values.
