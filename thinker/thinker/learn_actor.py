@@ -519,7 +519,7 @@ class SActorLearner:
             discounts.append((~train_actor_out.done).float() * self.im_discounting)            
             masks.append(None)
 
-        if not self.impact_enable:
+        if not self.impact_enable or self.flags.impact_v_trace:
             log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
         elif not self.ppo:
             log_rhos = tar_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
@@ -570,7 +570,7 @@ class SActorLearner:
                 pg_loss = -adv * new_actor_out.c_action_log_prob
             else:                
                 log_is = new_actor_out.c_action_log_prob - log_is_de
-                unclipped_is = torch.exp(log_is)     
+                unclipped_is = torch.exp(log_is) 
                 self.impact_is_abs.append(torch.mean(torch.abs(unclipped_is-1)).detach().item())
                 clipped_is = torch.clamp(unclipped_is, 1-self.flags.impact_clip, 1+self.flags.impact_clip)
                 pg_loss = -torch.minimum(unclipped_is * adv, clipped_is * adv)

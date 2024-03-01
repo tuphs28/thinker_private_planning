@@ -92,6 +92,7 @@ impact_early_stop: false # no more iteration if kl div exceed target
 impact_syn: false # synchronized buffer
 impact_bmix: true # maxing different batch in mini-batch
 impact_clip: 0.3 # clip for is ratio
+impact_v_trace: false # forcing to use v-trace
 # checkpoint
 xpid: '' # name of the run, automatically set if not given
 ckp: false # whether to load checkpoint; if set to true, will load checkpoint from savedir/xpid

@@ -285,7 +285,9 @@ class ConvAttnLSTM(nn.Module):
         assert len(x.shape) == 5
         core_output_list = []
         reset = done.float()
-        if record_state: self.hidden_state = []
+        if record_state: 
+            self.hidden_state = []
+            self.hidden_state.append(torch.concat(core_state, dim=1))  
         for n, (x_single, reset_single) in enumerate(
             zip(x.unbind(), reset.unbind())
         ):
