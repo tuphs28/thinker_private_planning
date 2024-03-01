@@ -182,10 +182,11 @@ class SActorLearner:
             self.impact_buffer = None
             self.impact_buffer_n = self.impact_n * self.impact_b            
 
-            self.tar_actor_net = ActorNet(**actor_param)
-            self.tar_actor_net.to(self.device)
-            self.tar_actor_net.train(False)
-            self.update_target()
+            if not self.ppo:
+                self.tar_actor_net = ActorNet(**actor_param)
+                self.tar_actor_net.to(self.device)
+                self.tar_actor_net.train(False)
+                self.update_target()
             self.kl_losses = collections.deque(maxlen=100)
             self.impact_is_abs = collections.deque(maxlen=100)
         self.dbg_adv = collections.deque(maxlen=100)
@@ -310,7 +311,7 @@ class SActorLearner:
                     r = self.consume_data_single(data, timing=timing, first_iter=k<=self.impact_update_freq and m == 0, last_iter=k==len(ns)-1)
                     if self.impact_early_stop: break                
                 self.impact_update_t += 1
-                if self.impact_update_t % self.impact_update_tar_freq == 0: self.update_target()                  
+                if self.impact_update_t % self.impact_update_tar_freq == 0 and not self.ppo: self.update_target()                  
                 if self.impact_early_stop: break            
         return r
 
@@ -470,7 +471,7 @@ class SActorLearner:
             clamp_action = clamp_action,
             compute_loss = True,
         )
-        if self.impact_enable:
+        if self.impact_enable and not self.ppo:
             with torch.no_grad():
                 tar_actor_out, _ = self.tar_actor_net(
                     train_actor_out, 
@@ -480,10 +481,12 @@ class SActorLearner:
                 )
 
         # Take final value function slice for bootstrapping.
-        if self.impact_enable:
+        if not self.impact_enable:
+            bootstrap_value = new_actor_out.baseline[-1]                    
+        elif not self.ppo:
             bootstrap_value = tar_actor_out.baseline[-1]
         else:
-            bootstrap_value = new_actor_out.baseline[-1]        
+            bootstrap_value = train_actor_out.baseline[-1]    
     
         # Move from obs[t] -> action[t] to action[t] -> obs[t].
         train_actor_out = util.tuple_map(train_actor_out, lambda x: x[1:])
@@ -491,8 +494,11 @@ class SActorLearner:
 
         if self.impact_enable:
             # record base policy for impact / ppo
-            tar_actor_out = util.tuple_map(tar_actor_out, lambda x: x[:-1])
-            base_actor_out = tar_actor_out
+            if not self.ppo:
+                tar_actor_out = util.tuple_map(tar_actor_out, lambda x: x[:-1])
+                base_actor_out = tar_actor_out
+            else:
+                base_actor_out = train_actor_out
             if self.actor_net.discrete_action:
                 base_pri_logits = base_actor_out.pri_param.detach()
             else:
@@ -523,7 +529,7 @@ class SActorLearner:
             log_rhos = new_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
         elif not self.ppo:
             log_rhos = tar_actor_out.c_action_log_prob - train_actor_out.c_action_log_prob
-        elif self.ppo:
+        else:
             log_rhos = torch.zeros_like(train_actor_out.c_action_log_prob)
 
         for i in range(self.num_rewards):
@@ -542,8 +548,10 @@ class SActorLearner:
 
             if not self.impact_enable:
                 values = new_actor_out.baseline[:, :, i]
-            else:
+            elif not self.ppo:
                 values = tar_actor_out.baseline[:, :, i]
+            else:
+                values = train_actor_out.baseline[:, :, i]
             v_trace = compute_v_trace(
                 log_rhos=log_rhos,
                 discounts=discounts[i],
