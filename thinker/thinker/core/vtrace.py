@@ -36,7 +36,6 @@ See https://arxiv.org/abs/1802.01561 for the full paper.
 import collections
 import torch
 import torch.nn.functional as F
-from thinker.util import FifoBuffer
 
 VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages pg_advantages_nois norm_stat")
 
@@ -109,10 +108,7 @@ def compute_v_trace(
             elif return_norm_type == 1:
                 norm_v = target_values - values
             
-            if norm_stat is None:
-                buffer = FifoBuffer(100000, device=target_values.device)
-            else:
-                buffer = norm_stat[-1]
+            buffer = norm_stat[-1]
             buffer.push(norm_v)
             lq = buffer.get_percentile(0.05)
             uq = buffer.get_percentile(0.95)

@@ -122,8 +122,11 @@ class SActorLearner:
         if flags.cur_cost > 0.0:
             self.rewards_ls += ["cur"]
         self.num_rewards = len(self.rewards_ls)
-
-        self.norm_stats = [None,] * self.num_rewards
+        
+        if self.flags.return_norm_type in [0, 1]:
+            self.norm_stats = [(None, None, None, util.FifoBuffer(100000 * self.flags.impact_k, device=self.device),)] * self.num_rewards
+        else:
+            self.norm_stats = [None,] * self.num_rewards
         self.anneal_c = 1
         self.n = 0
 
