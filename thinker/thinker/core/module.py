@@ -145,20 +145,20 @@ class ResBlock(nn.Module):
         return out
     
 class OneDResBlock(nn.Module):
-    def __init__(self, hidden_size):
+    def __init__(self, hidden_size, norm=False):
         super(OneDResBlock, self).__init__()
-        self.norm1 = nn.LayerNorm(hidden_size)
-        self.linear1 = nn.Linear(hidden_size, hidden_size)
-        self.norm2 = nn.LayerNorm(hidden_size)
+        self.norm = norm
+        if norm:
+            self.norm1 = nn.LayerNorm(hidden_size)
+            self.norm2 = nn.LayerNorm(hidden_size)
+        self.linear1 = nn.Linear(hidden_size, hidden_size)        
         self.linear2 = nn.Linear(hidden_size, hidden_size)
 
     def forward(self, x):
-        out = self.norm1(x)
-        out = F.relu(self.linear1(out))
-        out = self.norm2(out)
-        out = F.relu(self.linear2(out))
+        out = F.relu(self.norm1(self.linear1(x))) if self.norm else F.relu(self.linear1(x))
+        out = F.relu(self.norm2(self.linear2(out))) if self.norm else F.relu(self.linear2(out))
         out = out + x  # Skip connection
-        return out    
+        return out
 
 def guassian_kl_div(tar_mean, tar_log_var, mean, log_var, reduce="sum"):
     tar_var, var = torch.exp(tar_log_var), torch.exp(log_var)

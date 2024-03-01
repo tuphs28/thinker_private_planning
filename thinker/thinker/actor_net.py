@@ -71,11 +71,11 @@ class AFrameEncoder(nn.Module):
         self.firstpool = firstpool
         self.out_size = out_size
         self.see_double = see_double    
-        self.shallow_enc = flags.shallow_enc        
+        self.enc_1d_shallow = flags.enc_1d_shallow        
         self.flags = flags    
 
         self.oned_input = len(self.input_shape) == 1
-        if self.shallow_enc and self.oned_input: self.out_size = 64
+        if self.enc_1d_shallow and self.oned_input: self.out_size = 64
 
         in_channels = input_shape[0]
         if not self.oned_input:
@@ -151,16 +151,15 @@ class AFrameEncoder(nn.Module):
             # out shape after conv is: (num_ch, input_shape[1], input_shape[2])
             core_out_size = num_ch * conv_out_h * conv_out_w
         else:
-            if not self.shallow_enc:
-                n_block = 2 
-                hidden_size = 256
+            if not self.enc_1d_shallow:
+                n_block = self.flags.enc_1d_block
+                hidden_size = self.flags.enc_1d_hs
                 self.hidden_size = hidden_size
                 self.input_block = nn.Sequential(
                     nn.Linear(in_channels, hidden_size),
-                    nn.LayerNorm(hidden_size),
-                    nn.Tanh()
+                    nn.ReLU()
                 )            
-                self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+                self.res = nn.Sequential(*[OneDResBlock(hidden_size, norm=self.flags.enc_1d_norm) for _ in range(n_block)])
                 core_out_size = hidden_size
             else:
                 self.input_block = nn.Sequential(nn.Linear(in_channels, 64), nn.Tanh())            
