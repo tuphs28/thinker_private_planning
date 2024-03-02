@@ -401,6 +401,7 @@ class ActorNetSingle(ActorBaseNet):
         self.real_state_rnn = flags.real_state_rnn and flags.see_real_state 
 
         self.sep_im_head = flags.sep_im_head
+        self.copy_model_policy = flags.copy_model_policy
         self.last_layer_n = flags.last_layer_n
           
         # encoder for state or encoding output
@@ -480,7 +481,7 @@ class ActorNetSingle(ActorBaseNet):
                 self.register_buffer("non_table_mask", non_table_mask)
                 input_size = (sum(root_table_mask) / flags.se_query_size).long().item()
                 self.tree_rep_table_lstm = nn.LSTM(input_size=input_size, hidden_size=64, num_layers=3, batch_first=True)
-                in_size = torch.sum(non_table_mask).long() + 64 * 2
+                in_size = torch.sum(non_table_mask).long() + 64 * 2           
 
             if self.tree_rep_rnn:
                 self.tree_rep_encoder = RNNEncoder(
@@ -510,14 +511,17 @@ class ActorNetSingle(ActorBaseNet):
 
         if self.actor:
             self.policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+            self.im_policy = self.policy
             if not self.discrete_action:
                 self.policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+                self.im_policy_lvar = self.policy
 
             if not self.disable_thinker:
                 if self.sep_im_head:
                     self.im_policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
                     if not self.discrete_action:
                         self.im_policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
+                    
                 self.reset = nn.Linear(last_out_size, 2)
 
         if self.critic:
@@ -538,7 +542,7 @@ class ActorNetSingle(ActorBaseNet):
 
             if self.critic_zero_init:
                 nn.init.constant_(self.baseline.weight, 0.0)
-                nn.init.constant_(self.baseline.bias, 0.0)
+                nn.init.constant_(self.baseline.bias, 0.0)        
 
         self.tanh_action = flags.tanh_action
 
@@ -694,29 +698,49 @@ class ActorNetSingle(ActorBaseNet):
             # compute logits
             pri_logits = self.policy(final_out)    
             pri_logits = pri_logits.view(T*B, self.dim_actions, self.num_actions)
+            if self.ordinal: pri_logits = self.ordinal_encode(pri_logits)
             if not self.discrete_action:
                 pri_mean = pri_logits[:, :, 0]
                 pri_log_var = self.policy_lvar(final_out)
+            if self.copy_model_policy:
+                root_policy = tree_rep[:, self.tree_rep_meaning["root_policy"]]
+                root_policy = root_policy.view(T*B, self.dim_actions, -1)
+                if self.discrete_action:
+                    pri_logits = pri_logits + root_policy
+                else:
+                    pri_mean = pri_mean + root_policy[:, :, 0]
+                    pri_log_var = pri_log_var + root_policy[:, :, 1]  
+
+            if not self.discrete_action:
                 pri_log_var = torch.clamp(pri_log_var, self.min_log_var, self.max_log_var)
 
-            if self.ordinal: pri_logits = self.ordinal_encode(pri_logits)
-
             if not self.disable_thinker:
-                if self.sep_im_head:
-                    im_logits = self.im_policy(final_out)                
-                    im_logits = im_logits.view(T*B, self.dim_actions, self.num_actions)
-                    if self.ordinal: im_logits = self.ordinal_encode(im_logits)
-                    im_mask = env_out.step_status <= 1 # imagainary action will be taken next
+                im_logits = self.im_policy(final_out)                
+                im_logits = im_logits.view(T*B, self.dim_actions, self.num_actions)
+                if self.ordinal: im_logits = self.ordinal_encode(im_logits)
+                if not self.discrete_action:                        
+                    im_mean = im_logits[:, :, 0]
+                    im_log_var = self.im_policy_lvar(final_out) 
+                if self.copy_model_policy:
+                    cur_policy = tree_rep[:, self.tree_rep_meaning["cur_policy"]]
+                    cur_policy = cur_policy.view(T*B, self.dim_actions, -1)
                     if self.discrete_action:
-                        im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1).unsqueeze(-1)
-                        pri_logits = torch.where(im_mask, im_logits, pri_logits)
-                    else:                    
-                        im_mean = im_logits[:, :, 0]
-                        im_log_var = self.im_policy_lvar(final_out)
-                        im_log_var = torch.clamp(im_log_var, self.min_log_var, self.max_log_var)
-                        im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1)
-                        pri_mean = torch.where(im_mask, im_mean, pri_mean)
-                        pri_log_var = torch.where(im_mask, im_log_var, pri_log_var)
+                        im_logits = im_logits + cur_policy
+                    else:
+                        im_mean = im_mean + cur_policy[:, :, 0]
+                        im_log_var = im_log_var + cur_policy[:, :, 1]     
+
+                if not self.discrete_action:                   
+                    im_log_var = torch.clamp(im_log_var, self.min_log_var, self.max_log_var)
+
+                im_mask = env_out.step_status <= 1 # imagainary action will be taken next
+                if self.discrete_action:
+                    im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1).unsqueeze(-1)
+                    pri_logits = torch.where(im_mask, im_logits, pri_logits)
+                else:                    
+                    im_mask = torch.flatten(im_mask, 0, 1).unsqueeze(-1)
+                    pri_mean = torch.where(im_mask, im_mean, pri_mean)
+                    pri_log_var = torch.where(im_mask, im_log_var, pri_log_var)
                 reset_logits = self.reset(final_out)
             else:   
                 reset_logits = None

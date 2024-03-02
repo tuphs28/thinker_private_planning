@@ -39,6 +39,7 @@ legacy: false # whether to use legacy version
 sep_actor_critic: false # whether to separate actor and critic
 drc: false # whether to use the drc baseline
 mcts: false # whether to use the mcts baseline
+copy_model_policy: false # whether to set the actor's output policy as the model's policy as default
 # -tree rep processing
 tree_rep_rnn: true # whether to use rnn in processing tree representation
 se_lstm_table: true # whether to use lstm to enablde tables
