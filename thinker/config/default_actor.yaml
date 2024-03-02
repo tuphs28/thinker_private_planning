@@ -41,7 +41,7 @@ drc: false # whether to use the drc baseline
 mcts: false # whether to use the mcts baseline
 # -tree rep processing
 tree_rep_rnn: true # whether to use rnn in processing tree representation
-se_lstm_table: false # whether to use lstm to enablde tables
+se_lstm_table: true # whether to use lstm to enablde tables
 # -real state processing
 x_rnn: false # whether to use rnn in processing x, model's predicted state
 real_state_rnn: false # whether to use rnn in processing real state
