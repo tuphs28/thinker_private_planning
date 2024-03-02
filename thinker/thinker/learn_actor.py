@@ -270,7 +270,7 @@ class SActorLearner:
             self.impact_buffer = TrainActorOut(**out)            
             self.impact_buffer_actor_state = []
             for v in initial_actor_state:
-                self.impact_buffer_actor_state.append(torch.zeros(size=(self.impact_buffer_n,)+v.shape[1:]), dtype=v.dtype, device=self.device)
+                self.impact_buffer_actor_state.append(torch.zeros(size=(self.impact_buffer_n,)+v.shape[1:], dtype=v.dtype, device=self.device))
             self.buffer_idx = 0
             self.buffer_wrote_n = 0
 
