@@ -401,7 +401,7 @@ class ActorNetSingle(ActorBaseNet):
         self.real_state_rnn = flags.real_state_rnn and flags.see_real_state 
 
         self.sep_im_head = flags.sep_im_head
-        self.copy_model_policy = flags.copy_model_policy
+        self.copy_model_policy = getattr(flags, "copy_model_policy", False)
         self.last_layer_n = flags.last_layer_n
           
         # encoder for state or encoding output
