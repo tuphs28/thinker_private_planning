@@ -71,7 +71,7 @@ class AFrameEncoder(nn.Module):
         self.firstpool = firstpool
         self.out_size = out_size
         self.see_double = see_double    
-        self.enc_1d_shallow = flags.enc_1d_shallow        
+        self.enc_1d_shallow = getattr(flags, "enc_1d_shallow", False)
         self.flags = flags    
 
         self.oned_input = len(self.input_shape) == 1
