@@ -513,6 +513,7 @@ class ActorNetSingle(ActorBaseNet):
             self.policy = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
             self.im_policy = self.policy
             if not self.discrete_action:
+                self.tanh_action = flags.tanh_action
                 self.policy_lvar = nn.Linear(last_out_size, self.num_actions * self.dim_actions)
                 self.im_policy_lvar = self.policy
 
@@ -542,9 +543,7 @@ class ActorNetSingle(ActorBaseNet):
 
             if self.critic_zero_init:
                 nn.init.constant_(self.baseline.weight, 0.0)
-                nn.init.constant_(self.baseline.bias, 0.0)        
-
-        self.tanh_action = flags.tanh_action
+                nn.init.constant_(self.baseline.bias, 0.0)                
 
         self.initial_state(batch_size=1) # initialize self.state_idx        
 
