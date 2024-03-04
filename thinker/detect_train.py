@@ -27,7 +27,7 @@ class CustomDataset(Dataset):
         self.file_list = [f for f in os.listdir(datadir) if f.endswith('.pt') and f.startswith(self.prefix)]
         self.file_list = sorted(self.file_list, key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
         
-        xs, y = torch.load(os.path.join(self.datadir, self.file_list[0]))
+        xs, ys = torch.load(os.path.join(self.datadir, self.file_list[0]))
         self.t = xs['env_state'].shape[0]
         self.b = xs['env_state'].shape[2]
         self.samples_per_file = self.t * self.b
@@ -56,15 +56,15 @@ class CustomDataset(Dataset):
             data_tmp = []
             file_name = self.file_list[i]
             print(f"Loading {file_name}")
-            xs, y = torch.load(os.path.join(self.datadir, file_name))
+            xs, ys = torch.load(os.path.join(self.datadir, file_name))
             xs.pop('step_status', None)
             xs.pop('done', None)
             
             for t_idx in range(self.t):
                 for b_idx in range(self.b):
                     flattened_xs = {k: v[t_idx, :, b_idx] for k, v in xs.items()}
-                    flattened_y = y[t_idx, b_idx]
-                    data_tmp.append((flattened_xs, flattened_y))
+                    flattened_ys = {k: v[t_idx, b_idx] for k, v in ys.items()}
+                    data_tmp.append((flattened_xs, flattened_ys))
                     if len(data_tmp) >= self.len_list[i]: 
                         break
         
@@ -85,10 +85,10 @@ class CustomDataset(Dataset):
         
         # Adjust idx to the current chunk
         idx_within_chunk = idx % self.samples_per_chunk
-        xs, y = self.data[idx_within_chunk]
+        xs, ys = self.data[idx_within_chunk]
         if self.transform:
             xs = {k: self.transform(v) for k, v in xs.items()}
-        return xs, y   
+        return xs, ys
 
 class ChunkSampler(Sampler):
     def __init__(self, dataset):
@@ -355,8 +355,10 @@ def train_epoch(detect_net, dataloader, optimizer, device, flags, train=True):
     running_train_eval = {}   
     with torch.set_grad_enabled(train):
         step = 0
-        for xs, target_y in dataloader:
+        for xs, target_ys in dataloader:
             xs = transform_data(xs, device, flags)
+
+            target_y = target_ys["cost"]
             target_y = target_y.to(device)
 
             if flags.mask_im_state:

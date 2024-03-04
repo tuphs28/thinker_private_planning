@@ -26,16 +26,16 @@ class DetectBuffer:
         self.logger = logger        
         self.delay_n = delay_n        
 
-        self.processed_n, self.xs, self.y, self.done, self.step_status = 0, [], [], [], []
+        self.processed_n, self.xs, self.ys, self.done, self.step_status = 0, [], [], [], []
         self.file_idx = -1
     
-    def insert(self, xs, y, done, step_status):
+    def insert(self, xs, ys, done, step_status):
         """
         Args:
-            xs (dict): dictionary of training input, with each elem having the
+            xs (dict): dict of training input, with each elem having the
                 shape of (B, *)            
-            y (tensor): bool tensor of shape (B), being the target output delayed by
-                delay_n planning stage            
+            ys (dict): dict of target output, each with shape (B, N) or (B,); 
+                item starts with "cost" will have or done across all deplay_n steps and is assumed to be bool
             done (tensor): bool tensor of shape (B), being the indicator of episode end
             step_status (int): int indicating current step status
         Output:
@@ -46,7 +46,11 @@ class DetectBuffer:
         if len(self.step_status) == 0 and not last_step_real: return self.file_idx  # skip until real step
                 
         self.xs.append(util.dict_map(xs, lambda x:x.cpu()))
-        self.y.append(y.cpu())
+        if ys is not None:
+            self.ys.append(util.dict_map(ys, lambda y:y.cpu()))
+        else:
+            ys = dict({k:torch.zeros_like(v) for k, v in self.ys[0].items()})
+            self.ys.append(ys)
         self.done.append(done.cpu())
         self.step_status.append(step_status)
         self.processed_n += int(last_step_real)
@@ -66,24 +70,26 @@ class DetectBuffer:
 
     def _extract_data(self, t):
         # obtain the first N planning stage and the corresponding target_y in data
-        xs, y, done, step_status = self._collect_data(t)
-        future_y, future_done = self._collect_data(self.delay_n, y_done_only=True)
-        y = torch.concat([y, future_y], dim=0)        
+        xs, ys, done, step_status = self._collect_data(t)
+        future_ys, future_done = self._collect_data(self.delay_n, y_done_only=True)
+        for k in self.ys[0].keys():
+            ys[k] = torch.concat([ys[k], future_ys[k]], dim=0)        
         done = torch.concat([done, future_done], dim=0)                
         
         last_step_real = (step_status == 0) | (step_status == 3)
         assert last_step_real[0], "cur_t should start with 0"
         assert last_step_real.shape[0] == t*self.rec_t, \
             f" last_step_real.shape is {last_step_real.shape}, expected {t*self.rec_t} for the first dimension."        
-        assert y.shape[0] == (t + self.delay_n)*self.rec_t, \
-            f" y.shape is {y.shape}, expected {(t + self.delay_n)*self.rec_t} for the first dimension."        
-        
-        B = y.shape[1]
-        y = y.view(t + self.delay_n, self.rec_t, B)[:, 0]
+        for k, v in ys.items():
+            assert v.shape[0] == (t + self.delay_n)*self.rec_t, \
+                f" ys[{k}].shape is {v.shape}, expected {(t + self.delay_n)*self.rec_t} for the first dimension."        
+            B = v.shape[1]
+            ys[k] = ys[k].view((t + self.delay_n, self.rec_t, B)+ys[k].shape[2:])[:, 0]
+
         done = done.view(t + self.delay_n, self.rec_t, B)[:, 0]
         step_status = step_status.view(t, self.rec_t)
         # compute target_y
-        target_y = self._compute_target_y(y, done, self.delay_n)
+        target_ys = self._compute_target_y(ys, done, self.delay_n)
 
         for k in xs.keys():
             xs[k] = xs[k].view((t, self.rec_t) + xs[k].shape[1:])
@@ -91,7 +97,7 @@ class DetectBuffer:
         xs["done"] = done[:t]
         xs["step_status"] = step_status
                 
-        return xs, target_y
+        return xs, target_ys
 
     def _collect_data(self, t, y_done_only=False):
         # collect the first t stage from data
@@ -99,7 +105,9 @@ class DetectBuffer:
         next_step_real = (step_status == 2) | (step_status == 3)        
         idx = torch.nonzero(next_step_real, as_tuple=False).squeeze()    
         last_idx = idx[t-1] + 1
-        y = torch.stack(self.y[:last_idx], dim=0)
+        ys = {}
+        for k in self.ys[0].keys():
+            ys[k] = torch.stack([v[k] for v in self.ys[:last_idx]], dim=0)                
         done = torch.stack(self.done[:last_idx], dim=0)
         if not y_done_only:
             xs = {}
@@ -107,25 +115,38 @@ class DetectBuffer:
                 xs[k] = torch.stack([v[k] for v in self.xs[:last_idx]], dim=0)                
             step_status = step_status[:last_idx]
             self.xs = self.xs[last_idx:]
-            self.y = self.y[last_idx:]
+            self.ys = self.ys[last_idx:]
             self.done = self.done[last_idx:]
             self.step_status = self.step_status[last_idx:]
-            return xs, y, done, step_status
+            return xs, ys, done, step_status
         else:
-            return y, done
+            return ys, done
         
-    def _compute_target_y(self, y, done, delay_n):        
+    def _compute_target_y(self, ys, done, delay_n):        
         # target_y[i] = (y[i] | (~done[i+1] & y[i+1]) | (~done[i+1] & ~done[i+2] & y[i+2]) | ... | (~done[i+1] & ~done[i+2] & ... & ~done[i+M] & y[i+M]))
-        t, b = y.shape
-        t = t - delay_n
-        not_done_cum = torch.ones(delay_n, t, b, dtype=bool)
-        target_y = y.clone()[:-delay_n]
-        not_done_cum[0] = ~done[1:1+t]
-        target_y = target_y | (not_done_cum[0] & y[1:1+t])
-        for m in range(1, delay_n):
-            not_done_cum[m] = not_done_cum[m-1] & ~done[m+1:m+1+t]
-            target_y = target_y | (not_done_cum[m] & y[m+1:m+1+t])
-        return target_y
+        target_ys = {}
+        for k, y in ys.items():
+            t, b = y.shape[:2]
+            t = t - delay_n
+            not_done_cum = torch.ones(delay_n, t, b, dtype=bool)
+            target_y = y.clone()[:-delay_n]
+            not_done_cum[0] = ~done[1:1+t]            
+            for m in range(1, delay_n):
+                not_done_cum[m] = not_done_cum[m-1] & ~done[m+1:m+1+t]
+            if k.startswith("cost"):
+                target_y = target_y | (not_done_cum[0] & y[1:1+t])
+                assert y.dtype == torch.bool
+                for m in range(1, delay_n):                
+                    target_y = target_y | (not_done_cum[m] & y[m+1:m+1+t])
+            else:
+                target_y = y[delay_n:delay_n+t]
+                if k.startswith("last_real_actions"):
+                    for m in range(0, delay_n):                
+                        target_y[..., m][~not_done_cum[m]] = 0 
+                else:                    
+                    target_y[~not_done_cum[delay_n-1]] = 0
+            target_ys[k] = target_y
+        return target_ys
 
 
 def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
@@ -240,9 +261,13 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
         with open(yaml_file_path, 'w') as file:
             yaml.dump(flags_detect, file)
 
-
         rets = []
         last_file_idx = None
+        last_real_actions = torch.zeros(primary_action.shape+(delay_n,), 
+                                        dtype=primary_action.dtype, 
+                                        device=device
+                                        )
+        last_dones = torch.zeros(env_n, delay_n, dtype=torch.bool, device=device)
         
         while(True):
             state, reward, done, info = env.step(
@@ -254,11 +279,21 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             if torch.any(done):
                 rets.extend(info["episode_return"][done].cpu().tolist())
 
-            y = info['cost']
             done = done 
-            step_status = info['step_status'][0].item() if not im_rollout else 0        
+            step_status = info['step_status'][0].item() if not im_rollout else 0       
+            last_step_real =  step_status in [1, 3]
+            next_step_real =  step_status in [2, 3]
 
-            if im_rollout or (mcts and step_status in [2, 3]):
+            if last_step_real or im_rollout:
+                last_real_actions = torch.cat([last_real_actions[..., 1:], primary_action.unsqueeze(-1)], dim=-1)
+                last_dones = torch.cat([last_dones[..., 1:], done.unsqueeze(-1)], dim=-1)
+            
+            ys = {"cost": info['cost'],
+                  "last_real_actions": last_real_actions,
+                  "last_dones": last_dones,
+                  }
+
+            if im_rollout or (mcts and next_step_real):
                 # generate imaginary rollout or most visited rollout (mcts)
                 if im_rollout: 
                     action = actor_out.action.unsqueeze(0)
@@ -299,7 +334,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                     if mcts: xs["reset_action"] = torch.zeros_like(actor_out.action[1])
                     file_idx = detect_buffer.insert(
                         xs, 
-                        torch.zeros_like(y), 
+                        None, 
                         torch.zeros_like(done), 
                         1 if m < delay_n - 1 else 2
                     )
@@ -333,7 +368,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                     })                          
 
             if not (mcts and step_status != 0): # no recording for non-real mcts
-                file_idx = detect_buffer.insert(xs, y, done, step_status)
+                file_idx = detect_buffer.insert(xs, ys, done, step_status)
             
             if file_idx >= file_n: 
                 # last file is for validation
