@@ -268,6 +268,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                                         device=device
                                         )
         last_dones = torch.zeros(env_n, delay_n, dtype=torch.bool, device=device)
+        done = torch.zeros(env_n, dtype=torch.bool, device=device)
         
         while(True):
             state, reward, done, info = env.step(
@@ -282,23 +283,51 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
             done = done 
             step_status = info['step_status'][0].item() if not im_rollout else 0       
             last_step_real =  step_status in [1, 3]
-            next_step_real =  step_status in [2, 3]
-
+            next_step_real =  step_status in [2, 3]            
+            
             if last_step_real or im_rollout:
                 last_real_actions = torch.cat([last_real_actions[..., 1:], primary_action.unsqueeze(-1)], dim=-1)
                 last_dones = torch.cat([last_dones[..., 1:], done.unsqueeze(-1)], dim=-1)
+            
+            actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
+            if not disable_thinker:
+                primary_action, reset_action = actor_out.action
+            else:
+                primary_action, reset_action = actor_out.action, None
             
             ys = {"cost": info['cost'],
                   "last_real_actions": last_real_actions,
                   "last_dones": last_dones,
                   }
+            
+            # write to detect buffer
+            if not disable_thinker:
+                env_state = env_out.xs[0] 
+            else:
+                env_state = env_out.real_states[0]
+                env_state = env.normalize(env_state)
+            
+            env_state = env_state.half()
+            xs = {
+                "env_state": env_state,
+                "pri_action": primary_action,            
+                "cost": info["cost"],
+            }
+            if not disable_thinker:
+                if not mcts: xs.update({"tree_rep": state["tree_reps"]})
+                xs.update({"reset_action": actor_out.action[1]})
+            else:
+                if disable_thinker:
+                    xs.update({
+                        "hidden_state": actor_net.hidden_state
+                    })                          
+
+            if not (mcts and step_status != 0): # no recording for non-real mcts
+                file_idx = detect_buffer.insert(xs, ys, done, step_status)
 
             if im_rollout or (mcts and next_step_real):
                 # generate imaginary rollout or most visited rollout (mcts)
-                if im_rollout: 
-                    action = actor_out.action.unsqueeze(0)
-                else:
-                    action = actor_out.action[0].unsqueeze(0)
+                action = env_out.last_pri
                 model_net_out = env.model_net(
                     x=env_out.real_states[0],
                     done=env_out.done[0],
@@ -338,37 +367,6 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
                         torch.zeros_like(done), 
                         1 if m < delay_n - 1 else 2
                     )
-
-            actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
-            if not disable_thinker:
-                primary_action, reset_action = actor_out.action
-            else:
-                primary_action, reset_action = actor_out.action, None
-            
-            # write to detect buffer
-            if not disable_thinker:
-                env_state = env_out.xs[0] 
-            else:
-                env_state = env_out.real_states[0]
-                env_state = env.normalize(env_state)
-            
-            env_state = env_state.half()
-            xs = {
-                "env_state": env_state,
-                "pri_action": primary_action,            
-                "cost": info["cost"],
-            }
-            if not disable_thinker:
-                if not mcts: xs.update({"tree_rep": state["tree_reps"]})
-                xs.update({"reset_action": actor_out.action[1]})
-            else:
-                if disable_thinker:
-                    xs.update({
-                        "hidden_state": actor_net.hidden_state
-                    })                          
-
-            if not (mcts and step_status != 0): # no recording for non-real mcts
-                file_idx = detect_buffer.insert(xs, ys, done, step_status)
             
             if file_idx >= file_n: 
                 # last file is for validation
