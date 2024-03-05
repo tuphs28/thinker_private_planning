@@ -36,7 +36,8 @@ if __name__ == "__main__":
         actor_buffer = None
         actor_param_buffer = None
     
-    ray_obj_env = ray_init(save_flags=False, **vars(flags))
+    ray_obj_env = ray_init(flags=flags, save_flags=False, **vars(flags))
+    ray_obj_env["actor_param_buffer"] = actor_param_buffer
     ray_obj_actor = {"actor_buffer": actor_buffer,
                      "actor_param_buffer": actor_param_buffer}   
 

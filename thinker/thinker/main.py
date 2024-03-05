@@ -96,36 +96,7 @@ class Env(gym.Wrapper):
                 "cuda" if self.device == torch.device("cuda") else "cpu",
             )
         )
-
-        if env_fn is None:
-            if name == "Sokoban-v0": 
-                import gym_sokoban
-                fn = gym.make
-                args = {"id": name, "dan_num": self.flags.detect_dan_num}
-
-            elif name.startswith("Safexp"): 
-                import mujoco_py, safety_gym
-                fn = gym.make
-                args = {"id": name}
-            
-            elif name.startswith("DM"):
-                from thinker.wrapper import DMSuiteEnv
-                _, domain_name, task_name = name.split("/")
-                fn = DMSuiteEnv
-                args = {"domain_name": domain_name, "task_name": task_name, "rgb": self.flags.dm_rgb}
-            else:
-                fn = gym.make
-                args = {"id": name}
-
-            env_fn = lambda: wrapper.PreWrapper(
-                fn(**args), 
-                name=name, 
-                grayscale=self.flags.grayscale, 
-                discrete_k=self.flags.discrete_k, 
-                repeat_action_n=self.flags.repeat_action_n,
-                atari=self.flags.atari,
-            )         
-
+        if env_fn is None: env_fn = wrapper.create_env_fn(name, self.flags)
         # initialize a single env to collect env information
         env = env_fn()
         assert len(env.observation_space.shape) in [1, 3], \
@@ -199,11 +170,11 @@ class Env(gym.Wrapper):
                     # init. the model learner thread
                     self.model_learner = ModelLearner.options(
                         num_cpus=1, num_gpus=self.flags.gpu_learn,
-                    ).remote(ray_obj, model_param, self.flags)
+                    ).remote(name, ray_obj, model_param, self.flags)
                     # start learning
                     self.r_learner = self.model_learner.learn_data.remote()
                 else:
-                    self.model_learner = SModelLearner(ray_obj=None, model_param=model_param,
+                    self.model_learner = SModelLearner(name=name, ray_obj=None, model_param=model_param,
                         flags=self.flags, model_net=self.model_net, device=self.device)
                     self.model_buffer = SModelBuffer(flags=self.flags)
             if self.train_model: self.require_prob = self.flags.require_prob
@@ -458,8 +429,8 @@ class Env(gym.Wrapper):
         
         with torch.set_grad_enabled(False):
             state, reward, done, info = self.env.step(action, self.model_net)  
-        last_step_real = (info["step_status"] == 0) | (info["step_status"] == 3)
-        if self.train_model and torch.any(last_step_real) and not ignore: 
+        last_step_real = info["step_status"][0].item() in [0, 3] # assume all step status is the same
+        if self.train_model and last_step_real and not ignore: 
             self._write_send_model_buffer(state, reward, done, info, primary_action, action_prob)        
         if self.sample: self.sampled_action = state["sampled_action"] # should refresh sampled_action only after sending model buffer
         if self.train_model:

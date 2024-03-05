@@ -12,13 +12,7 @@ from thinker.learn_actor import ActorLearner, SActorLearner
 from thinker.main import Env
 import thinker.util as util
 
-_fields = ("real_states", "tree_reps", "xs", "hs")
-_fields += ("reward", "episode_return", "episode_step")
-_fields += ("done", "real_done", "truncated_done")
-_fields += ("max_rollout_depth", "step_status")
-_fields += ("last_pri", "last_reset", "cur_gate")
-EnvOut = namedtuple("EnvOut", _fields)
-
+from thinker.util import EnvOut
 _fields = tuple(ActorOut._fields) + tuple(EnvOut._fields) + ("id",)
 exc_list = ["action",
             "action_prob",
@@ -313,10 +307,10 @@ class SelfPlayWorker:
             self.timing.time("move_actor_buffer_to_cpu")
 
     def init_env_out(self, *args, **kwargs):
-        return init_env_out(*args, **kwargs, flags=self.flags, dim_actions=self.actor_net.dim_actions, tuple_action=self.actor_net.tuple_action)
+        return util.init_env_out(*args, **kwargs, flags=self.flags, dim_actions=self.actor_net.dim_actions, tuple_action=self.actor_net.tuple_action)
 
     def create_env_out(self, *args, **kwargs):
-        return create_env_out(*args, **kwargs, flags=self.flags)
+        return util.create_env_out(*args, **kwargs, flags=self.flags)
 
     def _load_net(self):
         if self.rank == 0:
@@ -354,76 +348,3 @@ class SelfPlayWorker:
                 del weights
                 break                
             time.sleep(0.1)  
-
-def init_env_out(state, flags, dim_actions, tuple_action):
-        # minimum env_out for actor_net
-        num_rewards = 1        
-        num_rewards += int(flags.im_cost > 0.0)
-        num_rewards += int(flags.cur_cost > 0.0)
-
-        env_n = state["real_states"].shape[0]
-        device = state["real_states"].device
-
-        last_pri_shape = (env_n, dim_actions) if tuple_action else (env_n)
-        out = {
-            "last_pri": torch.zeros(last_pri_shape, dtype=torch.long, device=device),
-            "last_reset": torch.zeros(env_n, dtype=torch.long, device=device),
-            "reward": torch.zeros((env_n, num_rewards), 
-                                dtype=torch.float, device=device),
-            "done": torch.zeros(env_n, dtype=torch.bool, device=device),
-            "step_status": torch.zeros(env_n, dtype=torch.long, device=device),
-        }
-
-        for field in EnvOut._fields:    
-            if field not in out:
-                out[field] = None
-            else:
-                continue
-            if field in state.keys():
-                out[field] = state[field]
-
-        for k, v in out.items():
-            if v is not None:
-                out[k] = torch.unsqueeze(v, dim=0)
-        env_out = EnvOut(**out)        
-        return env_out
-        
-
-def create_env_out(action, state, reward, done, info, flags):
-    
-    aug_reward = [reward]
-    aug_epsoide_return = [info['episode_return']]
-    if flags.im_cost > 0:
-        aug_reward.append(info["im_reward"])
-        aug_epsoide_return.append(info["im_episode_return"])
-    if flags.cur_cost > 0:
-        aug_reward.append(info["cur_reward"])
-        aug_epsoide_return.append(info["cur_episode_return"])
-    aug_reward = torch.stack(aug_reward, dim=-1)
-    aug_epsoide_return = torch.stack(aug_epsoide_return, dim=-1)
-    
-    out = {"reward": aug_reward, 
-            "episode_return": aug_epsoide_return,
-            "done": done,
-            }
-    if not flags.wrapper_type == 1:    
-        out["last_pri"] = action[0]
-        out["last_reset"] = action[1]
-    else:
-        out["last_pri"] = action
-
-    for field in EnvOut._fields:    
-        if field not in out:
-            out[field] = None
-        else:
-            continue
-        if field in state.keys():
-            out[field] = state[field]
-        if field in info.keys():
-            out[field] = info[field]
-    
-    for k, v in out.items():
-        if v is not None:
-            out[k] = torch.unsqueeze(v, dim=0)
-    env_out = EnvOut(**out)
-    return env_out    

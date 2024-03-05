@@ -173,7 +173,12 @@ class PostWrapper(gym.Wrapper):
             x = (x.float() - self.norm_low) / (self.norm_high -  self.norm_low)
         return x
 
-def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_action_n=0, atari=False):
+def PreWrapper(env, name, flags):
+    grayscale = flags.grayscale
+    discrete_k = flags.discrete_k 
+    repeat_action_n = flags.repeat_action_n
+    atari = flags.atari
+    
     if discrete_k > 0: env = DiscretizeActionWrapper(env, K=discrete_k)
     if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)        
     if "NoFrameskip" in name and not atari: 
@@ -192,7 +197,7 @@ def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_ac
             frame_stack=True,
             scale=False,
             grayscale=grayscale,
-            frame_wh=frame_wh,
+            frame_wh=96,
         )
     
         env = TransposeWrap(env)
@@ -202,6 +207,34 @@ def PreWrapper(env, name, grayscale=False, frame_wh=96, discrete_k=-1, repeat_ac
         # 3d input, need transpose
         env = TransposeWrap(env)        
     return env
+
+def create_env_fn(name, flags):
+    if name == "Sokoban-v0": 
+        import gym_sokoban
+        fn = gym.make
+        args = {"id": name, "dan_num": flags.detect_dan_num}
+
+    elif name.startswith("Safexp"): 
+        import mujoco_py, safety_gym
+        fn = gym.make
+        args = {"id": name}
+    
+    elif name.startswith("DM"):
+        from thinker.wrapper import DMSuiteEnv
+        _, domain_name, task_name = name.split("/")
+        fn = DMSuiteEnv
+        args = {"domain_name": domain_name, "task_name": task_name, "rgb": self.flags.dm_rgb}
+    else:
+        fn = gym.make
+        args = {"id": name}
+
+    env_fn = lambda: PreWrapper(
+        fn(**args), 
+        name=name, 
+        flags=flags,
+    )
+    return env_fn
+    
 
 # Standard wrappers
 

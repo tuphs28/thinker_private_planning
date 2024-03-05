@@ -7,7 +7,7 @@ import thinker.util as util
 
 
 class SimWrapper(gym.Wrapper):
-    def __init__(self, env, env_n, flags, model_net, device=None, timing=False):        
+    def __init__(self, env, env_n, flags, model_net, reanalyze=False, device=None, timing=False):        
         gym.Wrapper.__init__(self, env)
         if flags.test_rec_t > 0:
             self.rec_t = flags.test_rec_t
@@ -19,9 +19,18 @@ class SimWrapper(gym.Wrapper):
         self.max_depth = flags.max_depth        
         self.env_n = env_n
         self.env = env        
-        self.device = torch.device("cpu") if device is None else device       
+        self.reanalyze = reanalyze
+        self.reanalyze_intialized = False
 
-        self.pri_action_space =  env.action_space[0]
+        self.device = torch.device("cpu") if device is None else device       
+        
+        
+        if not self.reanalyze:
+            self.pri_action_space =  env.action_space[0] 
+        else:            
+            # the env is not vector env in reanalyze mode
+            self.pri_action_space =  env.action_space
+            
         self.num_actions, self.dim_actions, self.dim_rep_actions, self.tuple_action, self.discrete_action = \
             util.process_action_space(self.pri_action_space)
         
@@ -56,6 +65,8 @@ class SimWrapper(gym.Wrapper):
         self.manual_stat = flags.se_manual_stat
         self.perfect_model = flags.wrapper_type in [4, 5]
         self.wrapper_type = flags.wrapper_type        
+
+        if self.reanalyze: assert not self.perfect_model        
         
         self.batch_idx = torch.arange(self.env_n, device=self.device)
         self.np_batch_idx = np.arange(self.env_n)
@@ -67,8 +78,11 @@ class SimWrapper(gym.Wrapper):
         self.observation_space = {
             "tree_reps": spaces.Box(low=-np.inf, high=np.inf, shape=(self.env_n, self.obs_n), 
                 dtype=np.float32),
-            "real_states": self.env.observation_space,
-        }        
+        }
+        if not self.reanalyze:
+            self.observation_space["real_states"] = self.env.observation_space
+        else:
+            self.observation_space["real_states"] = gym.vector.utils.spaces.batch_space(self.env.observation_space, self.env_n)
 
         if self.return_x:
             xs_shape = list(self.env.observation_space.shape)
@@ -82,23 +96,57 @@ class SimWrapper(gym.Wrapper):
 
         self.observation_space = spaces.Dict(self.observation_space)        
         reset_space = spaces.Tuple((spaces.Discrete(2),)*self.env_n)
-        self.action_space = spaces.Tuple((env.action_space, reset_space))
+        self.action_space = spaces.Tuple((spaces.Tuple((self.pri_action_space,)*self.env_n), reset_space))        
 
-        default_info = self.env.default_info()
-        self.default_info = util.dict_map(default_info, lambda x: torch.tensor(x, device=self.device))
+        if not self.reanalyze:
+            default_info = self.env.default_info()
+            self.default_info = util.dict_map(default_info, lambda x: torch.tensor(x, device=self.device))
+        else:
+            self.default_info = {}
+        
+        if self.reanalyze: self.env.close()
 
+    def set_reanalyze_data(self, pri_action, reward, done, real_state, initial_per_state):
+        # set the data for reanalyze
+        # all action, state, reward, done are tensor of shape (T, B, *), with T being the step of unrolling
+        # note that action[t] is the action just before real_state[t]
+        self.reanalyze_t = pri_action.shape[0]
+        self.reanalyze_cur_t = 0
+        self.reanalyze_pri_action = pri_action
+        self.reanalyze_reward = reward
+        self.reanalyze_real_state = real_state
+        assert done.dtype == torch.bool
+        self.reanalyze_done = done     
+        self.reanalyze_intialized = True
+        self.initial_per_state = initial_per_state        
 
     def reset(self, model_net):
         with torch.no_grad():            
             if self.query_cur:
                 self.node_key, self.node_td, self.node_action, self.node_mask = None, None, None, None
 
-            real_state = self.env.reset()
-            real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
-            pri_action = torch.zeros(self.env_n, self.dim_actions, dtype=torch.long, device=self.device)
-            real_reward = torch.zeros(self.env_n, device=self.device)
-            done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
-            per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
+            if not self.reanalyze or not self.reanalyze_intialized:
+                if not self.reanalyze:
+                    real_state = self.env.reset()
+                    real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
+                else:
+                    real_state = torch.zeros(
+                        (self.env_n,) + self.env.observation_space.shape, 
+                        dtype=self.state_dtype,
+                        device=self.device
+                        )                
+                pri_action = torch.zeros(self.env_n, self.dim_actions, dtype=torch.long, device=self.device)
+                real_reward = torch.zeros(self.env_n, device=self.device)
+                done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
+                per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
+            else:
+                real_state = self.reanalyze_real_state[0]
+                pri_action = self.reanalyze_pri_action[0]
+                real_reward = self.reanalyze_reward[0]
+                done = self.reanalyze_done[0]
+                per_state = self.initial_per_state
+                self.reanalyze_cur_t += 1
+
             self.root_v = torch.zeros(self.env_n, device=self.device)
             model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)            
             self.last_max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
@@ -125,7 +173,10 @@ class SimWrapper(gym.Wrapper):
 
         pri_action = util.encode_action(pri_action, self.pri_action_space)
 
-        self.root_td = real_reward + self.discounting * model_net_out.vs[-1] - self.root_v
+        if self.tree_carry:
+            self.root_td = real_reward + self.discounting * model_net_out.vs[-1] - self.root_v
+        else:
+            self.root_td = torch.zeros(self.env_n, device=self.device)
         self.root_action = pri_action
         self.root_r = real_reward
         self.root_v = model_net_out.vs[-1] # (self.env_n)
@@ -135,7 +186,7 @@ class SimWrapper(gym.Wrapper):
             self.root_r = self.root_r.clone()
             self.root_td[done] = 0.
             self.root_r[done] = 0.
-            if self.query_cur: self.node_mask[done, :-1] = 1 
+            if self.query_cur and self.node_mask is not None: self.node_mask[done, :-1] = 1 
 
         self.cur_td = self.root_td
         self.cur_action = self.root_action
@@ -360,14 +411,22 @@ class SimWrapper(gym.Wrapper):
                 # real step
                 baseline = self.sum_rollout_return / self.rec_t 
                 if self.perfect_model: self.env.restore_state(self.root_env_state)
-                real_state, real_reward, done, info = self.env.step(pri_action.detach().cpu().numpy())
-                info = util.dict_map(info, lambda x: torch.tensor(x, device=self.device))
-                if np.any(done): 
-                    new_real_state = self.env.reset(idx=self.np_batch_idx[done])
-                    real_state[done] = new_real_state
-                real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
-                real_reward = torch.tensor(real_reward, dtype=torch.float, device=self.device)
-                done = torch.tensor(done, dtype=torch.bool, device=self.device)
+                if not self.reanalyze: 
+                    real_state, real_reward, done, info = self.env.step(pri_action.detach().cpu().numpy())
+                    info = util.dict_map(info, lambda x: torch.tensor(x, device=self.device))
+                    if np.any(done): 
+                        new_real_state = self.env.reset(idx=self.np_batch_idx[done])
+                        real_state[done] = new_real_state                    
+                    real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
+                    real_reward = torch.tensor(real_reward, dtype=torch.float, device=self.device)
+                    done = torch.tensor(done, dtype=torch.bool, device=self.device)
+                else:
+                    pri_action = self.reanalyze_pri_action[self.reanalyze_cur_t]
+                    real_state = self.reanalyze_real_state[self.reanalyze_cur_t]
+                    real_reward = self.reanalyze_reward[self.reanalyze_cur_t]
+                    done = self.reanalyze_done[self.reanalyze_cur_t]
+                    info = {}
+                    self.reanalyze_cur_t += 1
 
                 initial_per_state = self.root_per_state
                 if not self.tuple_action: pri_action = pri_action.unsqueeze(-1)        
@@ -514,9 +573,6 @@ class SimWrapper(gym.Wrapper):
             mean_q_sa = None
             max_q_sa = None
             n_sa = None
-
-                
-
         
         if not self.manual_stat:
             rep = torch.concat([topk_similarity.unsqueeze(-1), 
