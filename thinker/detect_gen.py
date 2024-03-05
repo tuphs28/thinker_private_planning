@@ -149,7 +149,7 @@ class DetectBuffer:
         return target_ys
 
 
-def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
+def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid):
 
     _logger = util.logger()
     _logger.info(f"Initializing {xpid} from {savedir}")
@@ -179,7 +179,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
     disable_thinker = flags.wrapper_type == 1   
     im_rollout = disable_thinker and env.has_model
-    mcts = flags.mcts
+    mcts = getattr(flags, "mcts", False)
 
     obs_space = env.observation_space
     action_space = env.action_space 
@@ -273,7 +273,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
         while(True):
             state, reward, done, info = env.step(
                 primary_action=primary_action, 
-                reset_action=reset_action, 
+                reset_action=reset_action if not no_reset else torch.zeros_like(reset_action), 
                 action_prob=actor_out.action_prob[-1])    
             
             env_out = create_env_out(actor_out.action, state, reward, done, info, flags=flags)
@@ -282,7 +282,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, savedir, outdir, xpid):
 
             done = done 
             step_status = info['step_status'][0].item() if not im_rollout else 0       
-            last_step_real =  step_status in [1, 3]
+            last_step_real =  step_status in [0, 3]
             next_step_real =  step_status in [2, 3]            
             
             if last_step_real or im_rollout:
@@ -392,6 +392,7 @@ if __name__ == "__main__":
     parser.add_argument("--env_n", default=128, type=int, help="Batch size in generation.")
     parser.add_argument("--delay_n", default=5, type=int, help="Delay step in predicting danger.")
     parser.add_argument("--greedy", action="store_true", help="Use greedy policy.")
+    parser.add_argument("--no_reset", action="store_true", help="Force no resetting.")
 
     flags = parser.parse_args()    
     project = flags.project if flags.project else __project__
@@ -404,6 +405,7 @@ if __name__ == "__main__":
         env_n=flags.env_n,
         delay_n=flags.delay_n,
         greedy=flags.greedy,
+        no_reset=flags.no_reset,
         savedir=flags.savedir,
         outdir=flags.outdir,
         xpid=flags.xpid,

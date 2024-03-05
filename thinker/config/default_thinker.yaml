@@ -33,7 +33,8 @@ dual_net: true # whether to use dual network
 model_enc_type: 0 # reward / value encoding type for the model; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
 model_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 for MuZero-like encoding, 1 for Dreamer-like encoding
 model_size_nn: 1 # model size mulitplier (integer)
-model_downscale_c: 2 # model channel size divisor (integer)
+model_downscale_c: 2 # model channel size divisor (integer) - state reward network
+model_downscale_c_vp: 2 # model channel size divisor (integer) - value policy network
 model_disable_bn: true # whether to disable batch norm in model
 model_zero_init: true # whether to zero initialize the model's predicted rewards and values
 model_has_memory: false # whether to enable memory in model
