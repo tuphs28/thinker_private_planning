@@ -15,7 +15,6 @@ buffer_traj_len: 50 # length of trajectory stored in the replay buffer
 model_unroll_len: 5 # model unroll length when training model
 model_mem_unroll_len: 0 # model unroll length for computing initial model state (only needed when model_has_memory is true)
 model_return_n: 5 # n-step return when training model
-model_self_bootstrap: false # whether to boostrap itself as target
 model_warm_up_n: 200000 # number of augmented step before model starts to be trained
 model_buffer_n: 200000 # capacity of replay buffer in number of augmented step 
 # cost setting in training
@@ -30,6 +29,7 @@ model_reg_loss_cost: 0.0 # cost for model regularization loss
 model_noise_loss_cost: 0.0 # cost for model noise loss
 # model setting
 dual_net: true # whether to use dual network
+dual_pred_f: false # whether to directly predict feature instead of state
 model_enc_type: 0 # reward / value encoding type for the model; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
 model_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 for MuZero-like encoding, 1 for Dreamer-like encoding
 model_size_nn: 1 # model size mulitplier (integer)

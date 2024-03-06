@@ -157,14 +157,10 @@ class SimWrapper(gym.Wrapper):
         if torch.any(done):
             pri_action = pri_action.clone()
             pri_action[done] = 0
-        model_net_out = model_net(x=real_state, 
+        model_net_out = model_net(env_state=real_state, 
                                   done=done,
                                   actions=pri_action.unsqueeze(0), 
-                                  state=per_state,
-                                  one_hot=False,
-                                  ret_xs=self.return_x,
-                                  ret_zs=True,
-                                  ret_hs=True)       
+                                  state=per_state)       
         self.root_per_state = model_net_out.state
         self.tmp_state = self.root_per_state
 
@@ -278,28 +274,21 @@ class SimWrapper(gym.Wrapper):
                 if not self.perfect_model:
                     model_net_out = model_net.forward_single(
                             state=self.tmp_state,
-                            action=pri_action,                     
-                            one_hot=False,
-                            ret_xs=self.return_x,
-                            ret_zs=True,
-                            ret_hs=True)  
+                            action=pri_action
+                            )  
                     im_r = model_net_out.rs[-1] 
                     im_done = model_net_out.dones[-1]           
                 else:
                     im_x, im_r, im_done, _ = self.env.step(
                         pri_action.detach().cpu().numpy()
                     )
-                    im_x = torch.tensor(im_x, dtype=self.state_dtype, device=self.device)
+                    im_env_state = torch.tensor(im_x, dtype=self.state_dtype, device=self.device)
                     im_r = torch.tensor(im_r, dtype=torch.float, device=self.device)
                     im_done = torch.tensor(im_done, dtype=torch.bool, device=self.device)
-                    model_net_out = model_net(x=im_x, 
+                    model_net_out = model_net(env_state=im_env_state, 
                                               done=None,
                                               actions=pri_action.unsqueeze(0), 
                                               state=self.tmp_state,
-                                              one_hot=False,
-                                              ret_xs=self.return_x,
-                                              ret_zs=True,
-                                              ret_hs=True
                                               )                    
                     reset_action[im_done] = 1  
                 self.tmp_state = model_net_out.state    

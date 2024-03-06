@@ -740,14 +740,10 @@ cdef class cModelWrapper(cWrapper):
             obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
             pass_action = torch.zeros(self.env_n, self.raw_dim_actions, dtype=torch.long)
             self.initial_per_state = model_net.initial_state(batch_size=self.env_n, device=self.device)
-            model_net_out = model_net(x=obs_py, 
+            model_net_out = model_net(env_state=obs_py, 
                                       done=None,
                                       actions=pass_action.unsqueeze(0).to(self.device), 
-                                      state=self.initial_per_state,
-                                      one_hot=False,
-                                      ret_xs=self.return_x,
-                                      ret_zs=False,
-                                      ret_hs=self.return_h)  
+                                      state=self.initial_per_state,)  
             self.update_per_state(model_net_out, idx=None)
             vs = model_net_out.vs.cpu()
             logits = model_net_out.policy[-1]    
@@ -926,25 +922,18 @@ cdef class cModelWrapper(cWrapper):
                 else:
                     self.initial_per_state = {sk: sv[pass_idx_step] for sk, sv in self.per_state.items()}
                 model_net_out_1 = model_net(
-                    x=obs_py, 
+                    env_state=obs_py, 
                     done=done_py,
                     actions=pass_action_py, 
                     state=self.initial_per_state,
-                    one_hot=False,
-                    ret_xs=True,
-                    ret_zs=self.cur_enable,
-                    ret_hs=self.return_h
                 )  
                 self.update_per_state(model_net_out_1, idx=pass_idx_step)
                 if self.cur_enable:
+                    # curiosity-related experiments; largely unused
                     pred_model_net_out_1 = model_net.forward_single(
                         state=self.initial_per_state,
                         action=pass_action_py[0],  
-                        one_hot=False,  
-                        ret_xs=True,
-                        ret_zs=True,
-                        ret_hs=False,
-                        future_x=model_net.normalize(obs_py),
+                        future_env_state=obs_py,
                     )                                       
                     cur_reward = torch.zeros(self.env_n, dtype=torch.float, device=self.device)
                     done_mask = torch.tensor(done, dtype=torch.float, device=self.device)
@@ -1025,11 +1014,7 @@ cdef class cModelWrapper(cWrapper):
                     pass_model_action_py = torch.stack(pass_model_raw_action, dim=0)
                 model_net_out_4 = model_net.forward_single(
                     state=pass_model_states,
-                    action=pass_model_action_py,                     
-                    one_hot=False,
-                    ret_xs=self.return_x,
-                    ret_zs=False,
-                    ret_hs=self.return_h)  
+                    action=pass_model_action_py)  
             rs_4 = model_net_out_4.rs[-1].float().cpu().numpy()
             vs_4 = model_net_out_4.vs[-1].float().cpu().numpy()
             logits_4_ = model_net_out_4.policy[-1].float()
@@ -1246,14 +1231,10 @@ cdef class cPerfectWrapper(cWrapper):
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
             pass_action = torch.zeros(self.env_n, self.raw_dim_actions, dtype=torch.long)
-            model_net_out = model_net(x=obs_py, 
+            model_net_out = model_net(env_state=obs_py, 
                                       done=None,
                                       actions=pass_action.unsqueeze(0).to(self.device), 
-                                      state=None,
-                                      one_hot=False,
-                                      ret_xs=self.return_x,
-                                      ret_zs=False,
-                                      ret_hs=self.return_h)  
+                                      state=None,)  
             vs = model_net_out.vs.cpu()
             logits = model_net_out.policy[-1]    
             if self.sample: 
@@ -1412,14 +1393,10 @@ cdef class cPerfectWrapper(cWrapper):
                 obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
                 pass_action_py = torch.tensor(pass_action, dtype=long, device=self.device).unsqueeze(-1).unsqueeze(0)
                 done_py = torch.tensor(done, dtype=torch.bool, device=self.device)
-                model_net_out = model_net(x=obs_py, 
+                model_net_out = model_net(env_state=obs_py, 
                                           done=done_py,
                                           actions=pass_action_py, 
-                                          state=None,
-                                          one_hot=False,
-                                          ret_xs=self.return_x,
-                                          ret_zs=False,
-                                          ret_hs=self.return_h)  
+                                          state=None,)  
             vs = model_net_out.vs[-1].float().cpu().numpy()
             logits_ = model_net_out.policy[-1].float()
             if self.sample: 

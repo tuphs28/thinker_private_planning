@@ -439,11 +439,11 @@ class SModelLearner:
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
         initial_per_state = {sk: sv[0] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
         if self.flags.model_mem_unroll_len > 0:
-            past_real_state = train_model_out.initial_per_state["past_real_state"]
+            past_env_state_norm = self.model_net.normalize(train_model_out.initial_per_state["past_real_state"])
             past_done = train_model_out.initial_per_state["past_done"]
             past_action = train_model_out.initial_per_state["past_action"]
             past_action = util.encode_action(past_action, self.model_net.action_space, one_hot=False)
-            _, per_state = self.model_net.sr_net.encoder(past_real_state, past_done, past_action, initial_per_state, flatten=True)
+            _, per_state = self.model_net.sr_net.encoder(past_env_state_norm, past_done, past_action, initial_per_state, flatten=True)
 
             #dbg_per_state = {sk: sv[-1] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
             #for sk in per_state.keys(): print(sk, torch.sum(torch.abs(per_state[sk] - dbg_per_state[sk])))
@@ -451,12 +451,11 @@ class SModelLearner:
             per_state = initial_per_state
 
         out = self.model_net.sr_net.forward(
-            x=self.model_net.normalize(train_model_out.real_state[0]),
+            env_state_norm=self.model_net.normalize(train_model_out.real_state[0]),
             done=train_model_out.done[0],
             actions=train_model_out.action[: k + 1],
-            state = per_state,
-            one_hot=False,
-            future_xs=self.model_net.normalize(train_model_out.real_state[1:k+1])
+            state=per_state,
+            future_env_state_norm=self.model_net.normalize(train_model_out.real_state[1:k+1]) if self.flags.noise_enable else None
         )
         rs_loss = self.compute_rs_loss(
             target,
@@ -466,8 +465,9 @@ class SModelLearner:
             is_weights,
         )
         done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
-        if self.flags.model_img_loss_cost > 0.:
-            diff = target["xs"] - out.xs
+        target_env_state_norm = self.model_net.normalize(target["env_states"])
+        if self.flags.model_img_loss_cost > 0. and not self.flags.dual_pred_f:
+            diff = target_env_state_norm - out.xs
             img_loss = self.compute_state_loss(diff, target, is_weights)
         else:
             img_loss = None
@@ -475,9 +475,12 @@ class SModelLearner:
             with torch.no_grad():
                 action = util.encode_action(train_model_out.action[1 : k + 1], self.model_net.action_space, one_hot=False)
                 target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
-                    target["xs"], action, flatten=True
+                    target_env_state_norm, action, flatten=True
                 )
-            pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True)
+            if not self.flags.dual_pred_f:
+                pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True)
+            else:
+                pred_enc = out.xs
             diff = target_enc - pred_enc
             fea_loss = self.compute_state_loss(diff, target, is_weights)
         else:
@@ -486,7 +489,7 @@ class SModelLearner:
         if self.flags.model_sup_loss_cost > 0.:
             sup_loss = self.model_net.sr_net.supervise_loss(
                 hs=out.hs[1:], 
-                xs=self.model_net.normalize(train_model_out.real_state[1 : k + 1]),
+                env_state_norm=self.model_net.normalize(train_model_out.real_state[1 : k + 1]),
                 actions=train_model_out.action[1 : k + 1], 
                 is_weights=is_weights, 
                 mask=target["done_mask"][1:], 
@@ -531,38 +534,33 @@ class SModelLearner:
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
         initial_per_state = {sk: sv[0] for sk, sv in train_model_out.initial_per_state.items() if sk.startswith("per")}
         if self.flags.model_mem_unroll_len > 0:
-            past_real_state = train_model_out.initial_per_state["past_real_state"]
+            past_env_state_norm = self.model_net.normalize(train_model_out.initial_per_state["past_real_state"])
             past_done = train_model_out.initial_per_state["past_done"]
             past_action = train_model_out.initial_per_state["past_action"]
             past_action = util.encode_action(past_action, self.model_net.action_space, one_hot=False)
-            _, per_state = self.model_net.vp_net.encoder(past_real_state, past_done, past_action, initial_per_state, flatten=True)
+            _, per_state = self.model_net.vp_net.encoder(past_env_state_norm, past_done, past_action, initial_per_state, flatten=True)
         else:
             per_state = initial_per_state
-
-        first_x = train_model_out.real_state[[0]].float() / 255.0
-        if self.flags.dual_net:
-            xs = torch.concat([first_x, pred_xs], dim=0)
-        else:
-            xs = torch.concat([first_x, target["xs"]], dim=0)
-
-        if self.perfect_model:
+        
+        env_state_norm = self.model_net.normalize(train_model_out.real_state[0])
+        if self.perfect_model:            
             out = self.model_net.vp_net.forward(
-                xs=xs[:k].view((k * b,) + xs.shape[2:]),
+                env_state_norm=env_state_norm[:k].view((k * b,) + env_state_norm.shape[2:]),
+                xs=None,
                 done=train_model_out.done[:k].view(1, k * b,),
                 actions=train_model_out.action[:k].view(1, k * b, -1),
                 state={},
-                one_hot=False,
             )
             vs = out.vs.view(k, b)
             v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
             policy = out.policy.view((k, b) + out.policy.shape[2:])
         else:
             out = self.model_net.vp_net.forward(
-                xs=xs[: k + 1],  # s_0, ..., s_k
+                env_state_norm=env_state_norm,
+                xs=pred_xs, 
                 done=train_model_out.done[0],
                 actions=train_model_out.action[: k + 1],  # a_-1, ..., a_k-1                
                 state=per_state,
-                one_hot=False,
             )
             vs = out.vs[:-1].view(k, b)
             if out.v_enc_logits is not None:
@@ -659,29 +657,17 @@ class SModelLearner:
             action_prob, baseline = self.reanalyze_data(train_model_out)
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
         ret_n = self.flags.model_return_n
-        target_xs = self.model_net.normalize(train_model_out.real_state)
+        target_env_states = train_model_out.real_state
         target_rewards = train_model_out.reward[1 : k + 1]  # true reward r_1, r_2, ..., r_k
         if not self.reanalyze:
             target_action_probs = train_model_out.action_prob[1 : k + 1]  # true logits l_0, l_1, ..., l_k-1
         else:
             target_action_probs = action_prob[:k]
         target_actions = train_model_out.action[1 : k + 1]  # true actions l_0, l_1, ..., l_k-1
-        if self.flags.model_self_bootstrap:
-            with torch.no_grad():
-                self.model_net.train(False)
-                out = self.model_net.forward(
-                    x=target_xs[ret_n: ret_n + k].view((k * b,) + target_xs.shape[2:]),
-                    actions=train_model_out.action[ret_n: ret_n + k].view(1, k * b),
-                    one_hot=False,
-                    normalize=False,
-                )
-                target_vs = out.vs.view(k, b)
-                self.model_net.train(True)
+        if not self.reanalyze:
+            target_vs = train_model_out.baseline[ret_n + 1: ret_n + 1 + k]  # baseline ranges from v_k, v_k+1, ... v_2k
         else:
-            if not self.reanalyze:
-                target_vs = train_model_out.baseline[ret_n + 1: ret_n + 1 + k]  # baseline ranges from v_k, v_k+1, ... v_2k
-            else:
-                target_vs = baseline[ret_n : ret_n + k]
+            target_vs = baseline[ret_n : ret_n + k]
         for t in range(ret_n, 0, -1):
             target_vs = (
                 target_vs
@@ -708,7 +694,7 @@ class SModelLearner:
                     true_done[t - 1], train_model_out.done[t]
                 )
                 if not self.flags.model_done_loss_cost > 0.0:
-                    target_xs[t, true_done[t]] = 0.0
+                    target_env_states[t, true_done[t]] = 0
                 if t < k:
                     target_rewards[t, true_done[t]] = 0.0
                     target_action_probs[t, true_done[t]] = target_action_probs[t - 1, true_done[t]]
@@ -726,7 +712,7 @@ class SModelLearner:
             target_done = None
 
         return {
-            "xs": target_xs[1 : k + 1],
+            "env_states": target_env_states[1 : k + 1],
             "rewards": target_rewards,            
             "actions": target_actions,
             "action_probs": target_action_probs,
