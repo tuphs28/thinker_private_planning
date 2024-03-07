@@ -4,7 +4,7 @@ has_model: true # whether the model exists
 train_model: true # whether to train the model
 model_batch_size: 128 # training batch size of the model
 model_learning_rate: 0.0001 # model learning rate
-vp_enc_lr_mul: 1 # lr multipler for vp_net encoder
+vp_enc_lr_mul: 1. # lr multipler for vp_net encoder
 model_grad_norm_clipping: 0 # gradient clipping norm; non-positive for no clipping
 min_replay_ratio: 5 # minimum replay ratio (i.e. the number of times that the same transition is used to train a model on average)
 max_replay_ratio: 6 # maximum replay ratio (i.e. the number of times that the same transition is used to train a model on average)
