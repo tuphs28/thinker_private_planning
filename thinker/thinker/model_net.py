@@ -57,6 +57,7 @@ class FrameEncoder(nn.Module):
         downscale_c=2,
         downscale=True,
         concat_action=True,
+        concat_z=False,
         decoder_type=0,
         frame_stack_n=1,
         disable_bn=False,
@@ -71,6 +72,7 @@ class FrameEncoder(nn.Module):
         self.frame_stack_n = frame_stack_n        
         self.input_shape = input_shape        
         self.concat_action = concat_action
+        self.concat_z = concat_z
         self.oned_input = len(self.input_shape) == 1
         self.has_memory = has_memory
 
@@ -131,6 +133,13 @@ class FrameEncoder(nn.Module):
 
             if self.has_memory:
                 raise NotImplementedError()
+            
+            if self.concat_z:
+                res = [
+                    ResBlock(inplanes=out_channels*4, outplanes=out_channels*2, disable_bn=disable_bn)
+                    for _ in range(n_block)
+                ] 
+                self.res4 = nn.Sequential(*res)
 
             if self.decoder_type == 1:
                 d_conv = [
@@ -175,13 +184,17 @@ class FrameEncoder(nn.Module):
                 nn.LayerNorm(hidden_size),
                 nn.Tanh()
             )            
-            self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
+            self.res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])    
             self.out_shape = (hidden_size,)
             
             if self.has_memory:
                 #self.rnn = ConvAttnLSTM(input_dim=hidden_size, hidden_dim=hidden_size//2, num_layers=2, attn=False)
                 self.rnn = LSTMReset(input_dim=hidden_size, hidden_dim=hidden_size, num_layers=2)
                 #self.rnn_fc = nn.Sequential(nn.Linear(hidden_size, hidden_size), nn.ReLU())   
+                    
+            if self.concat_z:
+                raise NotImplementedError()
+            
             if self.decoder_type in [1, 2]:
                 self.d_res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
                 self.output_block = nn.Linear(hidden_size, input_shape[0])            
@@ -199,7 +212,7 @@ class FrameEncoder(nn.Module):
             #state[f"per_{self.prefix}_dbg_action"] = torch.zeros(batch_size, self.actions_ch, device=device)
         return state
     
-    def forward_pre_mem(self, x, actions, flatten):
+    def forward_pre_mem(self, x, actions=None, z=None, flatten=False):
         """
         Args:
           x (tensor): frame with shape B, C, H, W or B, C
@@ -239,6 +252,9 @@ class FrameEncoder(nn.Module):
             x = self.avg1(x)
             x = self.res3(x)
             x = self.avg2(x)
+            if self.concat_z and z is not None:
+                x = torch.concat([x, z.detach()], dim=1)
+                x = self.res4(x)
         else:
             x = self.input_block(x)
             x = self.res(x)
@@ -247,11 +263,9 @@ class FrameEncoder(nn.Module):
             x = x.view(input_shape[:2] + x.shape[1:])
         return x
 
-    def forward(self, x, done, actions, state, flatten=False):
-        
+    def forward(self, x, done, actions, z=None, state={}, flatten=False):        
         new_state = {}
-
-        x = self.forward_pre_mem(x=x, actions=actions, flatten=flatten)        
+        x = self.forward_pre_mem(x=x, actions=actions, z=z, flatten=flatten)        
         if self.has_memory:
             if not self.oned_input:
                 raise NotImplementedError()
@@ -551,6 +565,7 @@ class SRNet(nn.Module):
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
             decoder_type=2 if flags.dual_pred_f else 1,
+            concat_z=flags.sr_see_vp,
             frame_stack_n=self.frame_stack_n,
             has_memory=self.has_memory,
         )
@@ -640,7 +655,7 @@ class SRNet(nn.Module):
     def initial_state(self, batch_size=1, device=None):
         return self.encoder.initial_state(batch_size=batch_size, device=device)
 
-    def forward(self, env_state_norm, done, actions, state, one_hot=False, future_env_state_norm=None):
+    def forward(self, env_state_norm, done, actions, state, one_hot=False, future_env_state_norm=None, z=None):
         """
         Args:
             env_state_norm (tensor): normalized env state (float) with shape (B, C, H, W), in the form of s_t
@@ -656,7 +671,7 @@ class SRNet(nn.Module):
         k = k - 1
         actions = util.encode_action(actions, self.action_space, one_hot)       
         new_state = {}
-        h, enc_state = self.encoder(env_state_norm, done, actions[0], state)
+        h, enc_state = self.encoder(env_state_norm, done, actions[0], z=z, state=state)
         new_state.update(enc_state)
 
         hs = [h.unsqueeze(0)]
@@ -962,6 +977,7 @@ class VPNet(nn.Module):
                 enc_in = env_state_norm.unsqueeze(0)
         else:
             enc_in = env_state_norm.unsqueeze(0)
+
         zs, enc_state = self.encoder(enc_in.detach(), done, actions[:enc_in.shape[0]], state, flatten=True)
         new_state.update(enc_state)
 
@@ -1052,6 +1068,15 @@ class VPNet(nn.Module):
             pred_zs=util.safe_unsqueeze(pred_z, 0),
             state=new_state,
         )
+    
+    def compute_z0(self, env_state_norm, done, action, state):
+        b, *_ = action.shape
+        device = env_state_norm.device
+        if done is None:
+            done = torch.zeros(b, dtype=torch.bool, device=device)        
+        enc_in = env_state_norm.unsqueeze(0)
+        zs, enc_state = self.encoder(enc_in.detach(), done, action.unsqueeze(0), state, flatten=True)
+        return zs[0], enc_state
 
 class ModelNet(BaseNet):
     def __init__(self, obs_space, action_space, flags, frame_stack_n=1):
@@ -1080,7 +1105,7 @@ class ModelNet(BaseNet):
         
         if self.need_norm:
             self.register_buffer("norm_low", low)
-            self.register_buffer("norm_high", high)
+            self.register_buffer("norm_high", high)        
 
         self.vp_net = VPNet(self.obs_shape, action_space, flags)
         self.hidden_shape = list(self.vp_net.hidden_shape)
@@ -1088,6 +1113,7 @@ class ModelNet(BaseNet):
             self.sr_net = SRNet(self.obs_shape, action_space, flags, frame_stack_n)
             self.hidden_shape[0] += self.sr_net.hidden_shape[0]
         self.copy_n = self.obs_shape[0] // frame_stack_n
+        self.sr_see_vp = flags.sr_see_vp
 
     def initial_state(self, batch_size=1, device=None):
         state = {}
@@ -1135,7 +1161,11 @@ class ModelNet(BaseNet):
         future_env_state_norm = self.normalize(future_env_state) if future_env_state is not None else None
 
         if self.dual_net:
-            sr_net_out = self.sr_net(env_state_norm, done, actions, state, future_env_state_norm=future_env_state_norm)
+            if self.sr_see_vp:
+                with torch.no_grad():
+                    action = util.encode_action(actions[0], self.vp_net.action_space, one_hot=False)       
+                    vp_z = self.vp_net.encoder.forward_pre_mem(env_state_norm, action)
+            sr_net_out = self.sr_net(env_state_norm, done, actions, state, future_env_state_norm=future_env_state_norm, z=vp_z)
             new_state.update(sr_net_out.state)
             xs = sr_net_out.xs
         else:

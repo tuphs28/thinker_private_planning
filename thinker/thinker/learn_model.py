@@ -458,12 +458,21 @@ class SModelLearner:
         else:
             per_state = initial_per_state
 
+        env_state_norm = self.model_net.normalize(train_model_out.real_state[0])
+        if self.flags.sr_see_vp:
+            with torch.no_grad():
+                action = util.encode_action(train_model_out.action[0], self.model_net.vp_net.action_space, one_hot=False)  
+                vp_z = self.model_net.vp_net.encoder.forward_pre_mem(env_state_norm, action)
+        else:
+            vp_z = None
+
         out = self.model_net.sr_net.forward(
-            env_state_norm=self.model_net.normalize(train_model_out.real_state[0]),
+            env_state_norm=env_state_norm,
             done=train_model_out.done[0],
             actions=train_model_out.action[: k + 1],
             state=per_state,
-            future_env_state_norm=self.model_net.normalize(train_model_out.real_state[1:k+1]) if self.flags.noise_enable else None
+            future_env_state_norm=self.model_net.normalize(train_model_out.real_state[1:k+1]) if self.flags.noise_enable else None,
+            z=vp_z,
         )
         rs_loss = self.compute_rs_loss(
             target,
