@@ -869,7 +869,7 @@ class SModelLearner:
         self._logger.info("Loaded model checkpoint from %s" % ckp_path)
 
     def update_target(self):
-        if self.reanalyze_model_update_freq <= 1: return
+        if self.flags.reanalyze_model_update_freq <= 1: return
         for tar_module, new_module in zip(self.tar_model_net.modules(), self.model_net.modules()):
             if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
                 # Copy BatchNorm running mean and variance
