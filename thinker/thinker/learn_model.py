@@ -80,9 +80,24 @@ class SModelLearner:
                 self.optimizer_m, lr_lambda
             )
             self.scaler_m = GradScaler(init_scale=2**3) if self.flags.float16 else None
-        self.optimizer_p = torch.optim.Adam(
-            self.model_net.vp_net.parameters(), lr=flags.model_learning_rate
-        )
+
+        # Separate the encoder parameters and all other parameters into two groups
+        encoder_params = list(self.model_net.vp_net.encoder.parameters())
+        base_params = [p for p in self.model_net.vp_net.parameters() if p not in encoder_params]
+
+        # Check if we need to adjust the learning rate for the encoder
+        if flags.vp_enc_lr_mul != 1:
+            # Create parameter groups with different learning rates
+            param_groups = [
+                {'params': encoder_params, 'lr': flags.model_learning_rate * flags.vp_enc_lr_mul},
+                {'params': base_params}
+            ]
+        else:
+            # If vp_enc_lr_mul is 1, use a single group for all parameters
+            param_groups = self.model_net.vp_net.parameters()
+
+        # Initialize the optimizer with these parameter groups
+        self.optimizer_p = torch.optim.Adam(param_groups, lr=flags.model_learning_rate)
         self.scheduler_p = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer_p, lr_lambda
         )
