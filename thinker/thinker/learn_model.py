@@ -60,6 +60,14 @@ class SModelLearner:
             self.model_net = model_net
             self.device = device
 
+        if flags.reanalyze and flags.reanalyze_model_update_freq > 1:
+            self.tar_model_net = ModelNet(**model_param)
+            self.tar_model_net.to(self.device)
+            self.tar_model_net.train(False)
+            self.update_target()
+        else:
+            self.tar_model_net = self.model_net
+
         if self.device == torch.device("cuda"):
             self._logger.info("Init. model-learning: Using CUDA.")
         else:
@@ -724,10 +732,12 @@ class SModelLearner:
     
     def reanalyze_data(self, train_model_out):
         with torch.set_grad_enabled(False):
-            self.model_net.train(False)
+            self.tar_model_net.train(False)
             self.reanalyze_step += 1
             if self.reanalyze_step % self.flags.reanalyze_actor_update_freq == 0:
                 self.refresh_actor()
+            if self.reanalyze_step % self.flags.reanalyze_model_update_freq == 0:
+                self.update_target()
             unroll_len = self.flags.model_unroll_len + self.flags.model_return_n
             self.reanalyze_env.set_reanalyze_data(
                 train_model_out.action if self.model_net.tuple_action else train_model_out.action[:, :, 0],
@@ -736,7 +746,7 @@ class SModelLearner:
                 train_model_out.real_state,
                 initial_per_state={}, # todo: add model persistent state
             )
-            state = self.reanalyze_env.reset(self.model_net)   
+            state = self.reanalyze_env.reset(self.tar_model_net)   
             actor_state = self.actor_net.initial_state(
                     batch_size=self.flags.model_batch_size, device=self.device # todo: add real actor state
             )
@@ -745,7 +755,7 @@ class SModelLearner:
             baseline = []
             for t in range(self.flags.rec_t * unroll_len):
                 actor_out, actor_state = self.actor_net(env_out=env_out, core_state=actor_state, greedy=False)
-                state, reward, done, info = self.reanalyze_env.step(actor_out.action, self.model_net)
+                state, reward, done, info = self.reanalyze_env.step(actor_out.action, self.tar_model_net)
                 env_out = util.create_env_out(actor_out.action, state, reward, done, info, self.flags)
                 last_step_real = info["step_status"][0].item() in [0, 3] # assume all step status is the same
                 if last_step_real:
@@ -754,7 +764,7 @@ class SModelLearner:
             action_prob = torch.stack(action_prob) 
             baseline = torch.stack(baseline)
             assert baseline.shape == (unroll_len, self.flags.model_batch_size)
-            self.model_net.train(True)
+            self.tar_model_net.train(True)
             if not self.model_net.tuple_action: action_prob = action_prob.unsqueeze(-2)
             return action_prob, baseline
 
@@ -857,6 +867,16 @@ class SModelLearner:
         )
         self.model_net.set_weights(train_checkpoint["model_net_state_dict"])
         self._logger.info("Loaded model checkpoint from %s" % ckp_path)
+
+    def update_target(self):
+        for tar_module, new_module in zip(self.tar_model_net.modules(), self.model_net.modules()):
+            if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
+                # Copy BatchNorm running mean and variance
+                tar_module.running_mean = new_module.running_mean.clone()
+                tar_module.running_var = new_module.running_var.clone()
+            # Apply EMA to other parameters
+            for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
+                tar_param.data = new_param.data.clone()        
 
     def close(self):
         self.plogger.close()
