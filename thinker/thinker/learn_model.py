@@ -60,14 +60,6 @@ class SModelLearner:
             self.model_net = model_net
             self.device = device
 
-        if flags.reanalyze and flags.reanalyze_model_update_freq > 1:
-            self.tar_model_net = ModelNet(**model_param)
-            self.tar_model_net.to(self.device)
-            self.tar_model_net.train(False)
-            self.update_target()
-        else:
-            self.tar_model_net = self.model_net
-
         if self.device == torch.device("cuda"):
             self._logger.info("Init. model-learning: Using CUDA.")
         else:
@@ -111,7 +103,15 @@ class SModelLearner:
         self.model_net.to(self.device)
         if self.flags.dual_net:
             util.optimizer_to(self.optimizer_m, self.device)
-        util.optimizer_to(self.optimizer_p, self.device)        
+        util.optimizer_to(self.optimizer_p, self.device)               
+
+        if flags.reanalyze and flags.reanalyze_model_update_freq > 1:
+            self.tar_model_net = ModelNet(**model_param)
+            self.tar_model_net.to(self.device)
+            self.tar_model_net.train(False)
+            self.update_target()
+        else:
+            self.tar_model_net = self.model_net 
         
         self.timing = util.Timings() if self.time else None
         self.perfect_model = util.check_perfect_model(flags.wrapper_type)
