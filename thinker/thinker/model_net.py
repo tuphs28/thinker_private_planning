@@ -1165,6 +1165,8 @@ class ModelNet(BaseNet):
                 with torch.no_grad():
                     action = util.encode_action(actions[0], self.vp_net.action_space, one_hot=False)       
                     vp_z = self.vp_net.encoder.forward_pre_mem(env_state_norm, action)
+            else:
+                vp_z = None
             sr_net_out = self.sr_net(env_state_norm, done, actions, state, future_env_state_norm=future_env_state_norm, z=vp_z)
             new_state.update(sr_net_out.state)
             xs = sr_net_out.xs
