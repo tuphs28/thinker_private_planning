@@ -8,7 +8,7 @@ model_optimizer: 'adam' # can be adam or sgd
 model_sgd_momentum: 0.9
 model_sgd_weight_decay: 0.0001
 vp_enc_lr_mul: 1. # lr multipler for vp_net encoder
-model_grad_norm_clipping: 0 # gradient clipping norm; non-positive for no clipping
+model_grad_norm_clipping: 0. # gradient clipping norm; non-positive for no clipping
 min_replay_ratio: 5 # minimum replay ratio (i.e. the number of times that the same transition is used to train a model on average)
 max_replay_ratio: 6 # maximum replay ratio (i.e. the number of times that the same transition is used to train a model on average)
 total_steps: 50000000 # total number of raw steps to train

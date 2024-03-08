@@ -805,6 +805,7 @@ class SModelLearner:
 
     def gradient_step(self, loss, optimizer, scheduler, scaler=None):
         # gradient descent on loss
+        loss = loss / self.numel_per_step
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(loss).backward()
