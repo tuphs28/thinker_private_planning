@@ -76,12 +76,17 @@ class SModelLearner:
         opt = getattr(flags, "model_optimizer", "adam")
         if opt == "adam":
             Optimizer = torch.optim.Adam
+            opt_args = {}
         elif opt == "sgd":
             Optimizer = torch.optim.SGD
+            opt_args = {
+                "momentum": self.flags.model_sgd_momentum,
+                "weight_decay": self.flags.model_sgd_weight_decay,
+            }
 
         if self.flags.dual_net:
             self.optimizer_m = Optimizer(
-                self.model_net.sr_net.parameters(), lr=flags.model_learning_rate
+                self.model_net.sr_net.parameters(), lr=flags.model_learning_rate, **opt_args
             )
             self.scheduler_m = torch.optim.lr_scheduler.LambdaLR(
                 self.optimizer_m, lr_lambda
@@ -101,11 +106,11 @@ class SModelLearner:
                 {'params': encoder_params, 'lr': flags.model_learning_rate * flags.vp_enc_lr_mul},
                 {'params': base_params, 'lr': flags.model_learning_rate}
             ]
-            self.optimizer_p = Optimizer(param_groups)
+            self.optimizer_p = Optimizer(param_groups, **opt_args)
         else:
             # If vp_enc_lr_mul is 1, use a single group for all parameters
             param_groups = self.model_net.vp_net.parameters()
-            self.optimizer_p = Optimizer(param_groups, lr=flags.model_learning_rate)
+            self.optimizer_p = Optimizer(param_groups, lr=flags.model_learning_rate, **opt_args)
 
         self.scheduler_p = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer_p, lr_lambda

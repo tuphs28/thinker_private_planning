@@ -5,6 +5,8 @@ train_model: true # whether to train the model
 model_batch_size: 128 # training batch size of the model
 model_learning_rate: 0.0001 # model learning rate
 model_optimizer: 'adam' # can be adam or sgd
+model_sgd_momentum: 0.9
+model_sgd_weight_decay: 0.0001
 vp_enc_lr_mul: 1. # lr multipler for vp_net encoder
 model_grad_norm_clipping: 0 # gradient clipping norm; non-positive for no clipping
 min_replay_ratio: 5 # minimum replay ratio (i.e. the number of times that the same transition is used to train a model on average)
