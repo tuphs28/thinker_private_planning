@@ -111,7 +111,7 @@ parallel: false # whether to use a parallel ray actor for training the model
 float16: false # whether to use mixed precision
 base_seed: 1 # base seed for the gym environment
 repeat_action_n: 0 # custom frame stacking (only for non-Atari envrionment)
-rand_action_eps: 0 # probability of randomly setting to 0 action
+rand_action_eps: 0. # probability of randomly setting to 0 action
 project: ''
 # ray resources
 ray_mem: -1 # default initialized ray memory
