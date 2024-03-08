@@ -501,7 +501,7 @@ class SModelLearner:
         )
         done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
         target_env_state_norm = self.model_net.normalize(target["env_states"])
-        if self.flags.model_img_loss_cost > 0. and not self.flags.dual_pred_f:
+        if self.flags.model_img_loss_cost > 0. and self.flags.model_decoder_depth == 0:
             diff = target_env_state_norm - out.xs
             img_loss = self.compute_state_loss(diff, target, is_weights)
         else:
@@ -512,10 +512,7 @@ class SModelLearner:
                 target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
                     target_env_state_norm, action, flatten=True
                 )
-            if not self.flags.dual_pred_f:
-                pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True)
-            else:
-                pred_enc = out.xs
+            pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True, depth=self.flags.model_decoder_depth)
             diff = target_enc - pred_enc
             fea_loss = self.compute_state_loss(diff, target, is_weights)
         else:

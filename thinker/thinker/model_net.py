@@ -58,7 +58,8 @@ class FrameEncoder(nn.Module):
         downscale=True,
         concat_action=True,
         concat_z=False,
-        decoder_type=0,
+        decoder=False,
+        decoder_depth=0,
         frame_stack_n=1,
         disable_bn=False,
         has_memory=False,
@@ -68,7 +69,8 @@ class FrameEncoder(nn.Module):
         self.dim_rep_actions = dim_rep_actions
         self.size_nn = size_nn
         self.downscale_c = downscale_c
-        self.decoder_type = decoder_type # -1 for no decoder, 1 for upscaling decoder, 2 for non-upscaling decoder
+        self.decoder = decoder
+        self.decoder_depth = decoder_depth
         self.frame_stack_n = frame_stack_n        
         self.input_shape = input_shape        
         self.concat_action = concat_action
@@ -141,7 +143,7 @@ class FrameEncoder(nn.Module):
                 ] 
                 self.res4 = nn.Sequential(*res)
 
-            if self.decoder_type == 1:
+            if self.decoder:
                 d_conv = [
                     ResBlock(inplanes=out_channels * 2, disable_bn=disable_bn)
                     for _ in range(n_block)
@@ -156,7 +158,7 @@ class FrameEncoder(nn.Module):
                     out_channels * 2,
                     out_channels * 2,
                 ]
-                for i in range(4):
+                for i in range(4-self.decoder_depth):
                     if i in [1, 3]:
                         d_conv.extend(
                             [ResBlock(inplanes=conv_channels[4 - i], disable_bn=disable_bn) for _ in range(n_block)]
@@ -170,11 +172,8 @@ class FrameEncoder(nn.Module):
                             stride=2,
                             padding=1,
                         )
-                    )
-                self.d_conv = nn.Sequential(*d_conv)
-            elif self.decoder_type == 2:
-                d_conv = [ResBlock(inplanes=out_channels*2, disable_bn=disable_bn) for _ in range(2 * n_block)]
-                self.d_conv = nn.Sequential(*d_conv)        
+                    )            
+                self.d_conv = nn.Sequential(*d_conv)   
         else:
             n_block = 2 * size_nn
             hidden_size = 512 // downscale_c
@@ -195,7 +194,7 @@ class FrameEncoder(nn.Module):
             if self.concat_z:
                 raise NotImplementedError()
             
-            if self.decoder_type in [1, 2]:
+            if self.decoder:
                 self.d_res = nn.Sequential(*[OneDResBlock(hidden_size) for _ in range(n_block)])
                 self.output_block = nn.Linear(hidden_size, input_shape[0])            
 
@@ -212,7 +211,7 @@ class FrameEncoder(nn.Module):
             #state[f"per_{self.prefix}_dbg_action"] = torch.zeros(batch_size, self.actions_ch, device=device)
         return state
     
-    def forward_pre_mem(self, x, actions=None, z=None, flatten=False):
+    def forward_pre_mem(self, x, actions=None, z=None, flatten=False, depth=0):
         """
         Args:
           x (tensor): frame with shape B, C, H, W or B, C
@@ -233,7 +232,7 @@ class FrameEncoder(nn.Module):
 
         if flatten:            
             x = x.view((x.shape[0] * x.shape[1],) + x.shape[2:])
-        if self.concat_action:
+        if self.concat_action and depth <= 0:
             if flatten:
                 actions = actions.view(
                     (actions.shape[0] * actions.shape[1],) + actions.shape[2:]
@@ -245,17 +244,22 @@ class FrameEncoder(nn.Module):
             x = torch.concat([x, actions], dim=1)
 
         if not self.oned_input:
-            x = F.relu(self.conv1(x))
-            x = self.res1(x)
-            x = F.relu(self.conv2(x))
-            x = self.res2(x)
-            x = self.avg1(x)
-            x = self.res3(x)
-            x = self.avg2(x)
+            if depth <= 0:
+                x = F.relu(self.conv1(x))
+                x = self.res1(x)
+            if depth <= 1:
+                x = F.relu(self.conv2(x))
+                x = self.res2(x)
+            if depth <= 2:
+                x = self.avg1(x)
+                x = self.res3(x)
+            if depth <= 3:
+                x = self.avg2(x)
             if self.concat_z and z is not None:
                 x = torch.concat([x, z.detach()], dim=1)
                 x = self.res4(x)
         else:
+            assert depth == 0
             x = self.input_block(x)
             x = self.res(x)
 
@@ -263,9 +267,9 @@ class FrameEncoder(nn.Module):
             x = x.view(input_shape[:2] + x.shape[1:])
         return x
 
-    def forward(self, x, done, actions, z=None, state={}, flatten=False):        
+    def forward(self, x, done, actions, z=None, state={}, flatten=False, depth=0):        
         new_state = {}
-        x = self.forward_pre_mem(x=x, actions=actions, z=z, flatten=flatten)        
+        x = self.forward_pre_mem(x=x, actions=actions, z=z, flatten=flatten, depth=depth)        
         if self.has_memory:
             if not self.oned_input:
                 raise NotImplementedError()
@@ -290,9 +294,10 @@ class FrameEncoder(nn.Module):
             z = z.view((z.shape[0] * z.shape[1],) + z.shape[2:])
         if not self.oned_input:
             x = self.d_conv(z)
-            if self.decoder_type == 1:
-                if x.shape[2] > self.input_shape[1]: x = x[:, :, :self.input_shape[1]]
-                if x.shape[3] > self.input_shape[2]: x = x[:, :, :, :self.input_shape[2]]
+            decoded_h = self.input_shape[1] // (2 ** self.decoder_depth)
+            decoded_w = self.input_shape[2] // (2 ** self.decoder_depth)
+            if x.shape[2] > decoded_h: x = x[:, :, :decoded_h]
+            if x.shape[3] > decoded_w: x = x[:, :, :, :decoded_w]
         else:
             x = self.d_res(z)
             x = self.output_block(x)
@@ -549,8 +554,8 @@ class SRNet(nn.Module):
         self.noise_enable = flags.noise_enable
         self.has_memory = flags.model_has_memory
 
-        self.dual_pred_f = flags.dual_pred_f
-        if not self.dual_pred_f:
+        self.decoder_depth = flags.model_decoder_depth
+        if self.decoder_depth == 0:
             self.frame_stack_n = frame_stack_n        
         else:
             self.frame_stack_n = 1
@@ -564,7 +569,8 @@ class SRNet(nn.Module):
             input_shape=obs_shape,
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
-            decoder_type=2 if flags.dual_pred_f else 1,
+            decoder=True,
+            decoder_depth=flags.model_decoder_depth,
             concat_z=flags.sr_see_vp,
             frame_stack_n=self.frame_stack_n,
             has_memory=self.has_memory,
@@ -862,7 +868,7 @@ class VPNet(nn.Module):
         self.predict_rd = (
            not flags.dual_net and self.use_rnn
         )  # network also predicts reward and done if not dual net under non-perfect dynamic   
-        self.dual_pred_f = flags.dual_pred_f
+        self.decoder_depth = flags.model_decoder_depth
 
         self.encoder = FrameEncoder(
             prefix="vr",
@@ -870,7 +876,8 @@ class VPNet(nn.Module):
             input_shape=obs_shape,
             size_nn=self.size_nn,
             downscale_c=self.downscale_c,
-            decoder_type=0,
+            decoder=False,
+            decoder_depth=0,
             has_memory=self.has_memory,
         )
         self.hidden_shape = self.encoder.out_shape
@@ -968,17 +975,19 @@ class VPNet(nn.Module):
         else:
             done = torch.concat([done.unsqueeze(0), torch.zeros(k, b, dtype=torch.bool, device=xs.device)], dim=0)
         
+        enc_in = env_state_norm.unsqueeze(0).detach()
         if not self.dual_net:
-            enc_in = env_state_norm.unsqueeze(0)
-        elif not self.dual_pred_f:
+            zs, enc_state = self.encoder(enc_in, done, actions[:1], state, flatten=True)
+        elif self.decoder_depth == 0:
             if xs is not None:
-                enc_in = torch.concat([env_state_norm.unsqueeze(0), xs], dim=0)
-            else:
-                enc_in = env_state_norm.unsqueeze(0)
+                enc_in = torch.concat([enc_in, xs.detach()], dim=0)         
+            zs, enc_state = self.encoder(enc_in, done, actions, state, flatten=True)
         else:
-            enc_in = env_state_norm.unsqueeze(0)
-
-        zs, enc_state = self.encoder(enc_in.detach(), done, actions[:enc_in.shape[0]], state, flatten=True)
+            zs, enc_state = self.encoder(enc_in, done, actions[:1], state, flatten=True)
+            if xs is not None:
+                zt, enc_state = self.encoder(xs.detach(), done, actions[1:], enc_state, flatten=True, depth=self.decoder_depth)
+                zs = torch.concat([zs, zt], dim=0)
+        
         new_state.update(enc_state)
 
         if self.use_rnn:
@@ -992,10 +1001,8 @@ class VPNet(nn.Module):
             for t in range(1, k + 1):
                 if not self.dual_net:
                     rnn_in = h
-                elif not self.dual_pred_f:
-                    rnn_in = torch.concat([h, zs[t]], dim=1)
                 else:
-                    rnn_in = torch.concat([h, xs[t-1]], dim=1)
+                    rnn_in = torch.concat([h, zs[t]], dim=1)
                 h = self.RNN(h=rnn_in, actions=actions[t])
                 hs.append(h.unsqueeze(0))
             hs = torch.concat(hs, dim=0)
@@ -1039,10 +1046,7 @@ class VPNet(nn.Module):
         new_state = {}
         action = util.encode_action(action, self.action_space, one_hot)          
         if self.dual_net:
-            if not self.dual_pred_f:
-                z, enc_state = self.encoder(x, None, action, state, flatten=False)
-            else:
-                z, enc_state = x, state
+            z, enc_state = self.encoder(x, None, action, state, flatten=False, depth=self.decoder_depth)
             new_state.update(enc_state)
             rnn_in = torch.concat([state["vp_h"], z], dim=1)
         else:
