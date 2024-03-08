@@ -177,10 +177,12 @@ def PreWrapper(env, name, flags):
     grayscale = flags.grayscale
     discrete_k = flags.discrete_k 
     repeat_action_n = flags.repeat_action_n
+    rand_action_eps = flags.rand_action_eps
     atari = flags.atari
     
     if discrete_k > 0: env = DiscretizeActionWrapper(env, K=discrete_k)
-    if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)        
+    if repeat_action_n > 0: env = RepeatActionWrapper(env, repeat_action_n=repeat_action_n)      
+    if rand_action_eps > 0.: env = RandomZeroActionWrapper(env, eps=rand_action_eps)
     if "NoFrameskip" in name and not atari: 
         raise Exception(f"{name} is likely an Atari game but flags.Atari is False")
     if atari: 
@@ -650,6 +652,22 @@ class ScaledFloatFrame(gym.ObservationWrapper):
         # Normalize only if the original observation space was uint8
         if self.is_uint8: observation = observation / 255.0
         return observation
+    
+class RandomZeroActionWrapper(gym.ActionWrapper):
+    def __init__(self, env, eps=0.05):
+        super().__init__(env)
+        self.eps = eps
+
+    def action(self, action):
+        # Check if we should randomize the action
+        if np.random.rand() < self.eps:
+            if isinstance(self.action_space, gym.spaces.Discrete):
+                return 0  # For discrete action space, action 0
+            elif isinstance(self.action_space, gym.spaces.Box):
+                return np.zeros(self.action_space.shape)  # For continuous action space, vector of zeros
+            else:
+                raise NotImplementedError("Unsupported action space for randomization")
+        return action  
 
 class RepeatActionWrapper(gym.Wrapper):
     def __init__(self, env, repeat_action_n):
