@@ -72,15 +72,21 @@ class SModelLearner:
             lambda epoch: 1
             - min(epoch, self.flags.total_steps) / self.flags.total_steps
         )
+
+        opt = getattr(flags, "model_optimizer", "adam")
+        if opt == "adam":
+            Optimizer = torch.optim.Adam
+        elif opt == "sgd":
+            Optimizer = torch.optim.SGD
+
         if self.flags.dual_net:
-            self.optimizer_m = torch.optim.Adam(
+            self.optimizer_m = Optimizer(
                 self.model_net.sr_net.parameters(), lr=flags.model_learning_rate
             )
             self.scheduler_m = torch.optim.lr_scheduler.LambdaLR(
                 self.optimizer_m, lr_lambda
             )
             self.scaler_m = GradScaler(init_scale=2**3) if self.flags.float16 else None
-
         
         # Check if we need to adjust the learning rate for the encoder
         if flags.vp_enc_lr_mul != 1:
@@ -95,11 +101,11 @@ class SModelLearner:
                 {'params': encoder_params, 'lr': flags.model_learning_rate * flags.vp_enc_lr_mul},
                 {'params': base_params, 'lr': flags.model_learning_rate}
             ]
-            self.optimizer_p = torch.optim.Adam(param_groups)
+            self.optimizer_p = Optimizer(param_groups)
         else:
             # If vp_enc_lr_mul is 1, use a single group for all parameters
             param_groups = self.model_net.vp_net.parameters()
-            self.optimizer_p = torch.optim.Adam(param_groups, lr=flags.model_learning_rate)
+            self.optimizer_p = Optimizer(param_groups, lr=flags.model_learning_rate)
 
         self.scheduler_p = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer_p, lr_lambda
