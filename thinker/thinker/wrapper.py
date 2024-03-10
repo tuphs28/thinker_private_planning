@@ -41,11 +41,10 @@ class DummyWrapper(gym.Wrapper):
             done = torch.zeros(self.env_n, dtype=torch.bool, device=self.device)
             with torch.no_grad():
                 model_net_out = model_net(
-                    x=obs_py, 
+                    env_state_norm=obs_py, 
                     done=done,
                     actions=pri_action.unsqueeze(0), 
-                    state=self.per_state,
-                    one_hot=False)       
+                    state=self.per_state,)       
             self.per_state = model_net_out.state
             self.baseline = model_net_out.vs[-1]
         states = {"real_states": obs_py}       
@@ -80,11 +79,10 @@ class DummyWrapper(gym.Wrapper):
             if not self.tuple_action: pri_action = pri_action.unsqueeze(-1)          
             with torch.no_grad():
                 model_net_out = model_net(
-                    x=obs_py, 
+                    env_state_norm=obs_py, 
                     done=done,
                     actions=pri_action.unsqueeze(0), 
-                    state=self.per_state,
-                    one_hot=False)       
+                    state=self.per_state,)       
                 self.per_state = model_net_out.state
                 self.baseline = model_net_out.vs[-1]
         
