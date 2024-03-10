@@ -202,8 +202,11 @@ class FrameEncoder(nn.Module):
     def forward_pre_mem(self, x, actions=None, flatten=False, depth=0, end_depth=None):
         """
         Args:
-          x (tensor): frame with shape B, C, H, W or B, C
+          x (tensor): frame with shape T, B, * or B, *
           action (tensor): action with shape B, dim_rep_actions (encoded action)
+          flatten (bool): whether the input is in shape (T, B, *) or (B, *); the return shape will be in same form as input shape
+          depth (int): starting depth - 0 means foward pass from first layer
+          end_depth (int): depth from top to return - 0 means foward pass till last layer
         """
         assert x.dtype in [torch.float, torch.float16]
         if self.concat_action: assert actions.dtype in [torch.float, torch.float16]
