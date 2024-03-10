@@ -589,6 +589,7 @@ class SModelLearner:
         if self.perfect_model:            
             out = self.model_net.vp_net.forward(
                 env_state_norm=env_state_norm[:k].view((k * b,) + env_state_norm.shape[2:]),
+                x0=None,
                 xs=None,
                 done=train_model_out.done[:k].view(1, k * b,),
                 actions=train_model_out.action[:k].view(1, k * b, -1),
@@ -600,6 +601,7 @@ class SModelLearner:
         else:
             out = self.model_net.vp_net.forward(
                 env_state_norm=env_state_norm,
+                x0=None,
                 xs=pred_xs, 
                 done=train_model_out.done[0],
                 actions=train_model_out.action[: k + 1],  # a_-1, ..., a_k-1                

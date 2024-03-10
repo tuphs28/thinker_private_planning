@@ -7,7 +7,7 @@ import torch
 from thinker.actor_net import ActorNet
 from thinker.main import Env
 import thinker.util as util
-from thinker.self_play import init_env_out, create_env_out
+from thinker.util import init_env_out, create_env_out
 
 class DetectBuffer:
     def __init__(self, outdir, t, rec_t, logger, delay_n=5):
