@@ -118,7 +118,8 @@ class Env(gym.Wrapper):
 
         if isinstance(self.pri_action_space, gym.spaces.Box):
             assert len(env.action_space.shape) == 1, f"Invalid action space {env.action_space}"
-        
+
+        self._logger.info(f"Init. environment with obs space \033[91m{env.observation_space}\033[0m and action space \033[91m{env.action_space}\033[0m")        
         self.sample = self.flags.sample_n > 0
         self.sample_n = self.flags.sample_n
 
