@@ -212,9 +212,9 @@ class Env(gym.Wrapper):
                         env.return_rms.count = data['return_count']
 
         if self.flags.obs_clip > 0:
-            env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -self.flags.obs_clip, self.flags.obs_clip))
+            env = wrapper.TransformObservation(env, lambda obs: np.clip(obs, -self.flags.obs_clip, self.flags.obs_clip))
         if self.flags.reward_clip > 0:
-            env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -self.flags.reward_clip, self.flags.reward_clip))
+            env = wrapper.TransformReward(env, lambda reward: np.clip(reward, -self.flags.reward_clip, self.flags.reward_clip))
 
         env.seed([i for i in range(
             self.rank * env_n + self.flags.base_seed, 

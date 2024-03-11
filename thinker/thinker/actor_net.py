@@ -315,7 +315,7 @@ class ActorBaseNet(nn.Module):
                 self.register_buffer("norm_high", high)
             self.real_states_shape = obs_space["real_states"].shape[1:]     
 
-        if getattr(flags, "impact_k", 1) > 1:
+        if getattr(flags, "ppo_k", 1) > 1:
             kl_beta = torch.tensor(1.)
             self.register_buffer("kl_beta", kl_beta)
 
@@ -930,7 +930,7 @@ class DRCNet(ActorBaseNet):
         self.policy = nn.Linear(256, self.num_actions * self.dim_actions)
         self.baseline = nn.Linear(256, 1)
 
-        if getattr(flags, "impact_k", 1) > 1:
+        if getattr(flags, "ppo_k", 1) > 1:
             kl_beta = torch.tensor(1.)
             self.register_buffer("kl_beta", kl_beta)
 

@@ -988,6 +988,28 @@ class RecordEpisodeStatistics(gym.Wrapper):
             self.episode_return[i] = state[n]["episode_return"]
             self.episode_step[i] = state[n]["episode_step"]
 
+class TransformReward(gym.Wrapper):
+    r"""Transform the reward via an arbitrary function."""
+    def __init__(self, env, f):
+        super().__init__(env)
+        assert callable(f)
+        self.f = f
+    
+    def step(self, action, **kwargs):
+        observation, reward, done, info = self.env.step(action, **kwargs)
+        return observation, self.f(reward), done, info
+
+class TransformObservation(gym.Wrapper):
+    r"""Transform the reward via an arbitrary function."""
+    def __init__(self, env, f):
+        super().__init__(env)
+        assert callable(f)
+        self.f = f
+    
+    def step(self, action, **kwargs):
+        observation, reward, done, info = self.env.step(action, **kwargs)
+        return self.f(observation), reward, done, info
+
 # wrapper for DM control
     
 def convert_dm_control_to_gym_space(dm_control_space):    
