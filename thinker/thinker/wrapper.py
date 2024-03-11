@@ -1071,6 +1071,7 @@ class DMSuiteEnv(gym.Env):
         else:        
             observation = self._flatten_observation(timestep.observation)
         reward = timestep.reward
+        if reward is None: reward = 0.
         done = timestep.last()
         info = {'truncated_done': done}
         return observation, reward, done, info
@@ -1122,3 +1123,23 @@ class DMSuiteEnv(gym.Env):
             self.viewer.close()
             self.viewer = None
         return self.env.close() 
+    
+    def clone_state(self):
+        """Clones the current state of the environment."""
+        # Clone the remaining state as before.
+        physics_state = self.env.physics.get_state().copy()
+        task_state = {
+             '_random': self.env.task._random.get_state(),
+             '_step_count': self.env._step_count,
+        }
+        return {'physics_state': physics_state, 'task_state': task_state}
+
+    def restore_state(self, state):
+        """Restores the environment's state from the provided dictionary."""
+        self.env.reset()  # Reset the environment to a default state before restoring
+        physics_state = state['physics_state']
+        task_state = state['task_state']
+        
+        self.env.physics.set_state(physics_state)
+        # self.env.task._random.set_state(task_state['_random'])
+        self.env._step_count = task_state['_step_count']    

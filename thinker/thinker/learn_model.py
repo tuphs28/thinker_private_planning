@@ -579,10 +579,10 @@ class SModelLearner:
             past_action = util.encode_action(past_action, self.model_net.action_space, one_hot=False)
             _, per_state = self.model_net.vp_net.encoder(past_env_state_norm, past_done, past_action, initial_per_state, flatten=True)
         else:
-            per_state = initial_per_state
+            per_state = initial_per_state        
         
-        env_state_norm = self.model_net.normalize(train_model_out.real_state[0])
         if self.perfect_model:            
+            env_state_norm = self.model_net.normalize(train_model_out.real_state)
             out = self.model_net.vp_net.forward(
                 env_state_norm=env_state_norm[:k].view((k * b,) + env_state_norm.shape[2:]),
                 x0=None,
@@ -595,6 +595,7 @@ class SModelLearner:
             v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
             policy = out.policy.view((k, b) + out.policy.shape[2:])
         else:
+            env_state_norm = self.model_net.normalize(train_model_out.real_state[0])
             out = self.model_net.vp_net.forward(
                 env_state_norm=env_state_norm,
                 x0=None,

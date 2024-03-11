@@ -151,7 +151,7 @@ class SimWrapper(gym.Wrapper):
             model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, per_state)            
             self.last_max_rollout_depth = torch.zeros(self.env_n, dtype=torch.long, device=self.device)
             self.k = 0
-            return self.prepare_state(model_net_out, real_state)
+            return self.prepare_state(model_net_out, real_state, model_net)
         
     def real_step_model(self, real_state, pri_action, real_reward, done, model_net, per_state):
         if torch.any(done):
@@ -277,7 +277,8 @@ class SimWrapper(gym.Wrapper):
                             action=pri_action
                             )  
                     im_r = model_net_out.rs[-1] 
-                    im_done = model_net_out.dones[-1]           
+                    im_done = model_net_out.dones[-1]        
+                    im_env_state = None   
                 else:
                     im_x, im_r, im_done, _ = self.env.step(
                         pri_action.detach().cpu().numpy()
@@ -348,7 +349,7 @@ class SimWrapper(gym.Wrapper):
                     if self.query_cur == 2:
                         self.root_query_results, self.root_query_rep = self.make_query(self.root_key, self.root_v)
 
-                state = self.prepare_state(model_net_out, None)
+                state = self.prepare_state(model_net_out, im_env_state, model_net)
                 # reset processing
                 reset_bool = reset_action.bool()
                 if torch.any(reset_bool):
@@ -420,7 +421,7 @@ class SimWrapper(gym.Wrapper):
                 initial_per_state = self.root_per_state
                 if not self.tuple_action: pri_action = pri_action.unsqueeze(-1)        
                 model_net_out = self.real_step_model(real_state, pri_action, real_reward, done, model_net, initial_per_state)
-                state = self.prepare_state(model_net_out, real_state)
+                state = self.prepare_state(model_net_out, real_state, model_net)
 
             last_step_real = self.k == 0
             next_step_real = self.k >= self.rec_t - 1
@@ -446,7 +447,7 @@ class SimWrapper(gym.Wrapper):
             v = torch.flatten(v, start_dim=1)
         return v.float()
         
-    def prepare_state(self, model_net_out, real_state):
+    def prepare_state(self, model_net_out, real_state, model_net):
         self.one_hot_k = torch.zeros(self.env_n, self.rec_t, device=self.device)
         self.one_hot_k[:, self.k] = 1
         root_stat = ["root_td", "root_action", "root_r", "root_v", "root_policy"]
@@ -497,7 +498,10 @@ class SimWrapper(gym.Wrapper):
             "real_states": real_state,
         }
         if self.return_x:
-            state["xs"] = model_net_out.xs[-1]
+            if not self.perfect_model:
+                state["xs"] = model_net_out.xs[-1]
+            else:
+                state["xs"] = model_net.normalize(real_state)
         if self.return_h:
             state["hs"] = model_net_out.hs[-1]
         return state
