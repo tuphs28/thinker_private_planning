@@ -199,13 +199,14 @@ def PreWrapper(env, name, flags):
             grayscale=grayscale,
             frame_wh=96,
         )
-    
-        env = TransposeWrap(env)
     if env.observation_space.dtype == np.float64:
         env = ScaledFloatFrame(env)
     if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) == 3:
+        #old_env_obs_space = env.observation_space.shape        
         # 3d input, need transpose
-        env = TransposeWrap(env)        
+        env = TransposeWrap(env)      
+        #new_env_obs_space = env.observation_space.shape  
+        #print(f"Added transpose wrapper for {old_env_obs_space} => {new_env_obs_space}")
     return env
 
 def create_env_fn(name, flags):
