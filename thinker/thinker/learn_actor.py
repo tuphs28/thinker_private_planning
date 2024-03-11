@@ -256,8 +256,15 @@ class SActorLearner:
                 tar_param.data.mul_(self.flags.impact_update_lambda).add_(new_param.data, alpha=1 - self.flags.impact_update_lambda)
 
     def consume_data(self, data, timing=None):
-        if not self.impact_enable: return self.consume_data_single(data, timing)
+
         train_actor_out, initial_actor_state = data
+        T, B, *_ = train_actor_out.episode_return.shape
+        self.step += T * B
+        last_step_real = (train_actor_out.step_status == 0) | (train_actor_out.step_status == 3)
+        self.real_step += torch.sum(last_step_real).item()
+        self.tot_eps += torch.sum(train_actor_out.real_done).item()
+
+        if not self.impact_enable: return self.consume_data_single(data, timing)        
         TrainActorOut= type(train_actor_out)
 
         if self.impact_buffer is None:            
@@ -745,9 +752,6 @@ class SActorLearner:
             )
             stats["max_rollout_depth"] = max_rollout_depth
 
-        self.step += T * B
-        self.real_step += torch.sum(last_step_real).item()
-        self.tot_eps += torch.sum(train_actor_out.real_done).item()
         mean_abs_v = torch.mean(torch.abs(train_actor_out.baseline)).item()
 
         stats.update({
