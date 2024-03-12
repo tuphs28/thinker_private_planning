@@ -64,7 +64,7 @@ class SLogWorker:
         self.real_step = -1
         self.last_real_step_v = -1
         self.last_real_step_c = -1
-        self.vis_policy = self.flags.policy_vis_freq > 0 and not (self.flags.wrapper_type == 0 and not flags.dual_net)
+        self.vis_policy = self.flags.policy_vis_freq > 0 and not (self.flags.wrapper_type == 0 and not flags.dual_net) and flags.model_decoder_depth == 0
         self.device = torch.device("cpu")
         self._logger = util.logger()
         self._logger.info("Initalizing log worker")
