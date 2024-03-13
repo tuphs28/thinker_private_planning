@@ -829,10 +829,10 @@ class NormalizeObservation(gym.core.Wrapper):
     def clone_state(self, idx=None):
         state = self.env.clone_state(idx)
         if idx is None: idx = range(self.num_envs)
-        for i in idx:
-            state[i]["obs_mean"] = self.obs_rms.mean
-            state[i]["obs_var"] = self.obs_rms.var
-            state[i]["obs_count"] = self.obs_rms.count
+        for n, i in enumerate(idx):
+            state[n]["obs_mean"] = self.obs_rms.mean
+            state[n]["obs_var"] = self.obs_rms.var
+            state[n]["obs_count"] = self.obs_rms.count
         return state
     
     def restore_state(self, state, idx=None):
@@ -875,10 +875,11 @@ class NormalizeReward(gym.core.Wrapper):
     def clone_state(self, idx=None):
         state = self.env.clone_state(idx)
         if idx is None: idx = range(self.num_envs)
-        for i in idx:
-            state[i]["return_mean"] = self.return_rms.mean
-            state[i]["return_var"] = self.return_rms.var
-            state[i]["return_count"] = self.return_rms.count
+        for n, i in enumerate(idx):
+            state[n]["return_mean"] = self.return_rms.mean
+            state[n]["return_var"] = self.return_rms.var
+            state[n]["return_count"] = self.return_rms.count
+            state[n]["return_cur"] = self.returns[i]
         return state
     
     def restore_state(self, state, idx=None):
@@ -887,6 +888,8 @@ class NormalizeReward(gym.core.Wrapper):
         self.return_rms.mean = state[0]["return_mean"]
         self.return_rms.var = state[0]["return_var"]
         self.return_rms.count = state[0]["return_count"]
+        for n, i in enumerate(idx):
+            self.returns[i] = state[n]["return_count"]
     
 class InfoConcat(gym.Wrapper):
     def __init__(self, env):
