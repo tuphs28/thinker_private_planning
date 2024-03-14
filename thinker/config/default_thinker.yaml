@@ -43,6 +43,7 @@ model_disable_bn: true # whether to disable batch norm in model
 model_zero_init: true # whether to zero initialize the model's predicted rewards and values
 model_has_memory: false # whether to enable memory in model
 model_ordinal: false # whether to use ordinal representation in model's policy
+sr_confuse: false # add a random red-eyed green character in the predicted image
 # wrapper for env
 grayscale: false # whether to apply grayscale for atari
 atari: false # whether to use atari wrapper

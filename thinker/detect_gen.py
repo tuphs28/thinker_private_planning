@@ -9,8 +9,7 @@ from thinker.actor_net import ActorNet
 from thinker.main import Env
 import thinker.util as util
 from thinker.util import init_env_out, create_env_out
-from PIL import Image
-import torchvision.transforms as transforms
+
 
 class DetectBuffer:
     def __init__(self, outdir, t, rec_t, logger, delay_n=5):
@@ -277,13 +276,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
         done = torch.zeros(env_n, dtype=torch.bool, device=device)
         print_n = 0        
 
-        if confuse:    
-            image_path = '../data/player_confuse.bmp'
-            confuse_image = Image.open(image_path)
-            transform = transforms.Compose([
-                transforms.ToTensor(),  # Converts to Tensor, scales to [0, 1] range
-            ])
-            confuse_image = transform(confuse_image).to(device)
+        if confuse: confuse_add = util.ConfuseAdd(device)
                 
         while(True):
             state, reward, done, info = env.step(
@@ -371,14 +364,8 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
                         state=model_net_out.state,
                         action=action,
                     )
-                    xs = model_net_out.xs
-                    
-                    if confuse:
-                        loc = torch.randint(low=0, high=9, size=(env_n, 2)) * 8
-                        for i in range(env_n):
-                            xs[0, i, :, loc[i, 0]:loc[i, 0]+8, loc[i, 1]:loc[i, 1]+8] = confuse_image
-
-
+                    xs = model_net_out.xs                    
+                    if confuse: xs = confuse_add.add(xs)
                     new_state = {"real_states": (torch.clamp(xs,0,1)*255).to(torch.uint8)[0]}
                     new_env_out = create_env_out(action, new_state, reward, done, info, flags=flags)
                     xs = {

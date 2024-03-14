@@ -579,7 +579,9 @@ class SModelLearner:
             past_action = util.encode_action(past_action, self.model_net.action_space, one_hot=False)
             _, per_state = self.model_net.vp_net.encoder(past_env_state_norm, past_done, past_action, initial_per_state, flatten=True)
         else:
-            per_state = initial_per_state        
+            per_state = initial_per_state      
+
+        if self.model_net.sr_net.confuse: pred_xs = self.model_net.sr_net.confuse_add.add(pred_xs)
         
         if self.perfect_model:            
             env_state_norm = self.model_net.normalize(train_model_out.real_state)

@@ -772,9 +772,7 @@ class SActorLearner:
         self.norm_stats = train_checkpoint["norm_stats"]
         self.crnorm = train_checkpoint["crnorm"]
 
-        optimizer_state_dict = .load_state_dict(
-            train_checkpoint["actor_net_optimizer_state_dict"]
-        )
+        optimizer_state_dict = train_checkpoint["actor_net_optimizer_state_dict"]
         # to not replacing lr
         current_lrs = [group['lr'] for group in self.optimizer.param_groups]
         for i, group in enumerate(optimizer_state_dict['param_groups']):

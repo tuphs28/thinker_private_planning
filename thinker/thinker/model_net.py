@@ -651,6 +651,9 @@ class SRNet(nn.Module):
                     norm=False
                 )
 
+        self.confuse = flags.sr_confuse
+        if self.confuse: self.confuse_add = util.ConfuseAdd()
+
     def initial_state(self, batch_size=1, device=None):
         return self.encoder.initial_state(batch_size=batch_size, device=device)
 
@@ -721,6 +724,8 @@ class SRNet(nn.Module):
             out = self.out(hs[t], predict_reward=True)
             outs.append(out)
 
+        if self.confuse and not torch.is_grad_enabled(): xs = self.confuse_add.add(xs)
+
         return SRNetOut(
             rs=util.safe_concat(outs, "rs", 0),
             r_enc_logits=util.safe_concat(outs, "r_enc_logits", 0),
@@ -760,13 +765,16 @@ class SRNet(nn.Module):
         new_state["sr_h"] = h
         if self.frame_stack_n > 1:
             new_state["last_x"] = x[:, self.copy_n:]    
+        
+        xs = util.safe_unsqueeze(x, 0)
+        if self.confuse and not torch.is_grad_enabled(): xs = self.confuse_add.add(xs)
 
         return SRNetOut(
             rs=util.safe_unsqueeze(out.rs, 0),
             r_enc_logits=util.safe_unsqueeze(out.r_enc_logits, 0),
             dones=util.safe_unsqueeze(out.dones, 0),
             done_logits=util.safe_unsqueeze(out.done_logits, 0),
-            xs=util.safe_unsqueeze(x, 0),
+            xs=xs,
             hs=util.safe_unsqueeze(h, 0),
             state=new_state,
             noise_loss=None,

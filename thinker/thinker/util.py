@@ -802,3 +802,30 @@ def update_mean_var_count_from_moments(
     new_count = tot_count
 
     return new_mean, new_var, new_count
+
+class ConfuseAdd:
+    def __init__(self, device=None):
+        from PIL import Image
+        import torchvision.transforms as transforms
+        if device is None: device = torch.device("cpu")
+        image_path = '../data/player_confuse.bmp'
+        confuse_image = Image.open(image_path)
+        transform = transforms.Compose([
+            transforms.ToTensor(),  # Converts to Tensor, scales to [0, 1] range
+        ])
+        self.confuse_image = transform(confuse_image).to(device)
+
+    def add(self, xs):
+        input_shape = xs.shape
+        if xs.device != self.confuse_image.device:
+            self.confuse_image = self.confuse_image.to(xs.device)
+        if len(input_shape) == 5:
+            xs = torch.flatten(xs, 0, 1)
+        B = xs.shape[0]
+        loc = torch.randint(low=0, high=9, size=(B, 2)) * 8
+        xs = xs.clone()
+        for i in range(B):
+            xs[i, :, loc[i, 0]:loc[i, 0]+8, loc[i, 1]:loc[i, 1]+8] = self.confuse_image
+        if len(input_shape) == 5:
+            xs = xs.view(input_shape)
+        return xs
