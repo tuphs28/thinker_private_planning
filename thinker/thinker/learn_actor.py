@@ -416,6 +416,8 @@ class SActorLearner:
                     print_str += " kl_loss %.4f" % losses["kl_loss"]
                     print_str += " is_abs %.4f" % np.mean(self.ppo_is_abs)
 
+                print_str += " last_lr: %.4e"  % self.optimizer.param_groups[0]['lr']
+
                 # dbg_adv = torch.concat(list(self.dbg_adv))
                 # print_str += " dbg_adv mean %.4f std %.4f abs %.4f" % (torch.mean(dbg_adv), torch.std(dbg_adv), torch.mean(torch.abs(dbg_adv)))
 
@@ -779,10 +781,11 @@ class SActorLearner:
             if i < len(current_lrs):
                 group['lr'] = current_lrs[i]
         self.optimizer.load_state_dict(optimizer_state_dict)
-        
-        self.scheduler.load_state_dict(
-            train_checkpoint["actor_net_scheduler_state_dict"]
-        )
+
+        scheduler_state_dict = train_checkpoint["actor_net_scheduler_state_dict"]
+        if 'base_lrs' in scheduler_state_dict:
+            del scheduler_state_dict['base_lrs']
+        self.scheduler.load_state_dict(scheduler_state_dict)
         self.actor_net.set_weights(train_checkpoint["actor_net_state_dict"])
         self._logger.info("Loaded actor checkpoint from %s" % ckp_path)
 
