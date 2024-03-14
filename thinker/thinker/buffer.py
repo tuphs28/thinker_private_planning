@@ -514,7 +514,12 @@ class SelfPlayBuffer:
 
         self.step, self.real_step, self.tot_eps = 0, 0, 0        
         self.ckp_path = os.path.join(flags.ckpdir, "ckp_self_play.tar")
-        if flags.ckp: self.load_checkpoint(self.ckp_path)
+        if flags.ckp: 
+            if not os.path.exists(self.ckp_path):
+                self.ckp_path = os.path.join(flags.ckpdir, "ckp_actor.tar")
+            if not os.path.exists(self.ckp_path):
+                raise Exception(f"Cannot find checkpoint in {flags.ckpdir}/ckp_self_play.tar or {flags.ckpdir}/ckp_actor.tar")
+            self.load_checkpoint(self.ckp_path)
 
         self.timer = timeit.default_timer
         self.start_time = self.timer()
