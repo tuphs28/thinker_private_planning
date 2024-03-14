@@ -724,7 +724,8 @@ class SRNet(nn.Module):
             out = self.out(hs[t], predict_reward=True)
             outs.append(out)
 
-        if self.confuse and not torch.is_grad_enabled(): xs = self.confuse_add.add(xs)
+        if self.confuse and not torch.is_grad_enabled() and xs is not None: 
+            xs = self.confuse_add.add(xs)
 
         return SRNetOut(
             rs=util.safe_concat(outs, "rs", 0),
@@ -767,7 +768,8 @@ class SRNet(nn.Module):
             new_state["last_x"] = x[:, self.copy_n:]    
         
         xs = util.safe_unsqueeze(x, 0)
-        if self.confuse and not torch.is_grad_enabled(): xs = self.confuse_add.add(xs)
+        if self.confuse and not torch.is_grad_enabled(): 
+            xs = self.confuse_add.add(xs)
 
         return SRNetOut(
             rs=util.safe_unsqueeze(out.rs, 0),
