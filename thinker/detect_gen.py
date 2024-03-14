@@ -3,11 +3,14 @@ import os
 import argparse
 import yaml
 import numpy as np
+from collections import deque
 import torch
 from thinker.actor_net import ActorNet
 from thinker.main import Env
 import thinker.util as util
 from thinker.util import init_env_out, create_env_out
+from PIL import Image
+import torchvision.transforms as transforms
 
 class DetectBuffer:
     def __init__(self, outdir, t, rec_t, logger, delay_n=5):
@@ -149,7 +152,7 @@ class DetectBuffer:
         return target_ys
 
 
-def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid):
+def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outdir, xpid):
 
     _logger = util.logger()
     _logger.info(f"Initializing {xpid} from {savedir}")
@@ -267,9 +270,21 @@ def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid)
                                         dtype=primary_action.dtype, 
                                         device=device
                                         )
+        last_im_actions_buffer = deque([], maxlen=delay_n)
+        accs = [[] for _ in range(delay_n)]
+
         last_dones = torch.zeros(env_n, delay_n, dtype=torch.bool, device=device)
         done = torch.zeros(env_n, dtype=torch.bool, device=device)
-        
+        print_n = 0        
+
+        if confuse:    
+            image_path = '../data/player_confuse.bmp'
+            confuse_image = Image.open(image_path)
+            transform = transforms.Compose([
+                transforms.ToTensor(),  # Converts to Tensor, scales to [0, 1] range
+            ])
+            confuse_image = transform(confuse_image).to(device)
+                
         while(True):
             state, reward, done, info = env.step(
                 primary_action=primary_action, 
@@ -289,6 +304,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid)
                 last_real_actions = torch.cat([last_real_actions[..., 1:], primary_action.unsqueeze(-1)], dim=-1)
                 last_dones = torch.cat([last_dones[..., 1:], done.unsqueeze(-1)], dim=-1)
             
+            last_actor_state = actor_state
             actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
             if not disable_thinker:
                 primary_action, reset_action = actor_out.action
@@ -299,6 +315,11 @@ def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid)
                   "last_real_actions": last_real_actions,
                   "last_dones": last_dones,
                   }
+            if im_rollout and len(last_im_actions_buffer) == delay_n:
+                for t in range(delay_n):
+                    acc = torch.all(last_real_actions[:, :t+1] == last_im_actions_buffer[0][:, :t+1], dim=-1)
+                    acc = torch.mean(acc.float()).item()
+                    accs[t].append(acc)
             
             # write to detect buffer
             if not disable_thinker:
@@ -329,33 +350,39 @@ def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid)
                 # generate imaginary rollout or most visited rollout (mcts)
                 action = env_out.last_pri
                 model_net_out = env.model_net(
-                    x=env_out.real_states[0],
+                    env_state=env_out.real_states[0],
                     done=env_out.done[0],
                     actions=action,
                     state=None,
-                    one_hot=False,
-                    ret_xs=True
                 )
                 new_env_out = env_out
-                im_actor_state = actor_state
+                im_actor_state = last_actor_state
                 if mcts:
                     most_visited_actions = torch.tensor(env.most_visited_path(delay_n), dtype=torch.long, device=device)
+                last_im_actions = []
                 for m in range(delay_n):
                     if not mcts:
                         actor_out, im_actor_state = actor_net(env_out=new_env_out, core_state=im_actor_state, greedy=greedy)   
                         action = actor_out.action
                     else:
                         action = most_visited_actions[m]
+                    last_im_actions.append(action)
                     model_net_out = env.model_net.forward_single(
                         state=model_net_out.state,
                         action=action,
-                        one_hot=False,
-                        ret_xs=True,
                     )
-                    new_state = {"real_states": (torch.clamp(model_net_out.xs,0,1)*255).to(torch.uint8)[0]}
+                    xs = model_net_out.xs
+                    
+                    if confuse:
+                        loc = torch.randint(low=0, high=9, size=(env_n, 2)) * 8
+                        for i in range(env_n):
+                            xs[0, i, :, loc[i, 0]:loc[i, 0]+8, loc[i, 1]:loc[i, 1]+8] = confuse_image
+
+
+                    new_state = {"real_states": (torch.clamp(xs,0,1)*255).to(torch.uint8)[0]}
                     new_env_out = create_env_out(action, new_state, reward, done, info, flags=flags)
                     xs = {
-                        "env_state": model_net_out.xs[0].half(),
+                        "env_state": xs[0].half(),
                         "pri_action": action,            
                         "cost": torch.zeros_like(info["cost"]),
                     }
@@ -367,16 +394,23 @@ def detect_gen(total_n, env_n, delay_n, greedy, no_reset, savedir, outdir, xpid)
                         torch.zeros_like(done), 
                         1 if m < delay_n - 1 else 2
                     )
+                last_im_actions = torch.stack(last_im_actions, dim=-1)
+                last_im_actions_buffer.append(last_im_actions)
             
             if file_idx >= file_n: 
                 # last file is for validation
                 os.rename(f'{outdir}/data_{file_idx}.pt', f'{outdir}/val.pt')
                 os.rename(f'{outdir}/data_{file_idx-1}.pt', f'{outdir}/test.pt')
-                break
-
-            if last_file_idx is not None and file_idx != last_file_idx:
-                print(f"Episode {len(rets)}; Return  {np.mean(np.array(rets))}")
-
+                break   
+            if print_n % 10 == 0 and len(rets) > 0:
+                print_str = f"{print_n} - Episode {len(rets)}; Return {np.mean(np.array(rets)):.2f}"
+                if len(accs) > 0: 
+                    print_str += f" im-rollout acc "
+                    for t in range(delay_n):
+                        print_str += f"{np.mean(np.array(accs[t])):.2f} "
+                print(print_str)
+            
+            print_n += 1
             last_file_idx = file_idx
         
         env.close()
@@ -393,6 +427,7 @@ if __name__ == "__main__":
     parser.add_argument("--delay_n", default=5, type=int, help="Delay step in predicting danger.")
     parser.add_argument("--greedy", action="store_true", help="Use greedy policy.")
     parser.add_argument("--no_reset", action="store_true", help="Force no resetting.")
+    parser.add_argument("--confuse", action="store_true", help="Add confuse image.")
 
     flags = parser.parse_args()    
     project = flags.project if flags.project else __project__
@@ -404,7 +439,8 @@ if __name__ == "__main__":
         total_n=flags.total_n,
         env_n=flags.env_n,
         delay_n=flags.delay_n,
-        greedy=flags.greedy,
+        greedy=flags.greedy,        
+        confuse=flags.confuse,
         no_reset=flags.no_reset,
         savedir=flags.savedir,
         outdir=flags.outdir,
