@@ -889,7 +889,7 @@ class NormalizeReward(gym.core.Wrapper):
         self.return_rms.var = state[0]["return_var"]
         self.return_rms.count = state[0]["return_count"]
         for n, i in enumerate(idx):
-            self.returns[i] = state[n]["return_count"]
+            self.returns[i] = state[n]["return_cur"]
     
 class InfoConcat(gym.Wrapper):
     def __init__(self, env):
