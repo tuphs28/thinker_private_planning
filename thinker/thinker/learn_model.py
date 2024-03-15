@@ -143,8 +143,7 @@ class SModelLearner:
             self.tar_model_net = self.model_net
 
         if flags.vp_update_freq > 1:
-            if "frame_stack_n" in model_param: model_param.pop("frame_stack_n")
-            self.tar_vp_net = VPNet(**model_param)
+            self.tar_vp_net = VPNet(model_param["obs_space"].shape, model_param["action_space"], flags)
             self.tar_vp_net.to(self.device)
             self.tar_vp_net.train(False)
             util.copy_net(self.tar_vp_net, self.model_net.vp_net)
