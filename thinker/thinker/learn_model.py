@@ -901,18 +901,10 @@ class SModelLearner:
         self.step = train_checkpoint["step"]
         self.real_step = train_checkpoint["real_step"]
         if self.flags.dual_net:
-            self.optimizer_m.load_state_dict(
-                train_checkpoint["model_net_optimizer_m_state_dict"]
-            )
-            self.scheduler_m.load_state_dict(
-                train_checkpoint["model_net_scheduler_m_state_dict"]
-            )
-        self.optimizer_p.load_state_dict(
-            train_checkpoint["model_net_optimizer_p_state_dict"]
-        )
-        self.scheduler_p.load_state_dict(
-            train_checkpoint["model_net_scheduler_p_state_dict"]
-        )
+            util.load_optimizer(self.optimizer_m, train_checkpoint["model_net_optimizer_m_state_dict"])
+            util.load_scheduler(self.scheduler_m, train_checkpoint["model_net_scheduler_m_state_dict"])
+        util.load_optimizer(self.optimizer_p, train_checkpoint["model_net_optimizer_p_state_dict"])
+        util.load_scheduler(self.scheduler_p, train_checkpoint["model_net_scheduler_p_state_dict"])
         self.model_net.set_weights(train_checkpoint["model_net_state_dict"])
         self._logger.info("Loaded model checkpoint from %s" % ckp_path)
 

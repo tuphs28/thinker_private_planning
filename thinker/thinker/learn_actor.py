@@ -773,19 +773,8 @@ class SActorLearner:
         self.ret_buffers = train_checkpoint["ret_buffers"]
         self.norm_stats = train_checkpoint["norm_stats"]
         self.crnorm = train_checkpoint["crnorm"]
-
-        optimizer_state_dict = train_checkpoint["actor_net_optimizer_state_dict"]
-        # to not replacing lr
-        current_lrs = [group['lr'] for group in self.optimizer.param_groups]
-        for i, group in enumerate(optimizer_state_dict['param_groups']):
-            if i < len(current_lrs):
-                group['lr'] = current_lrs[i]
-        self.optimizer.load_state_dict(optimizer_state_dict)
-
-        scheduler_state_dict = train_checkpoint["actor_net_scheduler_state_dict"]
-        if 'base_lrs' in scheduler_state_dict:
-            del scheduler_state_dict['base_lrs']
-        self.scheduler.load_state_dict(scheduler_state_dict)
+        util.load_optimizer(self.optimizer, train_checkpoint["actor_net_optimizer_state_dict"])
+        util.load_scheduler(self.scheduler, train_checkpoint["actor_net_scheduler_state_dict"])
         self.actor_net.set_weights(train_checkpoint["actor_net_state_dict"])
         self._logger.info("Loaded actor checkpoint from %s" % ckp_path)
 

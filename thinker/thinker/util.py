@@ -440,7 +440,20 @@ def copy_net(tar_net, net):
             tar_module.running_mean = new_module.running_mean.clone()
             tar_module.running_var = new_module.running_var.clone()
         for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
-            tar_param.data = new_param.data.clone()        
+            tar_param.data = new_param.data.clone()
+
+def load_optimizer(optimizer, optimizer_state_dict):
+    # to not replacing lr
+    current_lrs = [group['lr'] for group in optimizer.param_groups]
+    for i, group in enumerate(optimizer_state_dict['param_groups']):
+        if i < len(current_lrs):
+            group['lr'] = current_lrs[i]
+    optimizer.load_state_dict(optimizer_state_dict)
+
+def load_scheduler(scheduler, scheduler_state_dict):
+    if 'base_lrs' in scheduler_state_dict:
+        del scheduler_state_dict['base_lrs']
+    scheduler.load_state_dict(scheduler_state_dict)
 
 def logger():
     formatter = logging.Formatter("%(message)s")
