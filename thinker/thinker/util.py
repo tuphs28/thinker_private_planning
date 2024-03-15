@@ -433,6 +433,15 @@ def optimizer_to(optim, device):
                     if subparam._grad is not None:
                         subparam._grad.data = subparam._grad.data.to(device)
 
+def copy_net(tar_net, net):
+    for tar_module, new_module in zip(tar_net.modules(), net.modules()):
+        if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
+            # Copy BatchNorm running mean and variance
+            tar_module.running_mean = new_module.running_mean.clone()
+            tar_module.running_var = new_module.running_var.clone()
+        for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
+            tar_param.data = new_param.data.clone()        
+
 def logger():
     formatter = logging.Formatter("%(message)s")
     logger = logging.getLogger("logs/out")
@@ -829,3 +838,4 @@ class ConfuseAdd:
         if len(input_shape) == 5:
             xs = xs.view(input_shape)
         return xs
+    

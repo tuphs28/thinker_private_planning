@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.cuda.amp import GradScaler, autocast
 from thinker.core.file_writer import FileWriter
 from thinker.core.module import guassian_kl_div
-from thinker.model_net import ModelNet
+from thinker.model_net import ModelNet, VPNet
 import thinker.util as util
 import gc
 
@@ -138,9 +138,18 @@ class SModelLearner:
             self.tar_model_net = ModelNet(**model_param)
             self.tar_model_net.to(self.device)
             self.tar_model_net.train(False)
-            self.update_target()
+            util.copy_net(self.tar_model_net, self.model_net)
         else:
-            self.tar_model_net = self.model_net 
+            self.tar_model_net = self.model_net
+
+        if flags.vp_update_freq > 1:
+            if "frame_stack_n" in model_param: model_param.pop("frame_stack_n")
+            self.tar_vp_net = VPNet(**model_param)
+            self.tar_vp_net.to(self.device)
+            self.tar_vp_net.train(False)
+            util.copy_net(self.tar_vp_net, self.model_net.vp_net)
+        else:
+            self.tar_vp_net = self.model_net.vp_net
         
         self.timing = util.Timings() if self.time else None
         self.perfect_model = util.check_perfect_model(flags.wrapper_type)
@@ -334,8 +343,10 @@ class SModelLearner:
             total_norm_m = self.gradient_step(
                 losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m, self.scaler_m
             )
+            if self.n % self.flags.vp_update_freq == 0 and self.flags.vp_update_freq > 1:
+                util.copy_net(self.tar_vp_net, self.model_net.vp_net)
             if self.timing is not None:
-                self.timing.time("gradient_step_m")
+                self.timing.time("gradient_step_m")            
         else:
             losses_m = {}
             total_norm_m = torch.zeros(1, device=self.device)
@@ -516,10 +527,10 @@ class SModelLearner:
             img_loss = None
         if self.flags.model_fea_loss_cost > 0.:
             with torch.no_grad():                
-                target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
+                target_enc = self.tar_vp_net.encoder.forward_pre_mem(
                     target_xs, action, flatten=True, depth=self.flags.model_decoder_depth
                 )
-            pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True, depth=self.flags.model_decoder_depth)
+            pred_enc = self.tar_vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True, depth=self.flags.model_decoder_depth)
             diff = target_enc - pred_enc
             fea_loss = self.compute_state_loss(diff, target, is_weights)
         else:
@@ -772,8 +783,8 @@ class SModelLearner:
             self.reanalyze_step += 1
             if self.reanalyze_step % self.flags.reanalyze_actor_update_freq == 0:
                 self.refresh_actor()
-            if self.reanalyze_step % self.flags.reanalyze_model_update_freq == 0:
-                self.update_target()
+            if self.reanalyze_step % self.flags.reanalyze_model_update_freq == 0 and self.flags.reanalyze_model_update_freq > 1:
+                util.copy_net(self.tar_model_net, self.model_net)
             unroll_len = self.flags.model_unroll_len + self.flags.model_return_n
             self.reanalyze_env.set_reanalyze_data(
                 train_model_out.action if self.model_net.tuple_action else train_model_out.action[:, :, 0],
@@ -905,17 +916,6 @@ class SModelLearner:
         )
         self.model_net.set_weights(train_checkpoint["model_net_state_dict"])
         self._logger.info("Loaded model checkpoint from %s" % ckp_path)
-
-    def update_target(self):
-        if self.flags.reanalyze_model_update_freq <= 1: return
-        for tar_module, new_module in zip(self.tar_model_net.modules(), self.model_net.modules()):
-            if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
-                # Copy BatchNorm running mean and variance
-                tar_module.running_mean = new_module.running_mean.clone()
-                tar_module.running_var = new_module.running_var.clone()
-            # Apply EMA to other parameters
-            for tar_param, new_param in zip(tar_module.parameters(), new_module.parameters()):
-                tar_param.data = new_param.data.clone()        
 
     def close(self):
         self.plogger.close()
