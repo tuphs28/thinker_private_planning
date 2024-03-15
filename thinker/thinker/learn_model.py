@@ -591,7 +591,7 @@ class SModelLearner:
         else:
             per_state = initial_per_state      
 
-        if self.model_net.sr_net.confuse: pred_xs = self.model_net.sr_net.confuse_add.add(pred_xs)
+        if self.flags.sr_confuse: pred_xs = self.model_net.sr_net.confuse_add.add(pred_xs)
         
         if self.perfect_model:            
             env_state_norm = self.model_net.normalize(train_model_out.real_state)
