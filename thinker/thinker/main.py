@@ -283,7 +283,7 @@ class Env(gym.Wrapper):
             else:
                 if self.flags.preload:
                     path = os.path.join(self.flags.preload, "ckp_model.tar")
-                    shutil.copyfile(path, os.path.join(self.ckpdir, "ckp_model.tar"))
+                    shutil.copyfile(path, os.path.join(self.flags.ckpdir, "ckp_model.tar"))
             if path is not None:                
                 checkpoint = torch.load(
                     path, map_location=torch.device("cpu")
