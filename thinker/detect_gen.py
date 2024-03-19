@@ -204,6 +204,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
 
     state = env.reset()
     env_out = init_env_out(state, flags=flags, dim_actions=actor_net.dim_actions, tuple_action=actor_net.tuple_action)  
+    last_real_state = env_out.real_states[-1]
     actor_state = actor_net.initial_state(batch_size=env_n, device=device)
 
     file_idx = 0
@@ -250,6 +251,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
             "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
             "hidden_state_shape": list(hidden_state_shape) if disable_thinker else None,
             "rec_t": flags.rec_t,
+            "model_decoder_depth": getattr(flags, "model_decoder_depth", 0),
             "delay_n": delay_n,
             "ckpdir": ckpdir,
             "xpid": xpid,        
@@ -296,6 +298,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
             if last_step_real or im_rollout:
                 last_real_actions = torch.cat([last_real_actions[..., 1:], primary_action.unsqueeze(-1)], dim=-1)
                 last_dones = torch.cat([last_dones[..., 1:], done.unsqueeze(-1)], dim=-1)
+                last_real_state = env_out.real_states[-1]
             
             last_actor_state = actor_state
             actor_out, actor_state = actor_net(env_out=env_out, core_state=actor_state, greedy=greedy)            
@@ -327,6 +330,9 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
                 "pri_action": primary_action,            
                 "cost": info["cost"],
             }
+            if not disable_thinker and flags.model_decoder_depth > 0:
+                xs["real_state"] = last_real_state # abstract model; need to separate store the first real state
+
             if not disable_thinker:
                 if not mcts: xs.update({"tree_rep": state["tree_reps"]})
                 xs.update({"reset_action": actor_out.action[1]})
