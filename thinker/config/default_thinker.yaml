@@ -34,7 +34,6 @@ model_noise_loss_cost: 0.0 # cost for model noise loss
 # model setting
 dual_net: true # whether to use dual network
 model_decoder_depth: 0 # decoder level; can be from 0 to 4; 0 mean predicing raw image, 4 mean predicting vp_net feature directly
-vp_update_freq: 1 # refresh frequence of vp-net in computing feature loss; <=1 for no frozen
 model_enc_type: 0 # reward / value encoding type for the model; 0 for no encoding, 1 for scalar encoding, 2 for unbiased vector encoding, 3 for biased vector encoding
 model_enc_f_type: 0 # scalar encoding function for reward / value encoding; 0 for MuZero-like encoding, 1 for Dreamer-like encoding
 model_size_nn: 1 # model size mulitplier (integer)

@@ -141,14 +141,6 @@ class SModelLearner:
             util.copy_net(self.tar_model_net, self.model_net)
         else:
             self.tar_model_net = self.model_net
-
-        if flags.vp_update_freq > 1:
-            self.tar_vp_net = VPNet(model_param["obs_space"].shape, model_param["action_space"], flags)
-            self.tar_vp_net.to(self.device)
-            self.tar_vp_net.train(False)
-            util.copy_net(self.tar_vp_net, self.model_net.vp_net)
-        else:
-            self.tar_vp_net = self.model_net.vp_net
         
         self.timing = util.Timings() if self.time else None
         self.perfect_model = util.check_perfect_model(flags.wrapper_type)
@@ -342,8 +334,6 @@ class SModelLearner:
             total_norm_m = self.gradient_step(
                 losses_m["total_loss_m"], self.optimizer_m, self.scheduler_m, self.scaler_m
             )
-            if self.n % self.flags.vp_update_freq == 0 and self.flags.vp_update_freq > 1:
-                util.copy_net(self.tar_vp_net, self.model_net.vp_net)
             if self.timing is not None:
                 self.timing.time("gradient_step_m")            
         else:
@@ -526,10 +516,10 @@ class SModelLearner:
             img_loss = None
         if self.flags.model_fea_loss_cost > 0.:
             with torch.no_grad():                
-                target_enc = self.tar_vp_net.encoder.forward_pre_mem(
+                target_enc = self.model_net.vp_net.encoder.forward_pre_mem(
                     target_xs, action, flatten=True, depth=self.flags.model_decoder_depth
                 )
-            pred_enc = self.tar_vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True, depth=self.flags.model_decoder_depth)
+            pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True, depth=self.flags.model_decoder_depth)
             diff = target_enc - pred_enc
             fea_loss = self.compute_state_loss(diff, target, is_weights)
         else:
