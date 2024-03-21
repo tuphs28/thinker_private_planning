@@ -412,7 +412,7 @@ def detect_train(flags):
     project = flags.project
     flags.datadir = os.path.abspath(os.path.expanduser(flags.datadir))
     tdir = os.path.abspath(os.path.expanduser(flags.outdir))
-    if not os.path.exists(tdir): os.mkdir(tdir)
+    if not os.path.exists(tdir): os.makedirs(tdir, exist_ok=True)
 
     if not flags.ckp:        
         # create ckp dir
@@ -583,5 +583,7 @@ if __name__ == "__main__":
     flags = parser.parse_args()    
     flags.datadir = flags.datadir.replace("__dproject__", flags.dproject)
     flags.datadir = flags.datadir.replace("__dxpid__", flags.dxpid)
+    flags.outdir = flags.outdir.replace("__dproject__", flags.dproject)
+    flags.outdir = flags.outdir.replace("__dxpid__", flags.dxpid)
 
     detect_train(flags)
