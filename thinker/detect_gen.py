@@ -224,7 +224,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
 
     rec_t=flags.rec_t if not im_rollout and not mcts else delay_n + 1
     detect_buffer = DetectBuffer(outdir=outdir, t=12800//env_n, rec_t=rec_t, logger=_logger, delay_n=delay_n)
-    file_n = total_n // (env_n * detect_buffer.t) + 1
+    file_n = total_n // (env_n * detect_buffer.t) + 3
     _logger.info(f"Data output directory: {outdir}")
     _logger.info(f"Number of file to be generated: {file_n}")
 
@@ -411,7 +411,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Thinker data generalization")
-    parser.add_argument("--outdir", default="../data/__project__", help="Output directory.")
+    parser.add_argument("--outdir", default="../data/transition", help="Output directory.")
     parser.add_argument("--savedir", default="../logs/__project__", help="Checkpoint directory.")
     parser.add_argument("--xpid", default="latest", help="id of the run.")    
     parser.add_argument("--project", default="", help="project of the run.")  

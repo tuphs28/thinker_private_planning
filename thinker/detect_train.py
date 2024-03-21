@@ -411,8 +411,7 @@ def load_ckp(path, optimizer, detect_net):
 def detect_train(flags):
     project = flags.project
     flags.datadir = os.path.abspath(os.path.expanduser(flags.datadir))
-    tdir = os.path.join(flags.datadir, "net")
-
+    tdir = os.path.abspath(os.path.expanduser(flags.outdir))
     if not os.path.exists(tdir): os.mkdir(tdir)
 
     if not flags.ckp:        
@@ -557,7 +556,8 @@ if __name__ == "__main__":
     # data setting
     parser.add_argument("--dxpid", default="", help="Data file name")
     parser.add_argument("--dproject", default="detect", help="Data project name.")
-    parser.add_argument("--datadir", default="../data/__dproject__/__dxpid__/", help="Data directory.")    
+    parser.add_argument("--datadir", default="../data/transition/__dxpid__/", help="Data directory.")    
+    parser.add_argument("--outdir", default="../data/detect_log/__dxpid__/", help="Data directory.")    
     parser.add_argument("--txpid", default="test", help="training xpid of the run.")  
     parser.add_argument("--project", default="detect_post", help="Project of the run.")
     parser.add_argument("--chunk_n", default=1, type=int, help="Number of chunks; 1 for no chunking.")

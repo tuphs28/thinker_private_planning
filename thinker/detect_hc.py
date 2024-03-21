@@ -135,7 +135,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=f"Thinker handcraft detection")
     parser.add_argument("--dxpid", default="", help="Data file name")
     parser.add_argument("--dproject", default="detect", help="Data project name.")
-    parser.add_argument("--datadir", default="../data/__dproject__/__dxpid__/", help="Data directory.") 
+    parser.add_argument("--datadir", default="../data/transition/__dxpid__/", help="Data directory.") 
     parser.add_argument("--imgdir", default="../data/", help="Data directory.") 
     parser.add_argument("--rank", default=0, type=int, help="Top number of rollout used in searching; 0 for only using the top; 1 for using the top 2, etc.")
     parser.add_argument("--legacy", action="store_true", help="Whether legacy tree rep is used.")
