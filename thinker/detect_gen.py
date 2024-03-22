@@ -151,7 +151,7 @@ class DetectBuffer:
         return target_ys
 
 
-def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outdir, xpid):
+def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outdir, xpid, n=0):
 
     _logger = util.logger()
     _logger.info(f"Initializing {xpid} from {savedir}")
@@ -210,8 +210,6 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
     file_idx = 0
 
     # create dir
-
-    n = 0
     while True:
         name = "%s-%d" % (xpid, n)
         outdir_ = os.path.join(outdir, name)
@@ -421,6 +419,7 @@ if __name__ == "__main__":
     parser.add_argument("--greedy", action="store_true", help="Use greedy policy.")
     parser.add_argument("--no_reset", action="store_true", help="Force no resetting.")
     parser.add_argument("--confuse", action="store_true", help="Add confuse image.")
+    parser.add_argument("--n", default=0, type=int, help="the id following project.")
 
     flags = parser.parse_args()    
     project = flags.project if flags.project else __project__
@@ -438,4 +437,5 @@ if __name__ == "__main__":
         savedir=flags.savedir,
         outdir=flags.outdir,
         xpid=flags.xpid,
+        n=flags.n,
     )
