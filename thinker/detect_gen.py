@@ -177,6 +177,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, skip_im, save
             ckp=True,
             return_x=True,
             return_h=True,
+            rand_action_eps=0,
         )
 
     disable_thinker = flags.wrapper_type == 1   
@@ -237,8 +238,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, skip_im, save
             primary_action, reset_action = actor_out.action, None
 
         # save setting
-        real_state_shape = env.observation_space["real_states"].shape[1:]
-        env_state_shape = env.observation_space["xs"].shape[1:]
+        env_state_shape = env.observation_space["real_states"].shape[1:]
         #if rescale: env_state_shape = (3, 40, 40)
         tree_rep_shape = env.observation_space["tree_reps"].shape[1:] if not disable_thinker else None
         hidden_state_shape = actor_net.hidden_state.shape[1:] if disable_thinker else None
@@ -248,7 +248,6 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, skip_im, save
             "num_actions": actor_net.num_actions,
             "tuple_actions": actor_net.tuple_action,
             "name": flags.name,
-            "real_state_shape": list(real_state_shape),
             "env_state_shape": list(env_state_shape),
             "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
             "hidden_state_shape": list(hidden_state_shape) if disable_thinker else None,
