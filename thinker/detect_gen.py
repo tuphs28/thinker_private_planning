@@ -151,7 +151,7 @@ class DetectBuffer:
         return target_ys
 
 
-def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outdir, xpid, n=0):
+def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, skip_im, savedir, outdir, xpid, suffix="", n=0):
 
     _logger = util.logger()
     _logger.info(f"Initializing {xpid} from {savedir}")
@@ -180,7 +180,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
         )
 
     disable_thinker = flags.wrapper_type == 1   
-    im_rollout = disable_thinker and env.has_model
+    im_rollout = disable_thinker and env.has_model and not skip_im
     mcts = getattr(flags, "mcts", False)
 
     obs_space = env.observation_space
@@ -210,8 +210,9 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
     file_idx = 0
 
     # create dir
+    if suffix: suffix = "-" + suffix
     while True:
-        name = "%s-%d" % (xpid, n)
+        name = "%s%s-%d" % (xpid, suffix, n)
         outdir_ = os.path.join(outdir, name)
         if not os.path.exists(outdir_):
             os.makedirs(outdir_)
@@ -221,6 +222,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
     outdir = outdir_
 
     rec_t=flags.rec_t if not im_rollout and not mcts else delay_n + 1
+    if skip_im: rec_t = 1
     detect_buffer = DetectBuffer(outdir=outdir, t=12800//env_n, rec_t=rec_t, logger=_logger, delay_n=delay_n)
     file_n = total_n // (env_n * detect_buffer.t) + 3
     _logger.info(f"Data output directory: {outdir}")
@@ -235,7 +237,8 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
             primary_action, reset_action = actor_out.action, None
 
         # save setting
-        env_state_shape = env.observation_space["real_states"].shape[1:]
+        real_state_shape = env.observation_space["real_states"].shape[1:]
+        env_state_shape = env.observation_space["xs"].shape[1:]
         #if rescale: env_state_shape = (3, 40, 40)
         tree_rep_shape = env.observation_space["tree_reps"].shape[1:] if not disable_thinker else None
         hidden_state_shape = actor_net.hidden_state.shape[1:] if disable_thinker else None
@@ -245,6 +248,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
             "num_actions": actor_net.num_actions,
             "tuple_actions": actor_net.tuple_action,
             "name": flags.name,
+            "real_state_shape": list(real_state_shape),
             "env_state_shape": list(env_state_shape),
             "tree_rep_shape": list(tree_rep_shape) if not disable_thinker else None,
             "hidden_state_shape": list(hidden_state_shape) if disable_thinker else None,
@@ -340,7 +344,8 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
                         "hidden_state": actor_net.hidden_state
                     })                          
 
-            if not (mcts and step_status != 0): # no recording for non-real mcts
+            if not (mcts and step_status != 0) and not (skip_im and not last_step_real): # no recording for non-real mcts
+                if skip_im: step_status = 3
                 file_idx = detect_buffer.insert(xs, ys, done, step_status)
 
             if im_rollout or (mcts and next_step_real):
@@ -393,7 +398,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, savedir, outd
                 os.rename(f'{outdir}/data_{file_idx}.pt', f'{outdir}/val.pt')
                 os.rename(f'{outdir}/data_{file_idx-1}.pt', f'{outdir}/test.pt')
                 break   
-            if print_n % 10 == 0 and len(rets) > 0:
+            if print_n % 100 == 0 and len(rets) > 0:
                 print_str = f"{print_n} - Episode {len(rets)}; Return {np.mean(np.array(rets)):.2f}"
                 if len(accs) > 0: 
                     print_str += f" im-rollout acc "
@@ -419,7 +424,9 @@ if __name__ == "__main__":
     parser.add_argument("--greedy", action="store_true", help="Use greedy policy.")
     parser.add_argument("--no_reset", action="store_true", help="Force no resetting.")
     parser.add_argument("--confuse", action="store_true", help="Add confuse image.")
-    parser.add_argument("--n", default=0, type=int, help="the id following project.")
+    parser.add_argument("--skip_im",  action="store_true", help="Skip im state.")
+    parser.add_argument("--suffix", default="", help="Suffix of the data id.")
+    parser.add_argument("--n", default=0, type=int, help="Numer of the data id.")
 
     flags = parser.parse_args()    
     project = flags.project if flags.project else __project__
@@ -434,8 +441,10 @@ if __name__ == "__main__":
         greedy=flags.greedy,        
         confuse=flags.confuse,
         no_reset=flags.no_reset,
+        skip_im=flags.skip_im,
         savedir=flags.savedir,
         outdir=flags.outdir,
         xpid=flags.xpid,
+        suffix=flags.suffix, 
         n=flags.n,
     )

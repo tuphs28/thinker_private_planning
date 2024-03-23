@@ -142,6 +142,7 @@ class DetectFrameEncoder(nn.Module):
         input_shape,     
         out_size=128,
         downscale=True,
+        decoder_depth=0,
     ):  
         super(DetectFrameEncoder, self).__init__()
         self.out_size = out_size
@@ -153,6 +154,8 @@ class DetectFrameEncoder(nn.Module):
                                     downscale_c=2,    
                                     downscale=downscale,
                                     concat_action=False)
+        self.decoder_depth = decoder_depth
+
         if not self.oned_input:
             self.conv = []
             in_ch =  self.encoder.out_shape[0]
@@ -172,7 +175,7 @@ class DetectFrameEncoder(nn.Module):
 
     def forward(self, x):
         # x in shape of (B, C, H, W)
-        out, _ = self.encoder(x, done=None, actions=None, state={})
+        out = self.encoder.forward_pre_mem(x, actions=None, depth=self.decoder_depth)
         if not self.oned_input:
             out = self.conv(out)
             out = torch.flatten(out, start_dim=1)
@@ -192,6 +195,7 @@ class DetectNet(BaseNet):
         tran_layer_n=3,
         tran_ff_n=512,
         shallow_encode=False,
+        decoder_depth=0,
         disable_thinker=False,
     ):    
         super(DetectNet, self).__init__()
@@ -233,12 +237,12 @@ class DetectNet(BaseNet):
         
         self.pos_encoder = PositionalEncoding(self.embed_size)
         FrameEncoder = ShallowAFrameEncoder if shallow_encode else DetectFrameEncoder
-        self.true_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
+        self.true_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size, decoder_depth=decoder_depth)
         
         if self.see_hidden_state:
             self.h_encoder = FrameEncoder(input_shape=hidden_state_shape[1:], out_size=self.enc_out_size, downscale=False)   
         else:
-            self.pred_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size)
+            self.pred_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size, decoder_depth=decoder_depth)
         
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.embed_size, 
@@ -469,6 +473,7 @@ def detect_train(flags):
         tran_layer_n = flags.tran_layer_n,
         tran_ff_n = flags.tran_ff_n,
         shallow_encode= flags.shallow_encode,
+        decoder_depth= flags.model_decoder_depth,
     )
 
     # load optimizer
