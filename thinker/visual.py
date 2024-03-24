@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 import textwrap
 from thinker.main import Env
-from thinker.self_play import init_env_out, create_env_out
+from thinker.util import init_env_out, create_env_out
 from thinker.actor_net import ActorNet
 import thinker.util as util
 import gym
@@ -351,7 +351,7 @@ def visualize(
         savedir=savedir,        
         xpid=xpid,
         ckp=True,
-        return_x=True
+        return_x=True,
         )
     
     render = "Safexp" in flags.name
@@ -449,7 +449,7 @@ def visualize(
         im_dict["cur_reset"].append(actor_out.reset[:,0])
         
         tree_reps_ = env.decode_tree_reps(env_out.tree_reps)
-        model_logits.append(tree_reps_["cur_logits"])       
+        model_logits.append(tree_reps_["cur_policy"])       
 
         state, reward, done, info = env.step(action[0], action[1])
         last_real_step = (info["step_status"] == 0) | (info["step_status"] == 3)
@@ -488,13 +488,13 @@ def visualize(
             env.restore_state(root_env_state, [0])   
             im_done = False   
 
-        if ~last_real_step and (
-            tree_reps["cur_reset"] == 1 or next_real_step
-        ):
-            title = "pred v: %.2f" % (tree_reps["cur_v"].item())
-            title += " pred g: %.2f" % (tree_reps["rollout_return"].item())
-            end_gym_env_outs.append(img)
-            end_titles.append(title)
+       # if ~last_real_step and (
+       #     tree_reps["cur_reset"] == 1 or next_real_step
+       # ):
+        title = "pred v: %.2f" % (tree_reps["cur_v"].item())
+        title += " pred g: %.2f" % (tree_reps["rollout_return"].item())
+        end_gym_env_outs.append(img)
+        end_titles.append(title)
 
         # record data for generating video
         if last_real_step:
@@ -546,7 +546,7 @@ def visualize(
                     max_q_s_a=tree_reps_["root_qs_max"][0],
                     ax=axs[3],
                 )
-            model_policy_logits = tree_reps_["root_logits"][0].view(actor_net.dim_actions, actor_net.num_actions)
+            model_policy_logits = tree_reps_["root_policy"][0].view(actor_net.dim_actions, actor_net.num_actions)
             agent_policy_logits = actor_out.pri_param[0, 0]
             action = torch.nn.functional.one_hot(
                 actor_out.pri[0, 0], env.num_actions

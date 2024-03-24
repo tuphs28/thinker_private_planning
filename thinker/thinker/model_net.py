@@ -717,7 +717,7 @@ class SRNet(nn.Module):
         else:
             xs = None            
             if self.frame_stack_n > 1:
-                new_state["last_x"] = env_state_norm[:, self.copy_n:]     
+                new_state["last_x"] = env_state_norm[:, self.copy_n:].clone()
 
         outs = []
         for t in range(1, k + 1):
@@ -765,7 +765,7 @@ class SRNet(nn.Module):
         out = self.out(h, predict_reward=True)
         new_state["sr_h"] = h
         if self.frame_stack_n > 1:
-            new_state["last_x"] = x[:, self.copy_n:]    
+            new_state["last_x"] = x[:, self.copy_n:].clone()
         
         xs = util.safe_unsqueeze(x, 0)
         if self.confuse and not torch.is_grad_enabled(): 
