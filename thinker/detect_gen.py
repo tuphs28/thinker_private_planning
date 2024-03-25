@@ -331,7 +331,7 @@ def detect_gen(total_n, env_n, delay_n, greedy, confuse, no_reset, skip_im, save
                 "pri_action": primary_action,            
                 "cost": info["cost"],
             }
-            if not disable_thinker and flags.model_decoder_depth > 0:
+            if not disable_thinker and getattr(flags, "model_decoder_depth", 0) > 0:
                 xs["real_state"] = last_real_state # abstract model; need to separate store the first real state
 
             if not disable_thinker:

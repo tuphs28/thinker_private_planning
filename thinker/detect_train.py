@@ -191,12 +191,9 @@ class DetectNet(BaseNet):
         dim_actions,
         num_actions,
         tuple_actions,
-        clone=False,
-        tran_layer_n=3,
-        tran_ff_n=512,
-        shallow_encode=False,
-        decoder_depth=0,
-        disable_thinker=False,
+        decoder_depth,
+        delay_n,
+        flags,
     ):    
         super(DetectNet, self).__init__()
         
@@ -212,18 +209,18 @@ class DetectNet(BaseNet):
                 self.hidden_state_need_expand = True
             else:
                 self.hidden_state_need_expand = False
-        
+
         self.dim_actions = dim_actions
         self.num_actions = num_actions
         self.tuple_actions = tuple_actions
+        self.delay_n = delay_n
         if not self.tuple_actions:
             self.action_space = gym.spaces.Discrete(num_actions)
         else:
             self.action_space = gym.spaces.Tuple((gym.spaces.Discrete(num_actions),)*self.dim_actions)
         self.dim_rep_actions = self.dim_actions if self.dim_actions > 1 else self.num_actions
 
-        self.clone = clone
-        self.disable_thinker = disable_thinker
+        self.disable_thinker = flags.disable_thinker
 
         self.enc_out_size = 128  
         self.embed_size = self.enc_out_size + self.dim_rep_actions
@@ -236,7 +233,7 @@ class DetectNet(BaseNet):
         self.embed_size += reminder
         
         self.pos_encoder = PositionalEncoding(self.embed_size)
-        FrameEncoder = ShallowAFrameEncoder if shallow_encode else DetectFrameEncoder
+        FrameEncoder = ShallowAFrameEncoder if flags.shallow_encode else DetectFrameEncoder
         self.true_x_encoder = FrameEncoder(input_shape=env_state_shape, out_size=self.enc_out_size, decoder_depth=decoder_depth)
         
         if self.see_hidden_state:
@@ -247,10 +244,16 @@ class DetectNet(BaseNet):
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.embed_size, 
                                                    nhead=tran_nhead, 
-                                                   dim_feedforward=tran_ff_n,
+                                                   dim_feedforward=flags.tran_ff_n,
                                                    batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, tran_layer_n)
-        self.classifier = nn.Linear(self.embed_size, 1)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, flags.tran_layer_n)
+        self.decoder_depth = decoder_depth
+
+        self.pred_action = flags.pred_action
+        if not flags.pred_action:
+            self.classifier = nn.Linear(self.embed_size, 1)
+        else:
+            self.classifier = nn.Linear(self.embed_size, delay_n * num_actions)
 
         self.beta = nn.Parameter(torch.tensor(0.5), requires_grad=False) # portion of negative class
 
@@ -300,8 +303,13 @@ class DetectNet(BaseNet):
         embed = torch.concat(embed, dim=2) # (B, rec_t, embed_size)
         embed_pos = self.pos_encoder(embed)
         out = self.transformer_encoder(embed_pos)
-        logit = self.classifier(out[:, -1, :]).view(B)
-        return logit, torch.sigmoid(logit)
+        if not self.pred_action:
+            logit = self.classifier(out[:, -1, :]).view(B)
+            p = torch.sigmoid(logit)
+        else:
+            logit = self.classifier(out[:, -1, :]).view(B, self.delay_n, self.num_actions)
+            p = torch.softmax(logit, dim=-1)
+        return logit, p
 
 def transform_data(xs, device, flags):
     xs_ = {}
@@ -321,35 +329,56 @@ def transform_data(xs, device, flags):
     xs_["hidden_state"] = xs["hidden_state"].to(device) if "hidden_state" in xs else None
     return xs_
 
-def evaluate_detect(target_y, pred_y):
-    # Binarize the predictions
-    pred_y_binarized = (pred_y > 0.5).float()
-    target_y = target_y.float()
+def evaluate_detect(target_y, pred_y, mask, pred_action):
+    if not pred_action:
+        # Binarize the predictions
+        pred_y_binarized = (pred_y > 0.5).float()
+        target_y = target_y.float()
 
-    # Compute the accuracy
-    acc = torch.mean((pred_y_binarized == target_y).float()).item()
-    
-    # Compute the recall
-    true_positives = (pred_y_binarized * target_y).sum().float()
-    possible_positives = target_y.sum().float()
-    rec = (true_positives / (possible_positives + 1e-6)).item()
-    
-    # Compute the precision
-    predicted_positives = pred_y_binarized.sum().float()
-    prec = (true_positives / (predicted_positives + 1e-6)).item()
-    
-    # Compute the F1 score
-    f1 = 2 * (prec * rec) / (prec + rec + 1e-6)   
+        # Compute the accuracy
+        acc = torch.mean((pred_y_binarized == target_y).float()).item()
+        
+        # Compute the recall
+        true_positives = (pred_y_binarized * target_y).sum().float()
+        possible_positives = target_y.sum().float()
+        rec = (true_positives / (possible_positives + 1e-6)).item()
+        
+        # Compute the precision
+        predicted_positives = pred_y_binarized.sum().float()
+        prec = (true_positives / (predicted_positives + 1e-6)).item()
+        
+        # Compute the F1 score
+        f1 = 2 * (prec * rec) / (prec + rec + 1e-6)   
 
-    neg_p = 1 - torch.mean(target_y.float()).item()
+        neg_p = 1 - torch.mean(target_y.float()).item()
 
-    return {
-        "acc": acc,
-        "rec": rec,
-        "prec": prec,
-        "f1": f1,
-        "neg_p": neg_p,
-        }
+        return {
+            "acc": acc,
+            "rec": rec,
+            "prec": prec,
+            "f1": f1,
+            "neg_p": neg_p,
+            }
+    else:
+        _, pred_classes = torch.max(pred_y, dim=2) 
+        B, T = target_y.shape
+        stats = {}
+        accs = torch.zeros(B, T, device=target_y.device)                
+        for K in range(1, T + 1):            
+            correct_predictions = (pred_classes[:, :K] == target_y[:, :K]) & mask[:, :K]
+            
+            # Count the number of correct predictions and valid predictions
+            num_correct = correct_predictions.sum(dim=1).float()  # Convert to float for division
+            num_valid = mask[:, :K].sum(dim=1).float()
+            
+            # Avoid division by zero for cases where num_valid is 0
+            num_valid = torch.where(num_valid == 0, torch.ones_like(num_valid), num_valid)
+            
+            # Step 3: Calculate accuracy for the first K steps
+            accs[:, K-1] = num_correct / num_valid
+            stats["acc_%d"%K] = torch.mean(accs[:, K-1]).item()
+            if K == T: stats["acc"] = torch.mean(accs[:, K-1]).item()
+        return stats
 
 def train_epoch(detect_net, dataloader, optimizer, device, flags, train=True):
     if train:
@@ -362,7 +391,17 @@ def train_epoch(detect_net, dataloader, optimizer, device, flags, train=True):
         for xs, target_ys in dataloader:
             xs = transform_data(xs, device, flags)
 
-            target_y = target_ys["cost"]
+            if not flags.pred_action:
+                target_y = target_ys["cost"]
+            else:
+                target_y = target_ys["last_real_actions"]
+                y_done = target_ys["last_dones"]
+                acc_done = torch.zeros_like(y_done)
+                T = acc_done.shape[1]
+                for t in range(1, T):
+                    acc_done[:, t] = torch.logical_or(acc_done[:, t - 1], y_done[:, t - 1])
+                acc_done = acc_done.to(device)
+                    
             target_y = target_y.to(device)
 
             if flags.mask_im_state:
@@ -371,14 +410,21 @@ def train_epoch(detect_net, dataloader, optimizer, device, flags, train=True):
 
             if flags.mask_hidden_state:
                 xs["hidden_state"] = torch.zeros_like(xs["hidden_state"])
-            
-            logit, pred_y = detect_net(**xs)
-            n_mean_y = torch.mean((~target_y).float()).item()
-            detect_net.beta.data = 0.99 * detect_net.beta.data + (1 - 0.99) * n_mean_y
-            detect_net.beta.data.clamp_(0.05, 0.95)
-            weights = torch.where(target_y == 1, detect_net.beta.data, 1-detect_net.beta.data)
-            loss = F.binary_cross_entropy_with_logits(logit, target_y.float(), weight=weights)
-            train_eval = evaluate_detect(target_y, pred_y)
+
+            logit, pred_y = detect_net(**xs)            
+            if not flags.pred_action:            
+                n_mean_y = torch.mean((~target_y).float()).item()
+                detect_net.beta.data = 0.99 * detect_net.beta.data + (1 - 0.99) * n_mean_y
+                detect_net.beta.data.clamp_(0.05, 0.95)
+                weights = torch.where(target_y == 1, detect_net.beta.data, 1-detect_net.beta.data)
+                loss = F.binary_cross_entropy_with_logits(logit, target_y.float(), weight=weights)
+            else:
+                loss = F.cross_entropy(torch.flatten(logit, 0, 1), torch.flatten(target_y, 0, 1), reduction="none")
+                mask = (1 - torch.flatten(acc_done, 0, 1).float())
+                loss = loss * mask
+                loss = torch.sum(loss) / torch.sum(mask)
+
+            train_eval = evaluate_detect(target_y, pred_y, ~acc_done, flags.pred_action)
             train_eval["loss"] = loss.item()
 
             if train:
@@ -469,11 +515,9 @@ def detect_train(flags):
         dim_actions = flags_data.dim_actions,
         num_actions = flags_data.num_actions,
         tuple_actions = flags_data.tuple_actions,
-        disable_thinker = flags.disable_thinker,
-        tran_layer_n = flags.tran_layer_n,
-        tran_ff_n = flags.tran_ff_n,
-        shallow_encode= flags.shallow_encode,
-        decoder_depth= flags.model_decoder_depth,
+        delay_n = flags_data.delay_n,
+        decoder_depth = getattr(flags_data, "model_decoder_depth", 0),
+        flags = flags,        
     )
 
     # load optimizer
@@ -571,6 +615,8 @@ if __name__ == "__main__":
     parser.add_argument("--see_hidden_state", action="store_true", help="See hidden_state instead of future states")    
     parser.add_argument("--mask_hidden_state", action="store_true", help="Whether masking hidden_state or not.")
     parser.add_argument("--mask_im_state", action="store_true", help="Whether masking future env state or not.")
+    # target output
+    parser.add_argument("--pred_action", action="store_true", help="Whether to predict action instead of danger label.")
     # training setting
     parser.add_argument("--batch_size", default=128, type=int, help="Batch size in training.")
     parser.add_argument("--learning_rate", default=0.0001, type=float, help="Learning rate.")
