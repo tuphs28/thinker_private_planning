@@ -734,7 +734,7 @@ cdef class cModelWrapper(cWrapper):
             self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float, device=self.device)        
 
             # reset obs
-            obs = self.env.reset()
+            obs = self.env.reset(reset_stat=True)
 
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)
@@ -1226,7 +1226,7 @@ cdef class cPerfectWrapper(cWrapper):
             self.baseline_mean_q = torch.zeros(self.env_n, dtype=torch.float, device=self.device)        
 
             # reset obs
-            obs = self.env.reset()
+            obs = self.env.reset(reset_stat=True)
 
             # obtain output from model
             obs_py = torch.tensor(obs, dtype=torch.uint8 if self.state_dtype==0 else torch.float32, device=self.device)

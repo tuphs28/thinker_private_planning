@@ -127,7 +127,7 @@ class SimWrapper(gym.Wrapper):
 
             if not self.reanalyze or not self.reanalyze_intialized:
                 if not self.reanalyze:
-                    real_state = self.env.reset()
+                    real_state = self.env.reset(reset_stat=True)
                     real_state = torch.tensor(real_state, dtype=self.state_dtype, device=self.device)
                 else:
                     real_state = torch.zeros(

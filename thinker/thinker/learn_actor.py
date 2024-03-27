@@ -658,18 +658,18 @@ class SActorLearner:
         T, B, *_ = train_actor_out.episode_return.shape
         last_step_real = (train_actor_out.step_status == 0) | (train_actor_out.step_status == 3)
         next_step_real = (train_actor_out.step_status == 2) | (train_actor_out.step_status == 3)
+        
+        real_done = train_actor_out.real_done |  train_actor_out.truncated_done     
 
         # extract episode_returns
-        if torch.any(train_actor_out.real_done):            
-            episode_returns = train_actor_out.episode_return[train_actor_out.real_done][
+        if torch.any(real_done):            
+            episode_returns = train_actor_out.episode_return[real_done][
                 :, 0
             ]
             episode_returns = tuple(episode_returns.detach().cpu().numpy())
-            episode_lens = train_actor_out.episode_step[train_actor_out.real_done]
+            episode_lens = train_actor_out.episode_step[real_done]
             episode_lens = tuple(episode_lens.detach().cpu().numpy())
-            done_ids = actor_id.broadcast_to(train_actor_out.real_done.shape)[
-                train_actor_out.real_done
-            ]
+            done_ids = actor_id.broadcast_to(real_done.shape)[real_done]
             done_ids = tuple(done_ids.detach().cpu().numpy())
         else:
             episode_returns, episode_lens, done_ids = (), (), ()
@@ -681,7 +681,7 @@ class SActorLearner:
             if prefix == "im":
                 done = next_step_real
             elif prefix == "cur":
-                done = train_actor_out.real_done
+                done = real_done
             
             if prefix in self.rewards_ls:            
                 n = self.rewards_ls.index(prefix)

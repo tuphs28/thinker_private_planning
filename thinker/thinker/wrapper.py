@@ -932,12 +932,15 @@ class RecordEpisodeStatistics(gym.Wrapper):
 
     def reset(self, **kwargs):
         idx = kwargs.get("idx", None)     
-        if idx is None:
-            self.episode_return = np.zeros(self.num_envs, dtype=np.float32)
-            self.episode_step = np.zeros(self.num_envs, dtype=np.int64)
-        else:
-            self.episode_return[idx] = 0.
-            self.episode_step[idx] = 0
+        reset_stat = kwargs.get("reset_stat", False)  
+        kwargs.pop("reset_stat")
+        if reset_stat:
+            if idx is None:
+                self.episode_return = np.zeros(self.num_envs, dtype=np.float32)
+                self.episode_step = np.zeros(self.num_envs, dtype=np.int64)
+            else:
+                self.episode_return[idx] = 0.
+                self.episode_step[idx] = 0
 
         return self.env.reset(**kwargs)
 
