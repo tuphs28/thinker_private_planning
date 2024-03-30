@@ -18,6 +18,7 @@ from gym import spaces
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
        
 _fields = ("real_states", "tree_reps", "xs", "hs")
 _fields += ("reward", "episode_return", "episode_step")
@@ -435,7 +436,7 @@ def optimizer_to(optim, device):
 
 def copy_net(tar_net, net):
     for tar_module, new_module in zip(tar_net.modules(), net.modules()):
-        if isinstance(tar_module, torch.nn.modules.batchnorm._BatchNorm):
+        if isinstance(tar_module, nn.modules.batchnorm._BatchNorm):
             # Copy BatchNorm running mean and variance
             tar_module.running_mean = new_module.running_mean.clone()
             tar_module.running_var = new_module.running_var.clone()
@@ -852,3 +853,36 @@ class ConfuseAdd:
             xs = xs.view(input_shape)
         return xs
     
+def clone_bn_running_stats(module):
+    """
+    Traverse the module and its submodules to clone all BatchNorm layers' running mean and variance.
+    
+    Parameters:
+    - module: The root module to traverse.
+    
+    Returns:
+    - A dictionary containing the cloned running mean and variance for each BatchNorm layer.
+    """
+    cloned_stats = {}
+    for name, submodule in module.named_modules():
+        if isinstance(submodule, nn.modules.batchnorm._BatchNorm):
+            # Use the module's name as a unique identifier
+            cloned_stats[name] = {
+                "running_mean": submodule.running_mean.clone(),
+                "running_var": submodule.running_var.clone(),
+            }
+    return cloned_stats
+
+def restore_bn_running_stats(module, cloned_stats):
+    """
+    Traverse the module and its submodules to restore BatchNorm layers' running mean and variance from cloned statistics.
+    
+    Parameters:
+    - module: The root module to traverse.
+    - cloned_stats: A dictionary containing the cloned running mean and variance for each BatchNorm layer.
+    """
+    for name, submodule in module.named_modules():
+        if name in cloned_stats and isinstance(submodule, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            # Restore the running statistics from the cloned values
+            submodule.running_mean = cloned_stats[name]["running_mean"]
+            submodule.running_var = cloned_stats[name]["running_var"]
