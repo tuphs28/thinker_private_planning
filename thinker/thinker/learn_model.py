@@ -472,7 +472,10 @@ class SModelLearner:
         done_loss = self.compute_done_loss(target, out.done_logits, is_weights)
         target_env_state_norm = self.model_net.normalize(target["env_states"])
         action = util.encode_action(train_model_out.action[1 : k + 1], self.model_net.action_space, one_hot=False)        
-        bn_stat = util.clone_bn_running_stats(self.model_net.vp_net)
+        if not self.flags.fea_loss_inf_bn:
+            bn_stat = util.clone_bn_running_stats(self.model_net.vp_net)
+        else:
+            self.model_net.vp_net.train(False)
         with torch.no_grad():  
             target_xs = self.model_net.vp_net.encoder.forward_pre_mem(
                     target_env_state_norm, action, flatten=True, end_depth=self.flags.model_decoder_depth
@@ -491,8 +494,11 @@ class SModelLearner:
             diff = target_enc - pred_enc
             fea_loss = self.compute_state_loss(diff, target, is_weights)
         else:
-            fea_loss = None
-        util.restore_bn_running_stats(self.model_net.vp_net, bn_stat)
+            fea_loss = None        
+        if not self.flags.fea_loss_inf_bn:
+            util.restore_bn_running_stats(self.model_net.vp_net, bn_stat)
+        else:
+            self.model_net.vp_net.train(True)
 
         if self.flags.model_sup_loss_cost > 0.:
             sup_loss = self.model_net.sr_net.supervise_loss(

@@ -31,6 +31,7 @@ model_fea_loss_cost: 5.0 # cost for training model's state output (feature loss)
 model_sup_loss_cost: 0.0 # cost for SimSiam loss
 model_reg_loss_cost: 0.0 # cost for model regularization loss
 model_noise_loss_cost: 0.0 # cost for model noise loss
+fea_loss_inf_bn: False # whether to use inference mode for vp-net when computing feature loss
 # model setting
 dual_net: true # whether to use dual network
 model_decoder_depth: 0 # decoder level; can be from 0 to 4; 0 mean predicing raw image, 4 mean predicting vp_net feature directly
