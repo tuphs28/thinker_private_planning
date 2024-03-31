@@ -134,14 +134,6 @@ class SModelLearner:
             util.optimizer_to(self.optimizer_m, self.device)
         util.optimizer_to(self.optimizer_p, self.device)               
 
-        if flags.reanalyze and flags.reanalyze_model_update_freq > 1:
-            self.tar_model_net = ModelNet(**model_param)
-            self.tar_model_net.to(self.device)
-            self.tar_model_net.train(False)
-            util.copy_net(self.tar_model_net, self.model_net)
-        else:
-            self.tar_model_net = self.model_net
-        
         self.timing = util.Timings() if self.time else None
         self.perfect_model = util.check_perfect_model(flags.wrapper_type)
 
@@ -163,31 +155,6 @@ class SModelLearner:
             self.data_ptr = self.model_buffer.read.remote(self.flags.priority_beta)
         self.start_training = False
         self.finish = False
-
-        self.reanalyze = self.flags.reanalyze
-        if self.reanalyze:            
-            from thinker import wrapper
-            from thinker.simple_env import SimWrapper
-            from thinker.actor_net import ActorNet
-            env_fn = wrapper.create_env_fn(name, flags)
-            raw_env = env_fn()
-            self.model_net.train(False)
-            self.reanalyze_env = SimWrapper(raw_env, flags.model_batch_size, flags, self.model_net, reanalyze=True, device=self.device)
-            self.model_net.train(True)
-            self.actor_net = ActorNet(
-                obs_space=self.reanalyze_env.observation_space,
-                action_space=self.reanalyze_env.action_space,
-                flags=flags,
-                tree_rep_meaning=self.reanalyze_env.tree_rep_meaning,
-            )
-            if self.flags.parallel:
-                self.actor_param_buffer = ray_obj["actor_param_buffer"]
-            else:
-                raise Exception("not implemented")
-            self.refresh_actor()
-            self.actor_net.train(False)
-            self.actor_net.to(self.device)
-            self.reanalyze_step = 0
 
     def compute_beta(self):
         c = min(self.real_step, self.flags.total_steps) / self.flags.total_steps
@@ -699,31 +666,38 @@ class SModelLearner:
         return losses, priorities
 
     def prepare_data(self, train_model_out):
-        if self.reanalyze:
-            action_prob, baseline = self.reanalyze_data(train_model_out)
         k, b = self.flags.model_unroll_len, train_model_out.real_state.shape[1]
         ret_n = self.flags.model_return_n
         target_env_states = train_model_out.real_state
         target_rewards = train_model_out.reward[1 : k + 1]  # true reward r_1, r_2, ..., r_k
-        if not self.reanalyze:
-            target_action_probs = train_model_out.action_prob[1 : k + 2]  # true logits l_0, l_1, ..., l_k-1
-        else:
-            target_action_probs = action_prob[:k]
+        target_action_probs = train_model_out.action_prob[1 : k + 2]  # true logits l_0, l_1, ..., l_k-1        
         target_actions = train_model_out.action[1 : k + 2]  # true actions l_0, l_1, ..., l_k-1
-        if not self.reanalyze:
+
+        if not self.flags.vp_fix_bootstrap:
             target_vs = train_model_out.baseline[ret_n + 1: ret_n + 2 + k]  # baseline ranges from v_k, v_k+1, ... v_2k
+            for t in range(ret_n, 0, -1):
+                target_vs = (
+                    target_vs
+                    * self.flags.discounting
+                    * (~train_model_out.done[t : k + t + 1]).float()
+                    + train_model_out.reward[t : k + t + 1]
+                )
+                t_done = train_model_out.truncated_done[t : k + t + 1]
+                if torch.any(t_done):
+                    target_vs[t_done] = train_model_out.baseline[t : k + t + 1][t_done]
+
         else:
-            target_vs = baseline[ret_n : ret_n + k + 1]
-        for t in range(ret_n, 0, -1):
-            target_vs = (
-                target_vs
-                * self.flags.discounting
-                * (~train_model_out.done[t : k + t + 1]).float()
-                + train_model_out.reward[t : k + t + 1]
-            )
-            t_done = train_model_out.truncated_done[t : k + t + 1]
-            if torch.any(t_done):
-                target_vs[t_done] = train_model_out.baseline[t : k + t + 1][t_done]
+            target_v = train_model_out.baseline[k + 1] # v is in the form of v_-1, v_0, .., v_k; this target_v is v_k
+            target_vs = [target_v]
+            for t in range(k, 0, -1):
+                target_v = train_model_out.reward[t] + self.flags.discounting * target_v * (~train_model_out.done[t]).float()
+                t_done = train_model_out.truncated_done[t]
+                if torch.any(t_done):
+                    target_v[t_done] = train_model_out.baseline[t][t_done]
+                target_vs.append(target_v)
+            
+            target_vs.reverse()
+            target_vs = torch.stack(target_vs)
 
         # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss
         # we set all target r_j+1, v_j, a_j to 0, 0, and last a_{j+1}
@@ -768,44 +742,6 @@ class SModelLearner:
             "done_mask": done_mask,
         }
     
-    def reanalyze_data(self, train_model_out):
-        with torch.set_grad_enabled(False):
-            self.tar_model_net.train(False)
-            self.reanalyze_step += 1
-            if self.reanalyze_step % self.flags.reanalyze_actor_update_freq == 0:
-                self.refresh_actor()
-            if self.reanalyze_step % self.flags.reanalyze_model_update_freq == 0 and self.flags.reanalyze_model_update_freq > 1:
-                util.copy_net(self.tar_model_net, self.model_net)
-            unroll_len = self.flags.model_unroll_len + self.flags.model_return_n
-            self.reanalyze_env.set_reanalyze_data(
-                train_model_out.action if self.model_net.tuple_action else train_model_out.action[:, :, 0],
-                train_model_out.reward,
-                train_model_out.done,
-                train_model_out.real_state,
-                initial_per_state={}, # todo: add model persistent state
-            )
-            state = self.reanalyze_env.reset(self.tar_model_net)   
-            actor_state = self.actor_net.initial_state(
-                    batch_size=self.flags.model_batch_size, device=self.device # todo: add real actor state
-            )
-            env_out = util.init_env_out(state, self.flags, dim_actions=self.actor_net.dim_actions, tuple_action=self.actor_net.tuple_action)
-            action_prob = []
-            baseline = []
-            for t in range(self.flags.rec_t * unroll_len):
-                actor_out, actor_state = self.actor_net(env_out=env_out, core_state=actor_state, greedy=False)
-                state, reward, done, info = self.reanalyze_env.step(actor_out.action, self.tar_model_net)
-                env_out = util.create_env_out(actor_out.action, state, reward, done, info, self.flags)
-                last_step_real = info["step_status"][0].item() in [0, 3] # assume all step status is the same
-                if last_step_real:
-                    action_prob.append(actor_out.action_prob[-1])
-                    baseline.append(info["baseline"])
-            action_prob = torch.stack(action_prob) 
-            baseline = torch.stack(baseline)
-            assert baseline.shape == (unroll_len, self.flags.model_batch_size)
-            self.tar_model_net.train(True)
-            if not self.model_net.tuple_action: action_prob = action_prob.unsqueeze(-2)
-            return action_prob, baseline
-
     def gradient_step(self, loss, optimizer, scheduler, scaler=None):
         # gradient descent on loss
         if self.flags.model_optimizer == "sgd":

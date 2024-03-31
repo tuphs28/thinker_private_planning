@@ -44,6 +44,7 @@ model_zero_init: true # whether to zero initialize the model's predicted rewards
 model_has_memory: false # whether to enable memory in model
 model_ordinal: false # whether to use ordinal representation in model's policy
 sr_confuse: false # add a random red-eyed green character in the predicted image
+vp_fix_bootstrap: false # vp use fixed bootstrap target at the last unroll step
 # wrapper for env
 grayscale: false # whether to apply grayscale for atari
 atari: false # whether to use atari wrapper
