@@ -428,12 +428,19 @@ class SModelLearner:
             done_loss = None
         return done_loss
     
-    def compute_state_loss(self, diff, target, is_weights):
-        if not self.model_net.oned_input:
-            state_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
+    def compute_state_loss(self, tar, pred, mask, is_weights, cos=False):        
+        if not cos:
+            diff = tar - pred
+            if not self.model_net.oned_input:                        
+                state_loss = torch.mean(torch.square(diff), dim=(2, 3, 4))
+            else:
+                state_loss = torch.mean(torch.square(diff), dim=2)
         else:
-            state_loss = torch.mean(torch.square(diff), dim=2)
-        state_loss = state_loss * target["done_mask"][1:]
+            tar_flat = torch.flatten(tar, 2)
+            pred_flat = torch.flatten(pred, 2)
+            cos_sim = F.cosine_similarity(tar_flat, pred_flat, dim=2, eps=1e-08)
+            state_loss = 1 - cos_sim
+        state_loss = state_loss * mask
         state_loss = torch.sum(state_loss, dim=0)
         state_loss = state_loss * is_weights
         state_loss = torch.sum(state_loss)
@@ -481,8 +488,7 @@ class SModelLearner:
                     target_env_state_norm, action, flatten=True, end_depth=self.flags.model_decoder_depth
             )
         if self.flags.model_img_loss_cost > 0.:
-            diff = target_xs - out.xs
-            img_loss = self.compute_state_loss(diff, target, is_weights)
+            img_loss = self.compute_state_loss(target_xs, out.xs, target["done_mask"][1:], is_weights, self.flags.img_fea_cos)
         else:
             img_loss = None
         if self.flags.model_fea_loss_cost > 0.:
@@ -491,8 +497,7 @@ class SModelLearner:
                     target_xs, action, flatten=True, depth=self.flags.model_decoder_depth
                 )
             pred_enc = self.model_net.vp_net.encoder.forward_pre_mem(out.xs, action, flatten=True, depth=self.flags.model_decoder_depth)
-            diff = target_enc - pred_enc
-            fea_loss = self.compute_state_loss(diff, target, is_weights)
+            fea_loss = self.compute_state_loss(target_enc, pred_enc, target["done_mask"][1:], is_weights, self.flags.img_fea_cos)
         else:
             fea_loss = None        
         if not self.flags.fea_loss_inf_bn:
