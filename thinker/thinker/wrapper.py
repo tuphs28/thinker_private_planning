@@ -933,7 +933,7 @@ class RecordEpisodeStatistics(gym.Wrapper):
     def reset(self, **kwargs):
         idx = kwargs.get("idx", None)     
         reset_stat = kwargs.get("reset_stat", False)  
-        kwargs.pop("reset_stat")
+        if "reset_stat" in kwargs: kwargs.pop("reset_stat")
         if reset_stat:
             if idx is None:
                 self.episode_return = np.zeros(self.num_envs, dtype=np.float32)
