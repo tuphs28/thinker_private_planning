@@ -588,16 +588,16 @@ class SModelLearner:
         if self.perfect_model:            
             env_state_norm = self.model_net.normalize(train_model_out.real_state)
             out = self.model_net.vp_net.forward(
-                env_state_norm=env_state_norm[:k].view((k * b,) + env_state_norm.shape[2:]),
+                env_state_norm=env_state_norm[:k+1].view(((k+1) * b,) + env_state_norm.shape[2:]),
                 x0=None,
                 xs=None,
-                done=train_model_out.done[:k].view(1, k * b,),
-                actions=train_model_out.action[:k].view(1, k * b, -1),
+                done=train_model_out.done[:k+1].view(1, (k+1) * b,),
+                actions=train_model_out.action[:k+1].view(1, (k+1) * b, -1),
                 state={},
             )
-            vs = out.vs.view(k, b)
-            v_enc_logits = util.safe_view(out.v_enc_logits, (k, b, -1))
-            policy = out.policy.view((k, b) + out.policy.shape[2:])
+            vs = out.vs.view(k+1, b)
+            v_enc_logits = util.safe_view(out.v_enc_logits, (k+1, b, -1))
+            policy = out.policy.view((k+1, b) + out.policy.shape[2:])
         else:
             env_state_norm = self.model_net.normalize(train_model_out.real_state[0])
             out = self.model_net.vp_net.forward(
@@ -608,12 +608,12 @@ class SModelLearner:
                 actions=train_model_out.action[: k + 1],  # a_-1, ..., a_k-1                
                 state=per_state,
             )
-            vs = out.vs[:-1].view(k, b)
+            vs = out.vs.view(k+1, b)
             if out.v_enc_logits is not None:
-                v_enc_logits = util.safe_view(out.v_enc_logits[:-1], (k, b, -1))
+                v_enc_logits = util.safe_view(out.v_enc_logits, (k+1, b, -1))
             else:
                 v_enc_logits = None
-            policy = out.policy[:-1]
+            policy = out.policy
 
         done_mask = target["done_mask"]
         if self.model_net.vp_net.predict_rd:
@@ -632,7 +632,7 @@ class SModelLearner:
             v_enc_logits=v_enc_logits, 
             target_vs=target["vs"],
         )
-        vs_loss = vs_loss * done_mask[:-1]
+        vs_loss = vs_loss * done_mask
         vs_loss = torch.sum(vs_loss, dim=0)
         vs_loss = vs_loss * is_weights
         vs_loss = torch.sum(vs_loss)
@@ -653,7 +653,7 @@ class SModelLearner:
             self.model_net.discrete_action,
             self.flags.require_prob,
             is_weights, 
-            mask=done_mask[:-1], 
+            mask=done_mask, 
         )
 
         # compute reg loss
@@ -706,24 +706,24 @@ class SModelLearner:
         target_env_states = train_model_out.real_state
         target_rewards = train_model_out.reward[1 : k + 1]  # true reward r_1, r_2, ..., r_k
         if not self.reanalyze:
-            target_action_probs = train_model_out.action_prob[1 : k + 1]  # true logits l_0, l_1, ..., l_k-1
+            target_action_probs = train_model_out.action_prob[1 : k + 2]  # true logits l_0, l_1, ..., l_k-1
         else:
             target_action_probs = action_prob[:k]
-        target_actions = train_model_out.action[1 : k + 1]  # true actions l_0, l_1, ..., l_k-1
+        target_actions = train_model_out.action[1 : k + 2]  # true actions l_0, l_1, ..., l_k-1
         if not self.reanalyze:
-            target_vs = train_model_out.baseline[ret_n + 1: ret_n + 1 + k]  # baseline ranges from v_k, v_k+1, ... v_2k
+            target_vs = train_model_out.baseline[ret_n + 1: ret_n + 2 + k]  # baseline ranges from v_k, v_k+1, ... v_2k
         else:
-            target_vs = baseline[ret_n : ret_n + k]
+            target_vs = baseline[ret_n : ret_n + k + 1]
         for t in range(ret_n, 0, -1):
             target_vs = (
                 target_vs
                 * self.flags.discounting
-                * (~train_model_out.done[t : k + t]).float()
-                + train_model_out.reward[t : k + t]
+                * (~train_model_out.done[t : k + t + 1]).float()
+                + train_model_out.reward[t : k + t + 1]
             )
-            t_done = train_model_out.truncated_done[t : k + t]
+            t_done = train_model_out.truncated_done[t : k + t + 1]
             if torch.any(t_done):
-                target_vs[t_done] = train_model_out.baseline[t : k + t][t_done]
+                target_vs[t_done] = train_model_out.baseline[t : k + t + 1][t_done]
 
         # if done on step j, r_j, v_j-1, a_j-1 has the last valid loss
         # we set all target r_j+1, v_j, a_j to 0, 0, and last a_{j+1}
@@ -743,9 +743,9 @@ class SModelLearner:
                     target_env_states[t, true_done[t]] = 0
                 if t < k:
                     target_rewards[t, true_done[t]] = 0.0
-                    target_action_probs[t, true_done[t]] = target_action_probs[t - 1, true_done[t]]
-                    target_actions[t, true_done[t]] = target_actions[t - 1, true_done[t]]
-                    target_vs[t, true_done[t]] = 0.0
+                target_action_probs[t, true_done[t]] = target_action_probs[t - 1, true_done[t]]
+                target_actions[t, true_done[t]] = target_actions[t - 1, true_done[t]]
+                target_vs[t, true_done[t]] = 0.0
             if self.flags.model_done_loss_cost > 0.0:
                 done_mask = (~torch.logical_or(trun_done, true_done)).float()
                 target_done = torch.logical_and(~trun_done, true_done).float()[1:]

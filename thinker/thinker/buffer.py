@@ -202,7 +202,7 @@ class SModelBuffer:
             for i in range(self.batch_size):
                 sel_elem = self.buffer[ind_0[i]][d]
                 elems.append(
-                    sel_elem[self.mrl + st_pd + ind_2[i] : self.mrl + self.pf + ind_2[i] + self.k + self.ret_n + 1, [ind_1[i]]]
+                    sel_elem[self.mrl + st_pd + ind_2[i] : self.mrl + self.pf + ind_2[i] + self.k + self.ret_n + 2, [ind_1[i]]]
                 )
             data[field] = np.concatenate(elems, axis=1)
 
