@@ -137,7 +137,7 @@ class SLogWorker:
                     )
                     self.last_real_step_c = self.real_step
                     self.wlogger.wandb.save(
-                        os.path.join(self.ckpdir, "*"), self.ckpdir
+                        os.path.join(self.ckpdir, "*")
                     )
                     self._logger.info(
                         f"Steps {self.real_step}: Finish uploading files to wandb..."
