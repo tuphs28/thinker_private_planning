@@ -107,10 +107,6 @@ ckp: false # whether to load checkpoint; if set to true, will load checkpoint fr
 preload: '' # path for the folder that consists ckp_model.tar, which is used to initialize  actor
 # savedir: '../logs/__project__' # base log directory
 savedir: 'logs' # base log directory
-# reanalyze
-reanalyze: false # whether to enable reanalyze; require access to actor
-reanalyze_actor_update_freq: 32 # refresh frequence of actor
-reanalyze_model_update_freq: 64 # refresh frequence of model
 # misc
 profile: false # whether to output all the time statistics of the run
 parallel: false # whether to use a parallel ray actor for training the model
