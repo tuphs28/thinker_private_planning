@@ -16,20 +16,21 @@ char roomStatus_to_char(const roomStatus r);
 class Sokoban {	
 public:
 	Sokoban() = default;
-	Sokoban(bool small, string level_dir, string img_dir, int level_num, int dan_num = 0, unsigned int seed = 0) :
+	Sokoban(bool small, string level_dir, string img_dir, int level_num, int dan_num = 0, unsigned int seed = 0, bool mini = true) :
 		player_pos_x(0),
 		player_pos_y(0),
 		box_left(0),
 		step_n(0),		
 		img_x(small ? small_img_x : large_img_x),
 		img_y(small ? small_img_x : large_img_x),
-		obs_x((small ? small_img_x : large_img_x)* room_x),
-		obs_y((small ? small_img_x : large_img_x)* room_y),
-		obs_n((small ? small_img_x * small_img_x : large_img_x * large_img_x)* room_x* room_y * 3),
+		obs_x(mini ? room_x: (small ? small_img_x : large_img_x)* room_x),
+		obs_y(mini ? room_y: (small ? small_img_y : large_img_y)* room_y),
+		obs_n(mini ? (room_x-2) * (room_y-2) * 7 :(small ? small_img_x * small_img_x : large_img_x * large_img_x)* room_x* room_y * 3),
 		level_dir(level_dir),
 		img_dir(img_dir),
 		done(false),
 		small(small),
+		mini(mini),
 		room_status(),
 		spirites(),
 		level_num(level_num),
@@ -57,7 +58,7 @@ private:
 	void read_spirits();
 	void render(unsigned char* obs);
 	int player_pos_x, player_pos_y, box_left;
-	bool done, small;
+	bool done, small, mini;
 	int level_num;
 	int dan_num;
 	string level_dir, img_dir;

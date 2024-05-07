@@ -247,11 +247,13 @@ int Sokoban::read_level(const int room_id)
 	done = false;
 
 	char file_name[10];
-	snprintf(file_name, 10, "%03d.txt", room_id / 1000);
+	snprintf(file_name, 10, "%03d.txt", room_id / 1000); 
+	//std::cout << "file name: " << file_name << std::endl;
 	string full_path = level_dir + "//" + file_name;
 	//std::cout << "reading from " << full_path << " level " << room_id << endl;
 	ifstream in(full_path.c_str(), ios::in);
 	vector<pair<int, int>> empty_positions;
+	//std::cout << "File status: " << in.fail() << std::endl;
 	if (in.is_open())
 	{
 		string line;
@@ -300,21 +302,44 @@ int Sokoban::read_level(const int room_id)
 }
 
 void Sokoban::render(unsigned char* obs) {
-	if (small)
+
+	// Nb: for mini sokoban, observation ignores the outer row and column (since these are always walls) so board is 8x8
+	if (mini)
+	{
+		for (int y = 1; y < room_y-1; y++) // iterate from row 1 to row 9 (exclude rows 0,10)
+		{
+			for (int x = 1; x < room_x-1; x++) // iterate from column 1 to column 9 (exclude column 0,10)
+			{
+				roomStatus room_status_yx = room_status[y][x]; 
+				int pos_idx = (((y-1) * (room_x-2)) + (x-1)) * 7; // obs array index, each square occupies 7 entries
+				obs[pos_idx] = (room_status_yx == roomStatus::wall ? 1 : 0);
+				obs[pos_idx+1] = (room_status_yx == roomStatus::empty ? 1 : 0);
+				obs[pos_idx+2] = (room_status_yx == roomStatus::box_not_on_tar ? 1 : 0);
+				obs[pos_idx+3] = (room_status_yx == roomStatus::box_on_tar ? 1 : 0);
+				obs[pos_idx+4] = (room_status_yx == roomStatus::player_not_on_tar ? 1 : 0);
+				obs[pos_idx+5] = (room_status_yx == roomStatus::player_on_tar ? 1 : 0);
+				obs[pos_idx+6] = (room_status_yx == roomStatus::tar ? 1 : 0);
+			}
+		}
+	}
+	else if (small)
+	{
 		for (int y = 0; y < room_y; y++)
 			for (int x = 0; x < room_x; x++)
 				for (int sy = 0; sy < small_img_y; sy++)
 					for (int sx = 0; sx < small_img_x; sx++)
 						for (int d = 0; d < 3; d++)
 							obs[((y * small_img_y + sy) * (room_x * small_img_x) + (x * small_img_x + sx)) * 3 + d] = spirites[int(room_status[y][x])][(sy * small_img_y + sx) * 3 + d];
+	}
 	else
+	{
 		for (int y = 0; y < room_y; y++)
 			for (int x = 0; x < room_x; x++)
 				for (int sy = 0; sy < large_img_y; sy++)
 					for (int sx = 0; sx < large_img_x; sx++)
 						for (int d = 0; d < 3; d++)
 							obs[((y * large_img_y + sy) * (room_x * large_img_x) + (x * large_img_x + sx)) * 3 + d] = spirites[int(room_status[y][x])][(sy * large_img_y + sx) * 3 + d];
-
+	}
 	/*
 	ofstream out("debug.ppm", ios::out);
 	out << "P3\n" << to_string(room_x * img_x) << " " << to_string(room_y * img_y) << " \n255 \n";

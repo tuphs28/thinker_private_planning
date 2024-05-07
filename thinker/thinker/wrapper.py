@@ -213,7 +213,7 @@ def create_env_fn(name, flags):
     if name == "Sokoban-v0": 
         import gym_sokoban
         fn = gym.make
-        args = {"id": name, "dan_num": flags.detect_dan_num}
+        args = {"id": name, "dan_num": flags.detect_dan_num, "mini": flags.mini}
 
     elif name.startswith("Safexp"): 
         import mujoco_py, safety_gym
@@ -246,8 +246,8 @@ class TransposeWrap(gym.ObservationWrapper):
         super(TransposeWrap, self).__init__(env)
         old_shape = self.observation_space.shape
         self.observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
+            low=self.observation_space.low.flat[0],
+            high=self.observation_space.high.flat[0],
             shape=(old_shape[-1], old_shape[0], old_shape[1]),
             dtype=np.uint8,
         )
@@ -543,8 +543,8 @@ class FrameStack(gym.Wrapper):
         self.frames = deque([], maxlen=k)
         shp = env.observation_space.shape
         self.observation_space = gym.spaces.Box(
-            low=0,
-            high=255,
+            low=self.observation_space.low.flat[0],
+            high=self.observation_space.high.flat[0],
             shape=(shp[:-1] + (shp[-1] * k,)),
             dtype=env.observation_space.dtype,
         )
@@ -1076,7 +1076,7 @@ class DMSuiteEnv(gym.Env):
         self.rgb = rgb
         if self.rgb:
             # Assuming default resolution for simplicity; adjust as needed
-            self.observation_space = spaces.Box(low=0, high=255, shape=(3, 80, 80), dtype=np.uint8)
+            self.observation_space = spaces.Box(low=self.observation_space.low.flat[0], high=self.observation_space.low.flat[0], shape=(3, 80, 80), dtype=np.uint8)
         elif not flatten:
             self.observation_space = convert_dm_control_to_gym_space(self.env.observation_spec())
         else:

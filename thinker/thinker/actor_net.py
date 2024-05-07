@@ -891,16 +891,19 @@ class ActorNetSingle(ActorBaseNet):
         return actor_out, core_state    
 
 class DRCNet(ActorBaseNet):
-    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False):
+    def __init__(self, obs_space, action_space, flags, tree_rep_meaning=None, record_state=False, mini=False):
         super(DRCNet, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
         assert flags.wrapper_type == 1
 
+        k1, s1, p1 = 9 if mini else 8, 1 if mini else 4, 4 if mini else 2
+        k2, s2, p2 = 9 if mini else 4, 1 if mini else 2, 4 if mini else 1
+
         self.encoder = nn.Sequential(
             nn.Conv2d(
-                in_channels=3, out_channels=32, kernel_size=8, stride=4, padding=2
+                in_channels= (7 if mini else 3), out_channels=32, kernel_size=k1, stride=s1, padding=p1
             ),
             nn.Conv2d(
-                in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1
+                in_channels=32, out_channels=32, kernel_size=k2, stride=s2, padding=p2
             ),
         )
         output_shape = lambda h, w, kernel, stride, padding: (
@@ -908,8 +911,8 @@ class DRCNet(ActorBaseNet):
             ((w + 2 * padding - kernel) // stride + 1),
         )
 
-        h, w = output_shape(self.real_states_shape[1], self.real_states_shape[2], 8, 4, 2)
-        h, w = output_shape(h, w, 4, 2, 1)
+        h, w = output_shape(self.real_states_shape[1], self.real_states_shape[2], k1, s1, p1)
+        h, w = output_shape(h, w, k2, s2, p2)
 
         self.core = ConvAttnLSTM(            
             input_dim=32,

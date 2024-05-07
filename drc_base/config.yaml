@@ -1,0 +1,511 @@
+wandb_version: 1
+
+train_model:
+  desc: null
+  value: false
+model_batch_size:
+  desc: null
+  value: 128
+model_learning_rate:
+  desc: null
+  value: 0.0001
+model_grad_norm_clipping:
+  desc: null
+  value: 0
+min_replay_ratio:
+  desc: null
+  value: 5
+max_replay_ratio:
+  desc: null
+  value: 6
+total_steps:
+  desc: null
+  value: 50000000
+priority_alpha:
+  desc: null
+  value: 0.6
+priority_beta:
+  desc: null
+  value: 0.4
+buffer_traj_len:
+  desc: null
+  value: 50
+model_unroll_len:
+  desc: null
+  value: 5
+model_mem_unroll_len:
+  desc: null
+  value: 0
+model_return_n:
+  desc: null
+  value: 5
+model_self_bootstrap:
+  desc: null
+  value: false
+model_warm_up_n:
+  desc: null
+  value: 200000
+model_buffer_n:
+  desc: null
+  value: 200000
+model_logits_loss_cost:
+  desc: null
+  value: 0.5
+model_vs_loss_cost:
+  desc: null
+  value: 0.25
+model_rs_loss_cost:
+  desc: null
+  value: 1.0
+model_done_loss_cost:
+  desc: null
+  value: 1.0
+model_img_loss_cost:
+  desc: null
+  value: 10.0
+model_sup_loss_cost:
+  desc: null
+  value: 0.0
+model_reg_loss_cost:
+  desc: null
+  value: 0.0
+model_noise_loss_cost:
+  desc: null
+  value: 0.0
+dual_net:
+  desc: null
+  value: true
+model_enc_type:
+  desc: null
+  value: 0
+model_enc_f_type:
+  desc: null
+  value: 0
+model_size_nn:
+  desc: null
+  value: 1
+model_downscale_c:
+  desc: null
+  value: 2
+model_disable_bn:
+  desc: null
+  value: true
+model_zero_init:
+  desc: null
+  value: true
+model_has_memory:
+  desc: null
+  value: false
+model_ordinal:
+  desc: null
+  value: false
+model_img_type:
+  desc: null
+  value: 1
+require_prob:
+  desc: null
+  value: true
+wrapper_type:
+  desc: null
+  value: 1
+rec_t:
+  desc: null
+  value: 1
+test_rec_t:
+  desc: null
+  value: -1
+max_depth:
+  desc: null
+  value: 5
+tree_carry:
+  desc: null
+  value: true
+reset_mode:
+  desc: null
+  value: 0
+return_h:
+  desc: null
+  value: false
+return_x:
+  desc: null
+  value: false
+return_double:
+  desc: null
+  value: false
+grayscale:
+  desc: null
+  value: false
+has_action_seq:
+  desc: null
+  value: true
+one_to_threed_state:
+  desc: null
+  value: false
+se_query_size:
+  desc: null
+  value: 5
+se_td_lambda:
+  desc: null
+  value: 0.9
+se_query_cur:
+  desc: null
+  value: 0
+se_buffer_n:
+  desc: null
+  value: 10
+se_tree_carry:
+  desc: null
+  value: false
+se_manual_stat:
+  desc: null
+  value: false
+sample_n:
+  desc: null
+  value: -1
+sample_temp:
+  desc: null
+  value: 4
+sample_replace:
+  desc: null
+  value: true
+discounting:
+  desc: null
+  value: 0.97
+reward_clip:
+  desc: null
+  value: -1.0
+im_enable:
+  desc: null
+  value: false
+stat_mask_type:
+  desc: null
+  value: 0
+cur_enable:
+  desc: null
+  value: false
+cur_reward_cost:
+  desc: null
+  value: 0.0
+cur_v_cost:
+  desc: null
+  value: 0.0
+cur_pi_cost:
+  desc: null
+  value: 0.0
+cur_enc_cost:
+  desc: null
+  value: 1.0
+cur_x_cost:
+  desc: null
+  value: 0.0
+cur_sup_cost:
+  desc: null
+  value: 0.0
+cur_done_gate:
+  desc: null
+  value: true
+cur_done_elapse:
+  desc: null
+  value: 0
+detect_dan_num:
+  desc: null
+  value: 0
+noise_enable:
+  desc: null
+  value: false
+noise_n:
+  desc: null
+  value: 16
+noise_d:
+  desc: null
+  value: 10
+noise_alpha:
+  desc: null
+  value: 0.8
+noise_mlp:
+  desc: null
+  value: false
+xpid:
+  desc: null
+  value: drc_check3
+ckp:
+  desc: null
+  value: false
+preload:
+  desc: null
+  value: ''
+savedir:
+  desc: null
+  value: /home/mila/i/ivan.anokhin/logs/thinker
+profile:
+  desc: null
+  value: false
+parallel:
+  desc: null
+  value: true
+float16:
+  desc: null
+  value: false
+base_seed:
+  desc: null
+  value: 1
+discrete_k:
+  desc: null
+  value: -1
+repeat_action_n:
+  desc: null
+  value: 0
+project:
+  desc: null
+  value: thinker
+ray_mem:
+  desc: null
+  value: -1
+ray_gpu:
+  desc: null
+  value: -1
+ray_cpu:
+  desc: null
+  value: -1
+gpu_learn:
+  desc: null
+  value: 0
+name:
+  desc: null
+  value: Sokoban-v0
+train_actor:
+  desc: null
+  value: true
+actor_learning_rate:
+  desc: null
+  value: 0.0004
+actor_batch_size:
+  desc: null
+  value: 16
+actor_unroll_len:
+  desc: null
+  value: 20
+actor_use_rms:
+  desc: null
+  value: false
+actor_grad_norm_clipping:
+  desc: null
+  value: 1200
+actor_adam_eps:
+  desc: null
+  value: 0.0001
+return_norm_type:
+  desc: null
+  value: -1
+cur_return_norm_type:
+  desc: null
+  value: -1
+v_trace_lamb:
+  desc: null
+  value: 0.97
+im_cost:
+  desc: null
+  value: 0.0
+im_cost_anneal:
+  desc: null
+  value: true
+cur_cost:
+  desc: null
+  value: 0.0
+cur_cost_anneal:
+  desc: null
+  value: true
+baseline_cost:
+  desc: null
+  value: 0.5
+entropy_cost:
+  desc: null
+  value: 0.01
+im_entropy_cost:
+  desc: null
+  value: 0.0001
+reg_cost:
+  desc: null
+  value: 1.0
+see_real_state:
+  desc: null
+  value: true
+see_tree_rep:
+  desc: null
+  value: false
+see_h:
+  desc: null
+  value: false
+see_x:
+  desc: null
+  value: false
+drc:
+  desc: null
+  value: true
+legacy:
+  desc: null
+  value: false
+tree_rep_rnn:
+  desc: null
+  value: true
+se_lstm_table:
+  desc: null
+  value: false
+x_rnn:
+  desc: null
+  value: false
+real_state_rnn:
+  desc: null
+  value: false
+x_enc_first_pool:
+  desc: null
+  value: true
+tran_t:
+  desc: null
+  value: 1
+tran_mem_n:
+  desc: null
+  value: 40
+tran_layer_n:
+  desc: null
+  value: 3
+tran_head_n:
+  desc: null
+  value: 8
+tran_lstm_no_attn:
+  desc: null
+  value: false
+tran_attn_b:
+  desc: null
+  value: 5
+tran_dim:
+  desc: null
+  value: 128
+critic_zero_init:
+  desc: null
+  value: true
+critic_enc_type:
+  desc: null
+  value: 0
+critic_enc_f_type:
+  desc: null
+  value: 0
+sep_im_head:
+  desc: null
+  value: true
+last_layer_n:
+  desc: null
+  value: 0
+actor_ordinal:
+  desc: null
+  value: false
+cur_reward_adj:
+  desc: null
+  value: -1
+cur_norm_type:
+  desc: null
+  value: 0
+cur_reward_mq:
+  desc: null
+  value: 0.5
+cur_reward_uq:
+  desc: null
+  value: 0.95
+cur_reward_lq:
+  desc: null
+  value: 0.05
+cur_reward_bn:
+  desc: null
+  value: 200000
+cur_reward_norm:
+  desc: null
+  value: true
+cur_reward_pri:
+  desc: null
+  value: true
+cur_reward_min:
+  desc: null
+  value: 0.0
+cur_reward_max:
+  desc: null
+  value: 1000.0
+cur_ema:
+  desc: null
+  value: 0.999
+preload_actor:
+  desc: null
+  value: ''
+use_wandb:
+  desc: null
+  value: true
+wandb_ckp_freq:
+  desc: null
+  value: 500000
+policy_vis_freq:
+  desc: null
+  value: -1
+policy_vis_length:
+  desc: null
+  value: 20
+parallel_actor:
+  desc: null
+  value: true
+auto_res:
+  desc: null
+  value: true
+self_play_n:
+  desc: null
+  value: 2
+env_n:
+  desc: null
+  value: 64
+gpu_self_play:
+  desc: null
+  value: 0.25
+gpu_learn_actor:
+  desc: null
+  value: 0.25
+__version__:
+  desc: null
+  value: 1.1.2
+cmd:
+  desc: null
+  value: thinker/train.py --use_wandb true --xpid drc_check3 --drc true --actor_unroll_len
+    20 --reg_cost 1 --actor_learning_rate 4e-4 --entropy_cost 1e-2 --v_trace_lamb
+    0.97 --actor_adam_eps 1e-4 --project thinker
+git_revision:
+  desc: null
+  value: 91f8dd61c4d673425b6dbd2d154684fdc99882da
+ckpdir:
+  desc: null
+  value: /home/mila/i/ivan.anokhin/logs/thinker/drc_check3
+_wandb:
+  desc: null
+  value:
+    python_version: 3.9.18
+    cli_version: 0.16.0
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1707672795.281206
+    t:
+      1:
+      - 1
+      - 30
+      - 55
+      2:
+      - 1
+      - 30
+      - 55
+      3:
+      - 2
+      - 3
+      - 13
+      - 14
+      - 16
+      - 23
+      4: 3.9.18
+      5: 0.16.0
+      8:
+      - 5
+      13: linux-x86_64

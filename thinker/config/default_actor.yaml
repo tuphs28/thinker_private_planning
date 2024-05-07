@@ -116,4 +116,5 @@ env_n: 64 # number of parallel environment for each self-play ray actors
 gpu_self_play: 0.25 # gpu for each self-play ray actor (will be set automatically if auto_res is enabled)
 gpu_learn_actor: 0.25 # gpu for the actor-learning ray actor (will be set automatically if auto_res is enabled)
 gpu_learn: 0.5 # gpu for the model-learning ray actor (will be set automatically if auto_res is enabled)
-
+# sokoban-specific argument
+mini: true # boolean determining whether to run "full sokoban" (so that board is shape (80,80,3)) or "mini sokoban" (so that board is shape (8,8,7))

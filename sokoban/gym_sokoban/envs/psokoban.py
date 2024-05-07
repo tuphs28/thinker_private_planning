@@ -7,7 +7,7 @@ import pkg_resources
 import os 
 
 class SokobanEnv(gym.Env):
-    def __init__(self, difficulty='unfiltered', small=True, dan_num=0, seed=0):
+    def __init__(self, difficulty='unfiltered', small=True, dan_num=0, seed=0, mini=True):
         if difficulty == 'unfiltered': 
             level_num = 900000                      
             path = '/'.join(('boxoban-levels', difficulty, 'train'))
@@ -31,9 +31,14 @@ class SokobanEnv(gym.Env):
                                 img_dir=img_dir.encode('UTF-8'), 
                                 level_num=level_num, 
                                 dan_num=dan_num,
-                                seed=seed)
+                                seed=seed,
+                                mini=mini)
         self.action_space = Discrete(5)
-        self.observation_space = Box(low=0, high=255, shape=(self.sokoban.obs_x, self.sokoban.obs_y, 3), dtype=np.uint8)
+        if mini:
+            self.observation_space = Box(low=0, high=1, shape=(self.sokoban.obs_x-2, self.sokoban.obs_y-2, 7), dtype=np.uint8)
+        else:
+            self.observation_space = Box(low=0, high=255, shape=(self.sokoban.obs_x, self.sokoban.obs_y, 3), dtype=np.uint8)
+
         # self.sokoban.reset()
 
     def step(self, action):
