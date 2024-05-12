@@ -172,6 +172,7 @@ class FileWriter:
                     if "# _tick" in self.fieldnames:
                         self.fieldnames = [x if x != "# _tick" else "_tick" for x in self.fieldnames]
                 if len(lines) > 1:
+                    print(lines)
                     self._tick = int(lines[-2][0]) + 1
             
         self._logfile = open(self.paths["logs"], "a")

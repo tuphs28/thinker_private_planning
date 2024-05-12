@@ -98,6 +98,7 @@ class SActorLearner:
         self.step = 0
         self.tot_eps = 0
         self.real_step = 0
+        self.cur_ckp_threshold = int(self.flags.wandb_ckp_freq)
 
         lr_lambda = (
             lambda epoch: 1
@@ -427,7 +428,9 @@ class SActorLearner:
                 if timing is not None:
                     print(timing.summary())
 
-            if int(time.strftime("%M")) // 10 != self.ckp_start_time:
+            # if int(time.strftime("%M")) // 10 != self.ckp_start_time:
+            if self.real_step > self.cur_ckp_threshold:
+                self.cur_ckp_threshold += int(self.flags.wandb_ckp_freq)
                 self.save_checkpoint()
                 self.ckp_start_time = int(time.strftime("%M")) // 10
             del train_actor_out, losses, total_loss, stats, total_norm
@@ -760,8 +763,9 @@ class SActorLearner:
                 "flags": vars(self.flags),
             }      
         try:
-            torch.save(d, self.ckp_path + ".tmp")
-            os.replace(self.ckp_path + ".tmp", self.ckp_path)
+            current_ckp_path = self.ckp_path[:-4] + f"_realstep{self.real_step}.tar"
+            torch.save(d, current_ckp_path + ".tmp")
+            os.replace(current_ckp_path + ".tmp", current_ckp_path)
         except:       
             pass
 

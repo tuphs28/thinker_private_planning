@@ -136,6 +136,8 @@ class SLogWorker:
                         f"Steps {self.real_step}: Uploading files to wandb..."
                     )
                     self.last_real_step_c = self.real_step
+                    #self.actor_net_path = os.path.join(self.ckpdir, f"ckp_actor_step{self.real_step}.tar")
+                    #self.model_net_path = os.path.join(self.ckpdir, f"ckp_model_step{self.real_step}.tar")
                     self.wlogger.wandb.save(
                         os.path.join(self.ckpdir, "*")
                     )
