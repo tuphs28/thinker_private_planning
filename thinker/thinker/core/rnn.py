@@ -300,7 +300,8 @@ class ConvAttnLSTM(nn.Module):
                 output, core_state = self.forward_single(
                     x_single, core_state, reset_single, reset_single
                 )  # output shape: 1, B, core_output_size        
-                if record_state: self.hidden_state.append(torch.concat(core_state, dim=1))          
+                if record_state: self.hidden_state.append(torch.concat(core_state, dim=1))
+                if record_output: self.output.append(output)              
             core_output_list.append(output)
         core_output = torch.cat(core_output_list)
         if record_state: self.hidden_state = torch.stack(self.hidden_state, dim=1)
