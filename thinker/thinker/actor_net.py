@@ -895,7 +895,7 @@ class DRCNet(ActorBaseNet):
         super(DRCNet, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
         assert flags.wrapper_type == 1
 
-        k1, s1, p1 = 3 if flags.mini else 8, 1 if flags.mini else 4, 1 if flags.mini else 2
+        k1, s1, p1 = 1 if flags.mini else 8, 1 if flags.mini else 4, 0 if flags.mini else 2
         k2, s2, p2 = 4, 2, 1
 
         encoder_layers = [nn.Conv2d(
@@ -933,6 +933,8 @@ class DRCNet(ActorBaseNet):
         self.policy = nn.Linear(256, self.num_actions * self.dim_actions)
         self.baseline = nn.Linear(256, 1)
 
+        self.record_core_output = False
+
         if getattr(flags, "ppo_k", 1) > 1:
             kl_beta = torch.tensor(1.)
             self.register_buffer("kl_beta", kl_beta)
@@ -950,7 +952,7 @@ class DRCNet(ActorBaseNet):
         x = torch.flatten(x, 0, 1)
         x_enc = self.encoder(x)
         core_input = x_enc.view(*((T, B) + x_enc.shape[1:]))
-        core_output, core_state = self.core(core_input, done, core_state, record_state=self.record_state)
+        core_output, core_state = self.core(core_input, done, core_state, record_state=self.record_state, record_output=self.record_core_output)
         if self.record_state: self.hidden_state = self.core.hidden_state
         core_output = torch.flatten(core_output, 0, 1)
         core_output = torch.cat([x_enc, core_output], dim=1)

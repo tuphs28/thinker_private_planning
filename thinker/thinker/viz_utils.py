@@ -104,4 +104,81 @@ def make_gif_channel_across_envs(states_list, layer, channel, gif_fps=0.5, gif_n
         plt.pause(0.1)
         camera.snap()
     animation = camera.animate()
-    animation.save(gif_file+"/"+f'{gif_name}.gif', writer='PillowWriter', fps=gif_fps)   
+    animation.save(gif_file+"/"+f'{gif_name}.gif', writer='PillowWriter', fps=gif_fps)
+
+
+def create_gif_single_env_multi_channels(agent_env_list, batch, layer, channels, mini=False, max_frames=100, gif_file="./viz", gif_name="test"):
+    fig, axs = plt.subplots(5,len(channels))
+    for layer_idx in range(5):
+        for tick_idx in range(len(channels)):
+            axs[layer_idx, tick_idx].axis("off")
+    camera = Camera(fig)
+    n_frames = 0
+    for agent_states, env_states in agent_env_list:
+        env_state = env_states[batch]
+        if env_state.shape[0] != env_state.shape[1]:
+            env_state = env_state.permute(1,2,0)
+        if mini:
+            mini_board = np.zeros(env_state.shape[:-1])
+            for i in range(1,8):
+                mini_board[(env_state[:,:,i-1] == 1)] = i
+            mini_board = np.flip(mini_board, axis=0)
+            cmap = colors.ListedColormap(['black', "lavender", "peru", "gold", "green","magenta", "khaki"])
+            bounds=[0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5]
+            norm = colors.BoundaryNorm(bounds, cmap.N)
+            board = mini_board
+        else:
+            board = env_state
+        for i in range(len(channels)):
+            axs[0][i].imshow(board, interpolation='nearest', origin='lower', cmap=cmap, norm=norm)
+        for channel_idx, channel in enumerate(channels):
+            axs[0,channel_idx].set_title(channel)
+            for tick_idx in range(4):
+                axs[tick_idx+1, channel_idx].imshow(agent_states[batch, tick_idx,layer*64+channel,:,:].detach())
+        plt.pause(0.1)
+        camera.snap()
+        n_frames += 1
+        if n_frames == max_frames:
+            break
+    animation = camera.animate()
+    if not os.path.exists(gif_file):
+        os.makedirs(gif_file)
+    animation.save(gif_file+"/"+f'{gif_name}.gif', writer='PillowWriter', fps=0.5) 
+
+
+def create_gif_multi_env_single_channel(agent_env_list, envs, layer, channel, mini=False, max_frames=100, gif_file="./viz", gif_name="test"):
+    fig, axs = plt.subplots(5,len(envs))
+    for layer_idx in range(5):
+        for tick_idx in range(len(envs)):
+            axs[layer_idx, tick_idx].axis("off")
+    camera = Camera(fig)
+    n_frames = 0
+    for agent_states, env_states in agent_env_list:
+        for env_idx, env in enumerate(envs):
+            env_state = env_states[env]
+            if env_state.shape[0] != env_state.shape[1]:
+                env_state = env_state.permute(1,2,0)
+            if mini:
+                mini_board = np.zeros(env_state.shape[:-1])
+                for i in range(1,8):
+                    mini_board[(env_state[:,:,i-1] == 1)] = i
+                mini_board = np.flip(mini_board, axis=0)
+                cmap = colors.ListedColormap(['black', "lavender", "peru", "gold", "green","magenta", "khaki"])
+                bounds=[0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5]
+                norm = colors.BoundaryNorm(bounds, cmap.N)
+                board = mini_board
+            else:
+                board = env_state
+            axs[0][env_idx].imshow(board, interpolation='nearest', origin='lower', cmap=cmap, norm=norm)
+            axs[0][env_idx].set_title(env)
+            for tick_idx in range(4):
+                axs[tick_idx+1, env_idx].imshow(agent_states[env, tick_idx,layer*64+channel,:,:].detach())
+        plt.pause(0.1)
+        camera.snap()
+        n_frames += 1
+        if n_frames == max_frames:
+            break
+    animation = camera.animate()
+    if not os.path.exists(gif_file):
+        os.makedirs(gif_file)
+    animation.save(gif_file+"/"+f'{gif_name}.gif', writer='PillowWriter', fps=0.5)    

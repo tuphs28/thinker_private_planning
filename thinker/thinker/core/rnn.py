@@ -281,13 +281,15 @@ class ConvAttnLSTM(nn.Module):
             )
         return core_state
     
-    def forward(self, x, done, core_state, record_state=False):
+    def forward(self, x, done, core_state, record_state=False, record_output=False):
         assert len(x.shape) == 5
         core_output_list = []
         reset = done.float()
         if record_state: 
             self.hidden_state = []
-            self.hidden_state.append(torch.concat(core_state, dim=1))  
+            self.hidden_state.append(torch.concat(core_state, dim=1)) 
+        if record_output:
+            self.output = [] 
         for n, (x_single, reset_single) in enumerate(
             zip(x.unbind(), reset.unbind())
         ):

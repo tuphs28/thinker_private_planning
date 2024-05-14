@@ -59,7 +59,7 @@ export WANDB_USER=28tbush
 #! Insert additional module load commands after this line if needed:
 
 application="python train.py \
-        --xpid drc_train_002 \
+        --xpid drc_train_005 \
         --drc true \
         --actor_unroll_len 20 \
         --reg_cost 1 \
