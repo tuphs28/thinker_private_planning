@@ -305,6 +305,8 @@ class ConvAttnLSTM(nn.Module):
             core_output_list.append(output)
         core_output = torch.cat(core_output_list)
         if record_state: self.hidden_state = torch.stack(self.hidden_state, dim=1)
+        if record_output:
+            self.output = torch.cat(self.output, dim=0)
         return core_output, core_state
 
     def forward_single(self, x, core_state, reset, reset_attn):

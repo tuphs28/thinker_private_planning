@@ -895,7 +895,7 @@ class DRCNet(ActorBaseNet):
         super(DRCNet, self).__init__(obs_space, action_space, flags, tree_rep_meaning, record_state)
         assert flags.wrapper_type == 1
 
-        k1, s1, p1 = 1 if flags.mini else 8, 1 if flags.mini else 4, 0 if flags.mini else 2
+        k1, s1, p1 = 3 if flags.mini else 8, 1 if flags.mini else 4, 1 if flags.mini else 2
         k2, s2, p2 = 4, 2, 1
 
         encoder_layers = [nn.Conv2d(

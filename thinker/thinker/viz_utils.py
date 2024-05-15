@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from celluloid import Camera
 from torch import swapaxes
+import os
 
 def plot_mini_sokoban(state, legend=False):
     """Plot board state for mini sokoban
