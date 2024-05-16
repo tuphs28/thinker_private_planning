@@ -39,8 +39,9 @@ class ProbingDataset(Dataset):
 if __name__=="__main__":
 
     mini = True
-    gpu = False
+    gpu = True
     pct_train = 0.9
+    num_episodes = 600
 
     adj_wall_detector = make_feature_detector(feature_idx=0, mode="adj")
     adj_boxnotontar_detector = make_feature_detector(feature_idx=2, mode="adj")
@@ -68,6 +69,7 @@ if __name__=="__main__":
         flags=flags,
         record_state=True,
     )
+    drc_net.to(env.device)
 
     rnn_state = drc_net.initial_state(batch_size=1, device=env.device)
     state = env.reset() 
@@ -78,12 +80,11 @@ if __name__=="__main__":
     board_num = 0
 
     episode_returns = []
-    while(len(episode_returns) < 1):
-
+    while(len(episode_returns) < num_episodes):
         if episode_length > 0:
             step_entry["reward"] = reward.item()
             episode_entry.append(step_entry)
-
+        print(board_num)
         state, reward, done, info = env.step(actor_out.action)
         env_out = util.create_env_out(actor_out.action, state, reward, done, info, flags)
         actor_out, rnn_state = drc_net(env_out, rnn_state)
