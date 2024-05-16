@@ -27,14 +27,21 @@ def make_feature_detector(feature_idx, mode):
     return feature_detector
 
 class ProbingDataset(Dataset):
-    def __init__(self, data):
+    def __init__(self, data: list):
         self.data = data
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.data)
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> dict:
         return self.data[index]
-    def get_subsample(self, n):
-        return ProbingDataset(self.data[torch.randperm(len(self))][:n])
+    def get_feature_range(self, feature: str) -> tuple[int, int]:
+        assert feature in self.data[0].keys(), f"Please enter a feature in dataset: {self.data[0].keys()}"
+        min_feature_value, max_feature_value = self.data[0][feature], self.data[0][feature]
+        for entry in self.data:
+            if entry[feature] > max_feature_value:
+                max_feature_value = entry[feature]
+            elif entry[feature] < min_feature_value:
+                min_feature_value = entry[feature]
+        return (min_feature_value, max_feature_value)
 
 if __name__=="__main__":
 
@@ -117,6 +124,6 @@ if __name__=="__main__":
 
     final_train_board = int(board_num*pct_train)
     probing_train_data = [entry for entry in probing_data if entry["board_num"] <= final_train_board]
-    probing_test_data = [entry for entry in probing_data if entry["board_num"] < final_train_board]
+    probing_val_data = [entry for entry in probing_data if entry["board_num"] < final_train_board]
     torch.save(ProbingDataset(probing_train_data), "../../probing/data/train_data.pt")
-    torch.save(ProbingDataset(probing_test_data), "../../probing/data/test_data.pt")
+    torch.save(ProbingDataset(probing_val_data), "../../probing/data/val_data.pt")
