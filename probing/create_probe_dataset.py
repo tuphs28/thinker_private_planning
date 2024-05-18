@@ -51,7 +51,7 @@ def make_future_feature_detector(feature_name: str, steps_ahead: int) -> Callabl
         return episode_entry
     return feature_detector
 
-@torch.no_grad
+@torch.no_grad()
 def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episodes: int, current_board_feature_fncs: list, future_feature_fncs: list) -> list:
     """Generate a list where each entry is a dictionary of features corresponding to a single transition
 
@@ -98,6 +98,7 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
             probing_data += episode_entry
             episode_length = 0
             board_num += 1
+            print(board_num)
 
     return probing_data
 
@@ -121,9 +122,9 @@ class ProbingDataset(Dataset):
 if __name__=="__main__":
 
     mini = True
-    gpu = False
-    pct_train = 0.6
-    num_episodes = 10
+    gpu = True
+    pct_train = 0.9
+    num_episodes = 1000
 
     adj_wall_detector = make_current_board_feature_detector(feature_idx=0, mode="adj")
     adj_boxnotontar_detector = make_current_board_feature_detector(feature_idx=2, mode="adj")

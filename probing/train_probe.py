@@ -7,11 +7,11 @@ from typing import Callable
 from probe_model import LinearProbe
 from create_probe_dataset import ProbingDataset
 
-def train_one_epoch(probe: LinearProbe, feature: str, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader) -> int:
+def train_one_epoch(probe: LinearProbe, feature: str, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, device: torch.device = torch.device("cpu")) -> int:
     train_loss = []
     for transition in train_loader:
-        hidden_states = transition["hidden_states"]
-        targets = transition[feature]
+        hidden_states = transition["hidden_states"].to(device)
+        targets = transition[feature].to(device)
         optimiser.zero_grad()
         probe_logits = probe(hidden_states)
         loss = loss_fnc(probe_logits, targets)
@@ -20,37 +20,39 @@ def train_one_epoch(probe: LinearProbe, feature: str, optimiser: torch.optim.Opt
         optimiser.step()
     return sum(train_loss) / len(train_loss)
 
-@torch.no_grad
-def calc_loss(probe: LinearProbe, feature: str, loss_fnc: Callable, data_loader: DataLoader) -> float:
+@torch.no_grad()
+def calc_loss(probe: LinearProbe, feature: str, loss_fnc: Callable, data_loader: DataLoader, device: torch.device = torch.device("cpu")) -> float:
     losses = []
     for transition in data_loader:
-        hidden_states = transition["hidden_states"]
-        targets = transition[feature]
+        hidden_states = transition["hidden_states"].to(device)
+        targets = transition[feature].to(device)
         probe_logits = probe(hidden_states)
         loss = loss_fnc(probe_logits, targets)
         losses.append(loss.item())
     return sum(losses) / len(losses)
 
-@torch.no_grad
-def calc_acc(probe: LinearProbe, feature: str, data_loader: DataLoader) -> float:
+@torch.no_grad()
+def calc_acc(probe: LinearProbe, feature: str, data_loader: DataLoader, device: torch.device = torch.device("cpu")) -> float:
     num_correct = 0
     for transition in data_loader:
-        hidden_states = transition["hidden_states"]
-        targets = transition[feature]
+        hidden_states = transition["hidden_states"].to(device)
+        targets = transition[feature].to(device)
         probe_logits = probe(hidden_states)
         num_correct += torch.sum(probe_logits.argmax(dim=-1)==targets).item()
     return num_correct / len(data_loader.dataset)
 
-def train_probe(probe: LinearProbe, feature: str, n_epochs: int, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, val_loader: DataLoader, display_loss_freq: int = 1) -> int:
+def train_probe(probe: LinearProbe, feature: str, n_epochs: int, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, val_loader: DataLoader, display_loss_freq: int = 1, device: torch.device = torch.device("cpu")) -> int:
     train_losses, val_losses = [], []
     for epoch in range(1, n_epochs+1):
-        train_loss = train_one_epoch(probe=probe, feature=feature, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader)
+        train_loss = train_one_epoch(probe=probe, feature=feature, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, device=device)
         with torch.no_grad():
-            val_loss = calc_loss(probe=probe, feature=feature, loss_fnc=loss_fnc, data_loader=train_loader)
+            train_acc = calc_acc(probe=probe, feature=feature, data_loader=train_loader, device=device)
+            val_loss = calc_loss(probe=probe, feature=feature, loss_fnc=loss_fnc, data_loader=val_loader, device=device)
+            val_acc = calc_acc(probe=probe, feature=feature, data_loader=val_loader, device=device)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         if display_loss_freq and epoch % display_loss_freq == 0:
-            print(f"EPOCH {epoch} --- Train loss: {train_loss}, Val loss: {val_loss}") 
+            print(f"EPOCH {epoch} --- Train loss: {train_loss}, Train_acc: {train_acc}, Val loss: {val_loss}, Val acc: {val_acc}") 
     train_output = {"probe": probe, "train_loss": train_losses, "val_loss": val_losses}
     return train_output
 
@@ -69,6 +71,11 @@ def make_trained_probe_for_discrete_feature(feature: str, layer: int, tick: int,
             entry[feature] -= min_feature
 
     probe = LinearProbe(layer=2, tick=3, target_dim=max_feature+1-min_feature)
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    probe.to(device)
     loss_fnc = torch.nn.CrossEntropyLoss()
     if optimiser_name == "SGD":
         optimiser = torch.optim.SGD(params=probe.parameters(), lr=lr, weight_decay=weight_decay)
@@ -80,14 +87,14 @@ def make_trained_probe_for_discrete_feature(feature: str, layer: int, tick: int,
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(dataset=val_dataset, batch_size=batch_size)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
-    train_output = train_probe(probe=probe, feature=feature, n_epochs=n_epochs, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq)
-    print(calc_acc(probe=probe, feature=feature, data_loader=val_loader))
+    train_output = train_probe(probe=probe, feature=feature, n_epochs=n_epochs, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq, device=device)
+    print(calc_acc(probe=probe, feature=feature, data_loader=test_loader))
     return train_output
 
 if __name__ == "__main__":
-    probe_feature = "action"
+    probe_feature = "action_plus_2"
 
-    train_dataset = torch.load("./data/train_data.pt")
+    train_dataset = torch.load("./data/test_data.pt")
     val_dataset = torch.load("./data/val_data.pt")
     test_dataset = torch.load("./data/test_data.pt")
 
