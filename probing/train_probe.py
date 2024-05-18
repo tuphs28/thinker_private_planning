@@ -1,8 +1,8 @@
 import torch
 from torch.utils.data.dataset import Dataset
 from torch.utils.data import DataLoader
-
-from typing import Callable
+from typing import Callable, Optional
+import wandb
 
 from probe_model import LinearProbe
 from create_probe_dataset import ProbingDataset
@@ -41,22 +41,23 @@ def calc_acc(probe: LinearProbe, feature: str, data_loader: DataLoader, device: 
         num_correct += torch.sum(probe_logits.argmax(dim=-1)==targets).item()
     return num_correct / len(data_loader.dataset)
 
-def train_probe(probe: LinearProbe, feature: str, n_epochs: int, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, val_loader: DataLoader, display_loss_freq: int = 1, device: torch.device = torch.device("cpu")) -> int:
+def train_probe(probe: LinearProbe, feature: str, n_epochs: int, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, val_loader: DataLoader, display_loss_freq: int = 1, device: torch.device = torch.device("cpu"), wandb_run: bool = False) -> int:
     train_losses, val_losses = [], []
     for epoch in range(1, n_epochs+1):
         train_loss = train_one_epoch(probe=probe, feature=feature, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, device=device)
-        with torch.no_grad():
-            train_acc = calc_acc(probe=probe, feature=feature, data_loader=train_loader, device=device)
-            val_loss = calc_loss(probe=probe, feature=feature, loss_fnc=loss_fnc, data_loader=val_loader, device=device)
-            val_acc = calc_acc(probe=probe, feature=feature, data_loader=val_loader, device=device)
+        train_acc = calc_acc(probe=probe, feature=feature, data_loader=train_loader, device=device)
+        val_loss = calc_loss(probe=probe, feature=feature, loss_fnc=loss_fnc, data_loader=val_loader, device=device)
+        val_acc = calc_acc(probe=probe, feature=feature, data_loader=val_loader, device=device)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         if display_loss_freq and epoch % display_loss_freq == 0:
-            print(f"EPOCH {epoch} --- Train loss: {train_loss}, Train_acc: {train_acc}, Val loss: {val_loss}, Val acc: {val_acc}") 
+            print(f"EPOCH {epoch} --- Train loss: {train_loss}, Train_acc: {train_acc}, Val loss: {val_loss}, Val acc: {val_acc}")
+        if wandb_run:
+            wandb.log({"epoch": epoch, "train_loss": train_loss, "train_acc": train_acc, "val_loss": val_loss, "val_acc": val_acc}) 
     train_output = {"probe": probe, "train_loss": train_losses, "val_loss": val_losses}
     return train_output
 
-def make_trained_probe_for_discrete_feature(feature: str, layer: int, tick: int, train_dataset: ProbingDataset, val_dataset: ProbingDataset, test_dataset:ProbingDataset, batch_size: int = 16, n_epochs: int = 20, lr: float = 1e-3, weight_decay: float =  1, optimiser_name: str = "SGD", display_loss_freq: int = 5) -> dict:
+def make_trained_probe_for_discrete_feature(feature: str, layer: int, tick: int, train_dataset: ProbingDataset, val_dataset: ProbingDataset, test_dataset:ProbingDataset, batch_size: int = 16, n_epochs: int = 20, lr: float = 1e-3, weight_decay: float =  1, optimiser_name: str = "SGD", display_loss_freq: int = 5, wandb_expname: Optional[None] = None, wandb_projname: Optional[None] = None) -> dict:
     assert layer in [0,1,2], "Please enter a valid DRC layer: [0,1,2]"
     assert tick in [0,1,2,3], "Please enter a valid DRC tick: [0,1,2,3]"
     assert feature in train_dataset[0].keys(), f"Please enter a concept contained in the dataset: {next(iter(train_loader))[0].keys()}"
@@ -76,6 +77,7 @@ def make_trained_probe_for_discrete_feature(feature: str, layer: int, tick: int,
     else:
         device = torch.device("cpu")
     probe.to(device)
+
     loss_fnc = torch.nn.CrossEntropyLoss()
     if optimiser_name == "SGD":
         optimiser = torch.optim.SGD(params=probe.parameters(), lr=lr, weight_decay=weight_decay)
@@ -84,28 +86,42 @@ def make_trained_probe_for_discrete_feature(feature: str, layer: int, tick: int,
     else:
         raise ValueError("Please select a supported optimiser: SGD, Adam")
     
+    if wandb_expname and wandb_projname:
+        run = wandb.init(project=wandb_projname, name=wandb_expname, config={"feature": feature, "layer": layer, "tick": tick})
+        wandb_run = True
+    
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(dataset=val_dataset, batch_size=batch_size)
     test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size)
-    train_output = train_probe(probe=probe, feature=feature, n_epochs=n_epochs, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq, device=device)
+    train_output = train_probe(probe=probe, feature=feature, n_epochs=n_epochs, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq, device=device, wandb_run=wandb_run)
     print(calc_acc(probe=probe, feature=feature, data_loader=test_loader))
     return train_output
 
 if __name__ == "__main__":
-    probe_feature = "action_plus_2"
+    probe_feature = "action_plus_1"
+    wandb_projname = "probing"
+    layer = 2
+    tick = 0
 
     train_dataset = torch.load("./data/test_data.pt")
     val_dataset = torch.load("./data/val_data.pt")
     test_dataset = torch.load("./data/test_data.pt")
 
+    if wandb_projname:
+        wandb_expname = f"{probe_feature}_layer_{layer}_tick_{tick}"
+    else:
+        wandb_expname = ""
+
     train_output = make_trained_probe_for_discrete_feature(feature=probe_feature,
-                                                       layer=0,
-                                                       tick=0,
-                                                       train_dataset=train_dataset,
-                                                       val_dataset=val_dataset,
-                                                       test_dataset=test_dataset,
-                                                       batch_size=4,
-                                                       display_loss_freq=1, 
-                                                       weight_decay=0,
-                                                       n_epochs=30)
-                                                    
+                                                    layer=layer,
+                                                    tick=tick,
+                                                    train_dataset=train_dataset,
+                                                    val_dataset=val_dataset,
+                                                    test_dataset=test_dataset,
+                                                    batch_size=4,
+                                                    display_loss_freq=1, 
+                                                    weight_decay=0,
+                                                    n_epochs=20,
+                                                    wandb_expname=wandb_expname,
+                                                    wandb_projname=wandb_projname)
+                                                
