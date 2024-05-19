@@ -70,7 +70,7 @@ def make_future_feature_detector(feature_name: str, steps_ahead: int, mode: str)
                         traj.append(episode_entry[trans_idx+traj_idx][feature_name])
                     trans_entry[new_feature_name] = traj
                 else:
-                    trans_entry[new_feature_name] = 42
+                    trans_entry[new_feature_name] = [42] * (1+steps_ahead)
             return episode_entry
     else:
         raise ValueError(f"User entered mode {mode}, valid modes are: ahead, traj")
@@ -155,7 +155,7 @@ if __name__=="__main__":
     mini = True
     gpu = False
     pct_train = 1
-    num_episodes = 2
+    num_episodes = 3
 
     adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
     adj_boxnotontar_detector = make_current_board_feature_detector(feature_idxs=[2], mode="adj")
