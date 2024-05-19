@@ -17,6 +17,7 @@ def plot_mini_sokoban(state, legend=False):
     mini_board = np.zeros(state.shape[:-1])
     for i in range(1,8):
         mini_board[(state[:,:,i-1] == 1)] = i
+    mini_board = np.flip(mini_board, axis=0)
     cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "green","magenta", "khaki"])
     bounds=[0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5]
     norm = colors.BoundaryNorm(bounds, cmap.N)

@@ -3,6 +3,7 @@ from gym.spaces.discrete import Discrete
 from gym.spaces import Box
 from .csokoban import cSokoban
 import numpy as np
+import torch
 import pkg_resources
 import os 
 
@@ -25,6 +26,8 @@ class SokobanEnv(gym.Env):
 
         level_dir = pkg_resources.resource_filename(__name__, path)
         img_dir = pkg_resources.resource_filename(__name__, 'surface')
+
+        self.mini = mini
         
         self.sokoban = cSokoban(small=small, 
                                 level_dir=level_dir.encode('UTF-8'), 
@@ -67,4 +70,5 @@ class SokobanEnv(gym.Env):
 
     @step_n.setter
     def step_n(self, step_n):
-        self.sokoban.step_n = step_n  
+        self.sokoban.step_n = step_n 
+

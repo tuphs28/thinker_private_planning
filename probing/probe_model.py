@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.nn.functional import softmax
 
 class LinearProbe(nn.Module):
+    """Linear probe for the DRC(3,3) agent"""
     
     def __init__(self, layer: int, tick: int, target_dim: int, bias: bool = True):
         super().__init__()
