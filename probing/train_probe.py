@@ -70,8 +70,9 @@ def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: Pro
         for entry in test_dataset.data:
             entry[probe_args["feature"]] -= min_feature
 
-    probe = DRCProbe(layer=probe_args["layer"],
-                     tick=probe_args["tick"],
+    probe = DRCProbe(drc_layer=probe_args["layer"],
+                     drc_tick=probe_args["tick"],
+                     drc_channels=probe_args["channels"],
                      linear=probe_args["linear"],
                      num_layers=probe_args["num_layers"],
                      hidden_dim=probe_args["hidden_dim"],
@@ -111,9 +112,10 @@ if __name__ == "__main__":
         "hidden_dim": 256,
         "batch_size": 2,
         "optimiser": "Adam",
-        "n_epochs": 15,
+        "n_epochs": 10,
         "weight_decay": 0.1,
-        "lr": 1e-3
+        "lr": 1e-3,
+        "channels": None
     }
 
     train_dataset = torch.load("./data/train_data.pt")

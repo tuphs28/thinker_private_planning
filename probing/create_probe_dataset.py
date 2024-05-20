@@ -3,7 +3,7 @@ from thinker.actor_net import DRCNet
 from torch.utils.data.dataset import Dataset
 import torch
 from thinker import util
-from typing import Callable, NamedTuple
+from typing import Callable, NamedTuple, Optional
 from numpy.random import uniform
 import os
 
@@ -40,19 +40,19 @@ def make_current_board_feature_detector(feature_idxs: list, mode: str) -> Callab
         raise ValueError(f"Please enter a valid mode to construct a feature detector - user entered {mode}, valid modes are adj, num and loc")
     return feature_detector
 
-def make_future_feature_detector(feature_name: str, steps_ahead: int, mode: str) -> Callable:
+def make_future_feature_detector(feature_name: str, mode: str, steps_ahead: Optional[int] = None) -> Callable:
     """Create function that adds a feature to each transition (i.e. a dictionary of features) corresponding to the feature with name feature_name in steps_ahead steps
 
     Args:
         feature_name (str): feature to track steps_ahead into the future
-        steps_ahead (int): number of steps ahead into the future to look for this features
-        mode (str): type of feature detector to construct: ahead (make feature corresponding to feature_name in steps_ahead steps) or traj (make feature corresponding to trajectory of feature_name from current value to over steps_ahead steps)
+        steps_ahead (Optional int): number of steps ahead into the future to look for this feature if mode is either ahead or traj
+        mode (str): type of feature detector to construct: ahead (make feature corresponding to feature_name in steps_ahead steps), traj (make feature corresponding to trajectory of feature_name from current value to over steps_ahead steps) or change (number of steps until the feature next changes)
 
     Returns:
         Callable: feature detector function, takes in a list of transitions for a single episode and adds an entry for feature_name in steps_ahead steps
     """
-    new_feature_name = f"{feature_name}_{mode}_{steps_ahead}"
     if mode == "ahead":
+        new_feature_name = f"{feature_name}_ahead_{steps_ahead}"
         def feature_detector(episode_entry: list) -> list:
             assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
             episode_length = len(episode_entry)
@@ -60,6 +60,7 @@ def make_future_feature_detector(feature_name: str, steps_ahead: int, mode: str)
                 trans_entry[new_feature_name] = episode_entry[trans_idx+steps_ahead][feature_name] if trans_idx < episode_length-steps_ahead-1 else 42
             return episode_entry
     elif mode == "traj":
+        new_feature_name = f"{feature_name}_traj_{steps_ahead}"
         def feature_detector(episode_entry: list) -> list:
             assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
             episode_length = len(episode_entry)
@@ -70,10 +71,23 @@ def make_future_feature_detector(feature_name: str, steps_ahead: int, mode: str)
                         traj.append(episode_entry[trans_idx+traj_idx][feature_name])
                     trans_entry[new_feature_name] = traj
                 else:
-                    trans_entry[new_feature_name] = [42] * (1+steps_ahead)
+                    trans_entry[new_feature_name] = [64] * (1+steps_ahead) # 64 is an (arbitrary) number I use when a feature is invalid for an entry (e.g. when predicting the next action for the final transition)
+            return episode_entry
+    elif mode == "change":
+        new_feature_name = f"{feature_name}_until_change"
+        def feature_detector(episode_entry: list) -> list:
+            assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
+            episode_length = len(episode_entry)
+            for trans_idx, trans_entry in enumerate(episode_entry):
+                future_idx = 0
+                while episode_entry[trans_idx+future_idx][feature_name] == trans_entry[feature_name]:
+                    future_idx += 1
+                    if trans_idx + future_idx == episode_length: # if no change in feature over rest of episode, just count steps until end of episode (e.g. this is the desired behaviour for counting boxes) - may need to change this if using for features over than boxes
+                        break
+                trans_entry[new_feature_name] = future_idx 
             return episode_entry
     else:
-        raise ValueError(f"User entered mode {mode}, valid modes are: ahead, traj")
+        raise ValueError(f"User entered mode {mode}, valid modes are: ahead, traj, change")
     return feature_detector
 
 
@@ -129,7 +143,7 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
             probing_data += pruned_episode_entry
             episode_length = 0
             board_num += 1
-            print(board_num)
+            print("Data collected from board ", board_num)
 
     return probing_data
 
@@ -154,8 +168,8 @@ if __name__=="__main__":
 
     mini = True
     gpu = False
-    pct_train = 1
-    num_episodes = 3
+    pct_train = 0.8
+    num_episodes = 10
 
     adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
     adj_boxnotontar_detector = make_current_board_feature_detector(feature_idxs=[2], mode="adj")
@@ -180,6 +194,7 @@ if __name__=="__main__":
     future_feature_fncs += [make_future_feature_detector(feature_name="action",steps_ahead=t, mode="traj") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="reward",steps_ahead=t, mode="traj") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="value",steps_ahead=t, mode="traj") for t in range(1,4)]
+    future_feature_fncs += [make_future_feature_detector(feature_name="num_boxnotontar", mode="change")]
 
 
     env = make("Sokoban-v0",env_n=1,gpu=gpu,wrapper_type=1,has_model=False,train_model=False,parallel=False,save_flags=False,mini=mini)
@@ -206,7 +221,7 @@ if __name__=="__main__":
                                        prob_accept=0.2)
 
     final_train_board = int(num_episodes * pct_train)
-    final_val_board = final_train_board + int(num_episodes * 0.5 * (1 - pct_train))
+    final_val_board = final_train_board + int(num_episodes * round(0.5 * (1 - pct_train), 2))
     probing_train_data = [entry for entry in probing_data if entry["board_num"] <= final_train_board]
     probing_val_data = [entry for entry in probing_data if entry["board_num"] > final_train_board and entry["board_num"] <= final_val_board]
     probing_test_data = [entry for entry in probing_data if entry["board_num"] > final_val_board]
