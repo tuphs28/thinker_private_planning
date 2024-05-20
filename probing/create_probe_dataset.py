@@ -143,7 +143,8 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
             probing_data += pruned_episode_entry
             episode_length = 0
             board_num += 1
-            print("Data collected from board ", board_num)
+            print("Data collected from episode", board_num, "pruned episode length ", len(pruned_episode_entry))
+            episode_entry = []
 
     return probing_data
 
@@ -168,7 +169,7 @@ if __name__=="__main__":
 
     mini = True
     gpu = False
-    pct_train = 0.8
+    pct_train = 0.6
     num_episodes = 10
 
     adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
@@ -225,6 +226,7 @@ if __name__=="__main__":
     probing_train_data = [entry for entry in probing_data if entry["board_num"] <= final_train_board]
     probing_val_data = [entry for entry in probing_data if entry["board_num"] > final_train_board and entry["board_num"] <= final_val_board]
     probing_test_data = [entry for entry in probing_data if entry["board_num"] > final_val_board]
+    print(f"train, val and test sets contain {len(probing_train_data)}, {len(probing_val_data)}, {len(probing_test_data)} transitions respectively")
     torch.save(ProbingDataset(probing_train_data), "./data/train_data.pt")
     torch.save(ProbingDataset(probing_val_data), "./data/val_data.pt")
     torch.save(ProbingDataset(probing_test_data), "./data/test_data.pt")
