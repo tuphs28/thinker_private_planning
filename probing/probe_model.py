@@ -15,7 +15,26 @@ class DRCProbe(nn.Module):
         self.target_dim = target_dim
         self.linear = linear
         self.hidden_dim = hidden_dim
-        self.drc_channels = [64*self.drc_layer + c for c in drc_channels] if drc_channels is not None else list(range(64*self.drc_layer, 64*(self.drc_layer+1)))
+
+        if drc_channels == "hidden":
+            self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+32))
+        elif drc_channels == "cell":
+            self.drc_channels = list(range(96*self.drc_layer+32, 96*self.drc_layer+64))
+        elif drc_channels == "x_enc":
+            self.drc_channels = list(range(96*self.drc_layer+64, 96*self.drc_layer+96))
+        elif drc_channels == "cell_x_enc":
+            self.drc_channels = list(range(96*self.drc_layer+32, 96*self.drc_layer+64)) + list(range(96*self.drc_layer+64, 96*self.drc_layer+96))
+        elif drc_channels == "hidden_x_enc":
+            self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+32)) + list(range(96*self.drc_layer+64, 96*self.drc_layer+96))
+        elif drc_channels == "hidden_cell":
+            self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+64)) 
+        elif drc_channels == "all":
+            self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+96))
+        elif type(drc_channels) == list:
+            self.drc_channels = [96*self.drc_layer + c for c in drc_channels]
+        else:
+            raise ValueError("drc_channels must be either list of ints or a string corresponding to a specific component (hidden, cell, x_enc, hidden_x_enc))")
+        #print(self.drc_channels)
         self.in_dim = 64 * len(self.drc_channels)
 
         if self.linear:

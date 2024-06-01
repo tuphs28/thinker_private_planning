@@ -5,13 +5,13 @@ from typing import Callable, Optional
 import wandb
 
 from probe_model import DRCProbe
-from create_probe_dataset import ProbingDataset
+from create_probe_dataset import ProbingDataset, ProbingDatasetCleaned
 
-def train_one_epoch(probe: DRCProbe, feature: str, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, device: torch.device = torch.device("cpu")) -> int:
+def train_one_epoch(probe: DRCProbe, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, device: torch.device = torch.device("cpu")) -> int:
     train_loss = []
-    for transition in train_loader:
-        hidden_states = transition["hidden_states"].to(device)
-        targets = transition[feature].to(device)
+    for (hidden_states, targets) in train_loader:
+        hidden_states = hidden_states.to(device)
+        targets = targets.to(device)
         optimiser.zero_grad()
         probe_logits = probe(hidden_states)
         loss = loss_fnc(probe_logits, targets)
@@ -21,54 +21,77 @@ def train_one_epoch(probe: DRCProbe, feature: str, optimiser: torch.optim.Optimi
     return sum(train_loss) / len(train_loss)
 
 @torch.no_grad()
-def calc_loss(probe: DRCProbe, feature: str, loss_fnc: Callable, data_loader: DataLoader, device: torch.device = torch.device("cpu")) -> float:
+def calc_loss(probe: DRCProbe, loss_fnc: Callable, data_loader: DataLoader, device: torch.device = torch.device("cpu")) -> float:
     losses = []
-    for transition in data_loader:
-        hidden_states = transition["hidden_states"].to(device)
-        targets = transition[feature].to(device)
+    for (hidden_states, targets) in data_loader:
+        hidden_states = hidden_states.to(device)
+        targets = targets.to(device)
         probe_logits = probe(hidden_states)
         loss = loss_fnc(probe_logits, targets)
         losses.append(loss.item())
     return sum(losses) / len(losses)
 
 @torch.no_grad()
-def calc_acc(probe: DRCProbe, feature: str, data_loader: DataLoader, device: torch.device = torch.device("cpu")) -> float:
+def calc_acc(probe: DRCProbe, data_loader: DataLoader, device: torch.device = torch.device("cpu")) -> float:
     num_correct = 0
-    for transition in data_loader:
-        hidden_states = transition["hidden_states"].to(device)
-        targets = transition[feature].to(device)
+    for (hidden_states, targets) in data_loader:
+        hidden_states = hidden_states.to(device)
+        targets = targets.to(device)
         probe_logits = probe(hidden_states)
         num_correct += torch.sum(probe_logits.argmax(dim=-1)==targets).item()
     return num_correct / len(data_loader.dataset)
 
-def train_probe(probe: DRCProbe, feature: str, n_epochs: int, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, val_loader: DataLoader, display_loss_freq: int = 1, device: torch.device = torch.device("cpu"), wandb_run: bool = False) -> int:
+def train_probe(probe: DRCProbe, n_epochs: int, optimiser: torch.optim.Optimizer, loss_fnc: Callable, train_loader: DataLoader, val_loader: DataLoader, display_loss_freq: int = 1, device: torch.device = torch.device("cpu"), wandb_run: bool = False) -> int:
     train_losses, val_losses = [], []
     for epoch in range(1, n_epochs+1):
-        train_loss = train_one_epoch(probe=probe, feature=feature, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, device=device)
-        train_acc = calc_acc(probe=probe, feature=feature, data_loader=train_loader, device=device)
-        val_loss = calc_loss(probe=probe, feature=feature, loss_fnc=loss_fnc, data_loader=val_loader, device=device)
-        val_acc = calc_acc(probe=probe, feature=feature, data_loader=val_loader, device=device)
+        train_loss = train_one_epoch(probe=probe, optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, device=device)
+        train_acc = calc_acc(probe=probe, data_loader=train_loader, device=device)
+        val_loss = calc_loss(probe=probe, loss_fnc=loss_fnc, data_loader=val_loader, device=device)
+        val_acc = calc_acc(probe=probe, data_loader=val_loader, device=device)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         if display_loss_freq and epoch % display_loss_freq == 0:
-            print(f"EPOCH {epoch} --- Train loss: {train_loss}, Train_acc: {train_acc}, Val loss: {val_loss}, Val acc: {val_acc}")
+            print(f"EPOCH {epoch} --- Train loss: {train_loss:.4f}, Train_acc: {train_acc:.4f}, Val loss: {val_loss:.4f}, Val acc: {val_acc:.4f}")
         if wandb_run:
             wandb.log({"epoch": epoch, "train_loss": train_loss, "train_acc": train_acc, "val_loss": val_loss, "val_acc": val_acc}) 
-    train_output = {"probe": probe, "train_loss": train_losses, "val_loss": val_losses}
+    train_output = {"train_loss": train_loss, "val_loss": val_loss, "val_acc": val_acc}
     return train_output
 
 def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: ProbingDataset, val_dataset: ProbingDataset, test_dataset:ProbingDataset, display_loss_freq: int = 5, wandb_run: bool = False) -> dict:
     assert probe_args["layer"] in [0,1,2], "Please enter a valid DRC layer: [0,1,2]"
     assert probe_args["tick"] in [0,1,2,3], "Please enter a valid DRC tick: [0,1,2,3]"
 
-    min_feature, max_feature = train_dataset.get_feature_range(feature=probe_args["feature"])
-    if min_feature != 0:
-        for entry in train_dataset.data:
-            entry[probe_args["feature"]] -= min_feature
-        for entry in val_dataset.data:
-            entry[probe_args["feature"]] -= min_feature
-        for entry in test_dataset.data:
-            entry[probe_args["feature"]] -= min_feature
+    for trans in train_dataset.data:
+        if trans[probe_args["feature"]] == -1:
+            train_dataset.data.remove(trans)
+    for trans in test_dataset.data:
+        if trans[probe_args["feature"]] == -1:
+            test_dataset.data.remove(trans)
+    for trans in val_dataset.data:
+        if trans[probe_args["feature"]] == -1:
+            val_dataset.data.remove(trans)
+
+    if type(train_dataset[0][probe_args["feature"]]) == int:
+        min_feature, max_feature = train_dataset.get_feature_range(feature=probe_args["feature"])
+        if min_feature != 0:
+            for trans in train_dataset.data + val_dataset.data + test_dataset.data:
+                trans[probe_args["feature"]] -= min_feature
+    elif type(train_dataset[0][probe_args["feature"]]) == tuple: # turn tuple features into discrete int features in a kind of hacky way
+        tuple_to_int = {}
+        for trans in train_dataset.data + val_dataset.data + test_dataset.data:
+            if trans[probe_args["feature"]] not in tuple_to_int.keys():
+                tuple_to_int[trans[probe_args["feature"]]] = len(tuple_to_int.keys())
+            trans[probe_args["feature"]] = tuple_to_int[trans[probe_args["feature"]]]
+        min_feature, max_feature = train_dataset.get_feature_range(feature=probe_args["feature"])
+    else:
+        raise ValueError(f"The feature you are trying to train a probe for is of a type that is not currently supported - for reference, the feature value of the first element of the training set is: {train_dataset[0][probe_args['feature']]}")        
+
+    cleaned_train_data = [(trans["hidden_states"], trans[probe_args["feature"]]) for trans in train_dataset.data]
+    cleaned_val_data = [(trans["hidden_states"], trans[probe_args["feature"]]) for trans in val_dataset.data]
+    cleaned_test_data = [(trans["hidden_states"], trans[probe_args["feature"]]) for trans in test_dataset.data]
+    train_dataset = ProbingDatasetCleaned(cleaned_train_data)
+    val_dataset = ProbingDatasetCleaned(cleaned_val_data)
+    test_dataset = ProbingDatasetCleaned(cleaned_test_data)
 
     probe = DRCProbe(drc_layer=probe_args["layer"],
                      drc_tick=probe_args["tick"],
@@ -96,24 +119,21 @@ def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: Pro
     train_loader = DataLoader(dataset=train_dataset, batch_size=probe_args["batch_size"], shuffle=True)
     val_loader = DataLoader(dataset=val_dataset, batch_size=probe_args["batch_size"])
     test_loader = DataLoader(dataset=test_dataset, batch_size=probe_args["batch_size"])
-    train_output = train_probe(probe=probe, feature=probe_args["feature"], n_epochs=probe_args["n_epochs"], optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq, device=device, wandb_run=wandb_run)
-    print(calc_acc(probe=probe, feature=probe_args["feature"], data_loader=test_loader))
+    train_output = train_probe(probe=probe, n_epochs=probe_args["n_epochs"], optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq, device=device, wandb_run=wandb_run)
+    test_acc = calc_acc(probe=probe, data_loader=test_loader)
+    train_output["test_acc"] = test_acc
     return train_output
 
-if __name__ == "__main__":
-    wandb_projname = ""
+def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc_channels: list = [None], linears: list =[False], wandb_projname: Optional[str] = None):
+
     probe_args = {
-        "feature": "action",
-        "layer": 2,
-        "tick": 3,
-        "target_dim": 5,
         "linear": False,
-        "num_layers": 2,
-        "hidden_dim": 256,
-        "batch_size": 2,
+        "num_layers": 1,
+        "hidden_dim": 512,
+        "batch_size": 32,
         "optimiser": "Adam",
-        "n_epochs": 10,
-        "weight_decay": 0.1,
+        "n_epochs": 30,
+        "weight_decay": 0.0,
         "lr": 1e-3,
         "channels": None
     }
@@ -121,23 +141,57 @@ if __name__ == "__main__":
     train_dataset = torch.load("./data/train_data.pt")
     val_dataset = torch.load("./data/val_data.pt")
     test_dataset = torch.load("./data/test_data.pt")
+    results = {}
 
-    if wandb_projname != "":
-        probe_name = "linear" if probe_args["linear"] else f"nonlinear_{probe_args['num_layers']}_{probe_args['hidden_dim']}"
-        wandb_expname = f"{probe_args['feature']}_layer_{probe_args['layer']}_tick_{probe_args['tick']}"
-        with wandb.init(project=wandb_projname, name=wandb_expname, config=probe_args):
-            train_output = make_trained_probe_for_discrete_feature(probe_args=probe_args,
-                                                                train_dataset=train_dataset,
-                                                                val_dataset=val_dataset,
-                                                                test_dataset=test_dataset,
-                                                                display_loss_freq=1,
-                                                                wandb_run=True)
-    else:
-        train_output = make_trained_probe_for_discrete_feature(probe_args=probe_args,
-                                                            train_dataset=train_dataset,
-                                                            val_dataset=val_dataset,
-                                                            test_dataset=test_dataset,
-                                                            display_loss_freq=1, 
-                                                            wandb_run=False)
+    for feature in features:
+        probe_args["feature"] = feature
+        for drc_layer in drc_layers:
+            probe_args["layer"] = drc_layer
+            for drc_tick in drc_ticks:
+                probe_args["tick"] = drc_tick
+                for drc_channel in drc_channels:
+                    probe_args["channels"] = drc_channel
+                    for linear in linears:
+                        probe_args["linear"] = linear
+                        train_dataset = torch.load("./data/train_data.pt")
+                        val_dataset = torch.load("./data/val_data.pt")
+                        test_dataset = torch.load("./data/test_data.pt")
+                        expname = f"{probe_args['feature']}_{'linear' if probe_args['linear'] else 'nonlinear'}_layer{probe_args['layer']}_channel{probe_args['channels']}_tick{probe_args['tick']}" 
+                        print(f"---{expname}---")
+                        if wandb_projname is not None:
+                            with wandb.init(project=wandb_projname, name=expname, config=probe_args):
+                                train_output = make_trained_probe_for_discrete_feature(probe_args=probe_args,
+                                                                                    train_dataset=train_dataset,
+                                                                                    val_dataset=val_dataset,
+                                                                                    test_dataset=test_dataset,
+                                                                                    display_loss_freq=5,
+                                                                                    wandb_run=True)
+                        else:
+                            train_output = make_trained_probe_for_discrete_feature(probe_args=probe_args,
+                                                                                train_dataset=train_dataset,
+                                                                                val_dataset=val_dataset,
+                                                                                test_dataset=test_dataset,
+                                                                                display_loss_freq=5, 
+                                                                                wandb_run=False)
+                        results[expname] = train_output
+    return results
+
+
+
+if __name__ == "__main__":
+    import pandas as pd
+    for feature in ["action", "action_ahead_1", "action_ahead_2", "action_ahead_3",
+                    "agent_loc", "agent_loc_ahead_1", "agent_loc_ahead_2", "agent_loc_ahead_3",
+                    "num_boxnotontar", "num_boxnotontar_until_change"]:
+        channels = ["hidden", "cell", "x_enc"] + [[t] for t in range(96)]
+        results = run_probe_experiments(features=[feature],
+                                    drc_layers=[0,1,2],
+                                    drc_ticks=[3],
+                                    drc_channels=channels,
+                                    linears=[True])
+        results_df = pd.DataFrame(results)
+        filename = f"{feature}_channels_{'ALL' if channels[0] is None else 'CHANNELS'}"
+        results_df.to_csv(f"./results/{filename}.csv")
+    
 
                                                                                                             

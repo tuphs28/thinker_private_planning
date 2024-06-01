@@ -953,7 +953,14 @@ class DRCNet(ActorBaseNet):
         x_enc = self.encoder(x)
         core_input = x_enc.view(*((T, B) + x_enc.shape[1:]))
         core_output, core_state = self.core(core_input, done, core_state, record_state=self.record_state, record_output=self.record_core_output)
-        if self.record_state: self.hidden_state = self.core.hidden_state
+        if self.record_state: 
+            #self.hidden_state = self.core.hidden_state
+            self.hidden_state = torch.cat([
+                self.core.hidden_state[:,:,torch.arange(0,32),:,:], self.core.hidden_state[:,:,torch.arange(32,64),:,:], torch.stack([x_enc]*4, dim=1),
+                self.core.hidden_state[:,:,torch.arange(64,96),:,:], self.core.hidden_state[:,:,torch.arange(96,128),:,:], torch.stack([x_enc]*4, dim=1),
+                self.core.hidden_state[:,:,torch.arange(128,160),:,:], self.core.hidden_state[:,:,torch.arange(160,192),:,:], torch.stack([x_enc]*4, dim=1)
+            ], dim=2) # save hidden states - each 96 along dim 2 consists of 32h,32c, 32x_enc
+            #print(core_output.shape, self.hidden_state[:,-1,96*2:96*2+32,:,:].shape,torch.sum(core_output.view(1,32,8,8) - self.hidden_state[:,-1,96*2:96*2+32,:,:]))
         core_output = torch.flatten(core_output, 0, 1)
         core_output = torch.cat([x_enc, core_output], dim=1)
         core_output = torch.flatten(core_output, 1)
