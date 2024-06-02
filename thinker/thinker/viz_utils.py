@@ -174,7 +174,7 @@ def create_gif_multi_env_single_channel(agent_env_list, envs, layer, channel, mi
             axs[0][env_idx].imshow(board, interpolation='nearest', origin='lower', cmap=cmap, norm=norm)
             axs[0][env_idx].set_title(env)
             for tick_idx in range(4):
-                axs[tick_idx+1, env_idx].imshow(agent_states[env, tick_idx,layer*64+channel,:,:].detach())
+                axs[tick_idx+1, env_idx].imshow(agent_states[env, tick_idx,layer*96+channel,:,:].detach())
         plt.pause(0.1)
         camera.snap()
         n_frames += 1

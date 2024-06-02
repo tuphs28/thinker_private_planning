@@ -20,11 +20,11 @@ class DRCProbe(nn.Module):
             self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+32))
         elif drc_channels == "cell":
             self.drc_channels = list(range(96*self.drc_layer+32, 96*self.drc_layer+64))
-        elif drc_channels == "x_enc":
+        elif drc_channels == "xenc":
             self.drc_channels = list(range(96*self.drc_layer+64, 96*self.drc_layer+96))
-        elif drc_channels == "cell_x_enc":
+        elif drc_channels == "cellxenc":
             self.drc_channels = list(range(96*self.drc_layer+32, 96*self.drc_layer+64)) + list(range(96*self.drc_layer+64, 96*self.drc_layer+96))
-        elif drc_channels == "hidden_x_enc":
+        elif drc_channels == "hiddenxenc":
             self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+32)) + list(range(96*self.drc_layer+64, 96*self.drc_layer+96))
         elif drc_channels == "hidden_cell":
             self.drc_channels = list(range(96*self.drc_layer, 96*self.drc_layer+64)) 

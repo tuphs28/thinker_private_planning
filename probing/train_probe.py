@@ -61,15 +61,28 @@ def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: Pro
     assert probe_args["layer"] in [0,1,2], "Please enter a valid DRC layer: [0,1,2]"
     assert probe_args["tick"] in [0,1,2,3], "Please enter a valid DRC tick: [0,1,2,3]"
 
+    cleaned_train_data, cleaned_test_data, cleaned_val_data = [], [], []
     for trans in train_dataset.data:
-        if trans[probe_args["feature"]] == -1:
-            train_dataset.data.remove(trans)
+        if type(trans[probe_args["feature"]]) == int:
+            if trans[probe_args["feature"]] != -1:
+                cleaned_train_data.append(trans)
+        else:
+            cleaned_train_data.append(trans)
     for trans in test_dataset.data:
-        if trans[probe_args["feature"]] == -1:
-            test_dataset.data.remove(trans)
+        if type(trans[probe_args["feature"]]) == int:
+            if trans[probe_args["feature"]] != -1:
+                cleaned_test_data.append(trans)
+        else:
+            cleaned_test_data.append(trans)
     for trans in val_dataset.data:
-        if trans[probe_args["feature"]] == -1:
-            val_dataset.data.remove(trans)
+        if type(trans[probe_args["feature"]]) == int:
+            if trans[probe_args["feature"]] != -1:
+                cleaned_val_data.append(trans)
+        else:
+            cleaned_val_data.append(trans)
+    train_dataset.data = cleaned_train_data
+    test_dataset.data = cleaned_test_data
+    val_dataset.data = cleaned_val_data
 
     if type(train_dataset[0][probe_args["feature"]]) == int:
         min_feature, max_feature = train_dataset.get_feature_range(feature=probe_args["feature"])
@@ -129,10 +142,10 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
     probe_args = {
         "linear": False,
         "num_layers": 1,
-        "hidden_dim": 512,
+        "hidden_dim": 1024,
         "batch_size": 32,
         "optimiser": "Adam",
-        "n_epochs": 30,
+        "n_epochs": 140,
         "weight_decay": 0.0,
         "lr": 1e-3,
         "channels": None
@@ -171,7 +184,7 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
                                                                                 train_dataset=train_dataset,
                                                                                 val_dataset=val_dataset,
                                                                                 test_dataset=test_dataset,
-                                                                                display_loss_freq=5, 
+                                                                                display_loss_freq=20, 
                                                                                 wandb_run=False)
                         results[expname] = train_output
     return results
@@ -180,18 +193,15 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
 
 if __name__ == "__main__":
     import pandas as pd
-    for feature in ["action", "action_ahead_1", "action_ahead_2", "action_ahead_3",
-                    "agent_loc", "agent_loc_ahead_1", "agent_loc_ahead_2", "agent_loc_ahead_3",
-                    "num_boxnotontar", "num_boxnotontar_until_change"]:
-        channels = ["hidden", "cell", "x_enc"] + [[t] for t in range(96)]
+    for feature in ["agent_loc"]:
+        channels = [[t] for t in range(64,96)]
         results = run_probe_experiments(features=[feature],
-                                    drc_layers=[0,1,2],
+                                    drc_layers=[2],
                                     drc_ticks=[3],
                                     drc_channels=channels,
                                     linears=[True])
         results_df = pd.DataFrame(results)
-        filename = f"{feature}_channels_{'ALL' if channels[0] is None else 'CHANNELS'}"
+        filename = f"{feature}_{'multi' if channels[0] == 'hidden' else 'indiv'}"
         results_df.to_csv(f"./results/{filename}.csv")
     
-
                                                                                                             

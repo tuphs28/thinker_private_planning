@@ -202,7 +202,7 @@ if __name__=="__main__":
     mini = True
     gpu = False
     pct_train = 0.8
-    num_episodes = 60
+    num_episodes = 300
     debug = False
 
     adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
