@@ -79,13 +79,51 @@ def make_future_feature_detector(feature_name: str, mode: str, steps_ahead: Opti
         def feature_detector(episode_entry: list) -> list:
             assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
             episode_length = len(episode_entry)
-            for trans_idx, trans_entry in enumerate(episode_entry):
-                future_idx = 0
-                while episode_entry[trans_idx+future_idx][feature_name] == trans_entry[feature_name]:
-                    future_idx += 1
-                    if trans_idx + future_idx == episode_length: # if no change in feature over rest of episode, just count steps until end of episode (e.g. this is the desired behaviour for counting boxes) - may need to change this if using for features over than boxes
-                        break
-                trans_entry[new_feature_name] = future_idx 
+            if type(episode_entry[0][feature_name]) == int or type(episode_entry[0][feature_name]) == float:
+                for trans_idx, trans_entry in enumerate(episode_entry):
+                    future_idx = 0
+                    while episode_entry[trans_idx+future_idx][feature_name] == trans_entry[feature_name]:
+                        future_idx += 1
+                        if trans_idx + future_idx == episode_length: # if no change in feature over rest of episode, just count steps until end of episode (e.g. this is the desired behaviour for counting boxes) - may need to change this if using for features over than boxes
+                            break
+                    trans_entry[new_feature_name] = future_idx
+            elif type(episode_entry[0][feature_name]) == tuple:
+                for trans_idx, trans_entry in enumerate(episode_entry):
+                    future_idx = 0
+                    current_tensor = torch.tensor(episode_entry[trans_idx][feature_name])
+                    while trans_idx + future_idx < episode_length - 2:
+                        future_idx += 1
+                        future_tensor = torch.tensor(episode_entry[trans_idx+future_idx][feature_name])
+                        abs_diff = torch.abs(current_tensor - future_tensor)
+                        if abs_diff.max().item() > 0:
+                            break               
+                    trans_entry[new_feature_name] = future_idx
+            else:
+                raise ValueError(f"Features of type {type(episode_entry[trans_idx])} are not currently supported for {new_feature_name}")
+            return episode_entry
+    elif mode == "change_loc":
+        new_feature_name = f"{feature_name}_change_loc"
+        def feature_detector(episode_entry: list) -> list:
+            assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
+            episode_length = len(episode_entry)
+            if type(episode_entry[0][feature_name]) == tuple:
+                for trans_idx, trans_entry in enumerate(episode_entry):
+                    future_idx = 0
+                    current_tensor = torch.tensor(episode_entry[trans_idx][feature_name])
+                    while trans_idx + future_idx < episode_length - 2:
+                        future_idx += 1
+                        future_tensor = torch.tensor(episode_entry[trans_idx+future_idx][feature_name])
+                        abs_diff = torch.abs(current_tensor - future_tensor)
+                        if abs_diff.max().item() > 0:
+                            change_idx = torch.argmax(abs_diff).item()
+                            change_loc = episode_entry[trans_idx][feature_name][change_idx]
+                            break
+                        elif trans_idx + future_idx == episode_length:
+                            change_loc = episode_entry[trans_idx][feature_name][change_idx] # need to check this - are indices of boxes consistent?
+                            break               
+                    trans_entry[new_feature_name] = change_loc
+            else:
+                raise ValueError(f"Features of type {type(episode_entry[trans_idx])} are not currently supported for {new_feature_name}")
             return episode_entry
     else:
         raise ValueError(f"User entered mode {mode}, valid modes are: ahead, traj, change")
@@ -151,24 +189,47 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
             for fnc in future_feature_fncs:
                 episode_entry = fnc(episode_entry)
 
-            pruned_episode_entry = []
             for trans_idx, trans_entry in enumerate(episode_entry):
-                if prob_accept > uniform(0,1):
-                    trans_entry["steps_remaining"] = episode_length - trans_idx - 2
-                    pruned_episode_entry.append(trans_entry)
+                trans_entry["steps_remaining"] = episode_length - trans_idx - 2
+                trans_entry["steps_taken"] = trans_idx
 
-            if len(pruned_episode_entry) > 0:
+            if len(episode_entry) > 0:
                 for fnc in binary_feature_fncs:
-                    pruned_episode_entry = fnc(pruned_episode_entry)
+                    episode_entry = fnc(episode_entry)
 
-            probing_data += pruned_episode_entry
+            probing_data += episode_entry
             episode_length = 0
             board_num += 1
-            print("Data collected from episode", board_num, "with pruned episode length of", len(pruned_episode_entry))
+            print("Data collected from episode", board_num, "with pruned episode length of", len(episode_entry))
             episode_entry = []
 
     return probing_data
 
+def make_selector(mode: str, feature_name: str = "agent_loc", threshold: int = 1, prob_accept: float = 0.1) -> list:
+    if mode == "random":
+        def selector(probing_data: list) -> list:
+            pruned_data = []
+            for trans_entry in probing_data:
+                if prob_accept > uniform(0,1):
+                    pruned_data.append(trans_entry)
+            return pruned_data
+    elif mode == "lessthan":
+        def selector(probing_data: list) -> list:
+            pruned_data = []
+            for trans_entry in probing_data:
+                if trans_entry[feature_name] <= threshold:
+                    pruned_data.append(trans_entry)
+            return pruned_data
+    elif mode == "greaterthan":
+        def selector(probing_data: list) -> list:
+            pruned_data = []
+            for trans_entry in probing_data:
+                if trans_entry[feature_name] >= threshold:
+                    pruned_data.append(trans_entry)
+            return pruned_data
+    else:
+        raise ValueError(f"no such mode as {mode} supported by make_selector")
+    return selector
 
 class ProbingDataset(Dataset):
     def __init__(self, data: list):
@@ -202,12 +263,13 @@ if __name__=="__main__":
     mini = True
     gpu = False
     pct_train = 0.8
-    num_episodes = 300
+    num_episodes = 50
     debug = False
 
     adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
     adj_boxnotontar_detector = make_current_board_feature_detector(feature_idxs=[2], mode="adj")
     adj_boxontar_detector = make_current_board_feature_detector(feature_idxs=[3], mode="adj")
+    adj_box_detector = make_current_board_feature_detector(feature_idxs=[2,3], mode="adj")
     adj_tar_detector = make_current_board_feature_detector(feature_idxs=[6], mode="adj")
     num_boxnotontar_detector = make_current_board_feature_detector(feature_idxs=[2], mode="num")
     agent_loc_detector = make_current_board_feature_detector(feature_idxs=[4,5], mode="loc")
@@ -216,6 +278,7 @@ if __name__=="__main__":
         ("adj_walls", adj_wall_detector),
         ("adj_boxnotontar", adj_boxnotontar_detector),
         ("adj_boxontar", adj_boxontar_detector),
+        ("adj_box", adj_box_detector),
         ("adj_tar", adj_tar_detector),
         ("num_boxnotontar", num_boxnotontar_detector),
         ("agent_loc", agent_loc_detector),
@@ -226,13 +289,16 @@ if __name__=="__main__":
     future_feature_fncs += [make_future_feature_detector(feature_name="reward",steps_ahead=t, mode="ahead") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="value",steps_ahead=t, mode="ahead") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="agent_loc",steps_ahead=t, mode="ahead") for t in range(1,4)]
-    #future_feature_fncs += [make_future_feature_detector(feature_name="box_loc",steps_ahead=t, mode="ahead") for t in range(1,4)]
+    future_feature_fncs += [make_future_feature_detector(feature_name="box_loc",steps_ahead=t, mode="ahead") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="value",steps_ahead=t, mode="ahead") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="action",steps_ahead=t, mode="traj") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="reward",steps_ahead=t, mode="traj") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="value",steps_ahead=t, mode="traj") for t in range(1,4)]
     future_feature_fncs += [make_future_feature_detector(feature_name="num_boxnotontar", mode="change")]
     future_feature_fncs += [make_future_feature_detector(feature_name="action", mode="change")]
+    future_feature_fncs += [make_future_feature_detector(feature_name="box_loc", mode="change")]
+    future_feature_fncs += [make_future_feature_detector(feature_name="box_loc", mode="change_loc")]
+
 
     binary_feature_fncs = [make_binary_feature_detector(feature_name="num_boxnotontar_until_change", threshold=1),
                            make_binary_feature_detector(feature_name="num_boxnotontar_until_change", threshold=3),
@@ -253,7 +319,7 @@ if __name__=="__main__":
         record_state=True,
     )
     ckp_path = "../drc_mini"
-    ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep49500192.tar")
+    ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep125000064.tar")
     ckp = torch.load(ckp_path, env.device)
     drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
     drc_net.to(env.device)
@@ -270,8 +336,8 @@ if __name__=="__main__":
     
     for trans in probing_data[:250]: # check that h,c,x_enc correctly ordered by ensuring decoding with policy head behaves as expected
         x = trans["hidden_states"]
-        core_output = x[-1,96*2:96*2+32,:,:]
-        x_enc = x[-1,96*2+64:96*2+96,:,:]
+        core_output = x[-1,64*2:64*2+32,:,:]
+        x_enc = x[-1,192:224,:,:]
         core_output = torch.cat([x_enc, core_output], dim=0)
         core_output = torch.flatten(core_output).view(1,-1)
         final_out = relu(drc_net.final_layer(core_output))
@@ -284,9 +350,28 @@ if __name__=="__main__":
     probing_val_data = [entry for entry in probing_data if entry["board_num"] > final_train_board and entry["board_num"] <= final_val_board]
     probing_test_data = [entry for entry in probing_data if entry["board_num"] > final_val_board]
     
-    print(f"train, val and test sets contain {len(probing_train_data)}, {len(probing_val_data)}, {len(probing_test_data)} transitions respectively")
+    print(f"Full train, val and test sets contain {len(probing_train_data)}, {len(probing_val_data)}, {len(probing_test_data)} transitions respectively")
     
     if not debug:
         torch.save(ProbingDataset(probing_train_data), "./data/train_data.pt")
         torch.save(ProbingDataset(probing_val_data), "./data/val_data.pt")
         torch.save(ProbingDataset(probing_test_data), "./data/test_data.pt")
+
+    selectors = [
+        ("random", make_selector(mode="random", prob_accept=0.1)),
+        ("adjbox", make_selector(mode="greaterthan", feature_name="adj_box", threshold=1)),
+        ("soon", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=5)),
+        ("nobox", make_selector(mode="lessthan", feature_name="adj_box", threshold=0)),
+        ("start", make_selector(mode="lessthan", feature_name="steps_taken", threshold=4)),
+        ("onebox", make_selector(mode="lessthan", feature_name="num_boxnotontar", threshold=1))
+    ]
+
+    for subset_name, subset_selector in selectors:
+        subset_train = subset_selector(probing_train_data)
+        subset_val = subset_selector(probing_val_data)
+        subset_test = subset_selector(probing_test_data)
+        print(f"{subset_name} train, val and test sets contain {len(subset_train)}, {len(subset_val)}, {len(subset_test)} transitions respectively")
+        if not debug:
+            torch.save(ProbingDataset(subset_train), f"./data/train_data_{subset_name}.pt")
+            torch.save(ProbingDataset(subset_val), f"./data/val_data_{subset_name}.pt")
+            torch.save(ProbingDataset(subset_test), f"./data/test_data_{subset_name}.pt")

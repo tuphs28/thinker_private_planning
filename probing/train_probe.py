@@ -58,7 +58,7 @@ def train_probe(probe: DRCProbe, n_epochs: int, optimiser: torch.optim.Optimizer
     return train_output
 
 def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: ProbingDataset, val_dataset: ProbingDataset, test_dataset:ProbingDataset, display_loss_freq: int = 5, wandb_run: bool = False) -> dict:
-    assert probe_args["layer"] in [0,1,2], "Please enter a valid DRC layer: [0,1,2]"
+    assert probe_args["layer"] in [0,1,2,3], "Please enter a valid DRC layer: [0,1,2]"
     assert probe_args["tick"] in [0,1,2,3], "Please enter a valid DRC tick: [0,1,2,3]"
 
     cleaned_train_data, cleaned_test_data, cleaned_val_data = [], [], []
@@ -145,7 +145,7 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
         "hidden_dim": 1024,
         "batch_size": 32,
         "optimiser": "Adam",
-        "n_epochs": 140,
+        "n_epochs": 100,
         "weight_decay": 0.0,
         "lr": 1e-3,
         "channels": None
@@ -163,7 +163,8 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
             for drc_tick in drc_ticks:
                 probe_args["tick"] = drc_tick
                 for drc_channel in drc_channels:
-                    probe_args["channels"] = drc_channel
+                    probe_args["channels"] = drc_channel if drc_layer != 3 else [c % 32 for c in drc_channel][:32]
+                    #print(probe_args["channels"])
                     for linear in linears:
                         probe_args["linear"] = linear
                         train_dataset = torch.load("./data/train_data.pt")
@@ -184,7 +185,7 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
                                                                                 train_dataset=train_dataset,
                                                                                 val_dataset=val_dataset,
                                                                                 test_dataset=test_dataset,
-                                                                                display_loss_freq=20, 
+                                                                                display_loss_freq=10, 
                                                                                 wandb_run=False)
                         results[expname] = train_output
     return results
@@ -193,15 +194,15 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
 
 if __name__ == "__main__":
     import pandas as pd
-    for feature in ["agent_loc"]:
-        channels = [[t] for t in range(64,96)]
+    for feature in ["box_loc_change_loc"]:
+        channels = ["hidden", "cell", "xenc"]
         results = run_probe_experiments(features=[feature],
-                                    drc_layers=[2],
+                                    drc_layers=[0,1,2],
                                     drc_ticks=[3],
                                     drc_channels=channels,
-                                    linears=[True])
+                                    linears=[False])
         results_df = pd.DataFrame(results)
         filename = f"{feature}_{'multi' if channels[0] == 'hidden' else 'indiv'}"
-        results_df.to_csv(f"./results/{filename}.csv")
+        #results_df.to_csv(f"./results/{filename}.csv")
     
                                                                                                             
