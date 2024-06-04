@@ -121,7 +121,7 @@ def make_future_feature_detector(feature_name: str, mode: str, steps_ahead: Opti
                         elif trans_idx + future_idx == episode_length:
                             change_loc = episode_entry[trans_idx][feature_name][change_idx] # need to check this - are indices of boxes consistent?
                             break               
-                    trans_entry[new_feature_name] = change_loc
+                    trans_entry[new_feature_name] = change_loc if len(episode_entry) > 1 else -1 # need to check this
             else:
                 raise ValueError(f"Features of type {type(episode_entry[trans_idx])} are not currently supported for {new_feature_name}")
             return episode_entry
@@ -130,15 +130,26 @@ def make_future_feature_detector(feature_name: str, mode: str, steps_ahead: Opti
     return feature_detector
 
 
-def make_binary_feature_detector(feature_name: str, threshold: int) -> Callable:
-    new_feature_name = f"{feature_name}_lessthan_{threshold}"
-    def binary_feature_detector(episode_entry: list) -> list:
-        assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
-        assert type(episode_entry[0][feature_name]) is int or type(episode_entry[0][feature_name]) is float,f"Error: This feature detector constructs binary features from ints or floats, {feature_name} is of type {type(episode_entry[0][feature_name])}"
-        episode_length = len(episode_entry)
-        for trans_entry in episode_entry:
-            trans_entry[new_feature_name] = 1 if (trans_entry[feature_name] <= threshold) else 0
-        return episode_entry
+def make_binary_feature_detector(mode: str, feature_name: str, threshold: int) -> Callable:
+    new_feature_name = f"{feature_name}_{mode}_{threshold}"
+    if mode == "lessthan":
+        def binary_feature_detector(episode_entry: list) -> list:
+            assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
+            assert type(episode_entry[0][feature_name]) is int or type(episode_entry[0][feature_name]) is float,f"Error: This feature detector constructs binary features from ints or floats, {feature_name} is of type {type(episode_entry[0][feature_name])}"
+            episode_length = len(episode_entry)
+            for trans_entry in episode_entry:
+                trans_entry[new_feature_name] = 1 if (trans_entry[feature_name] <= threshold) else 0
+            return episode_entry
+    elif mode == "equal":
+        def binary_feature_detector(episode_entry: list) -> list:
+            assert feature_name in episode_entry[0].keys(), f"Error: This feature detector has been set up to track {feature_name} which is not contained in the episode entry - please re-create it using one of the following features: {episode_entry[0].keys()}"
+            assert type(episode_entry[0][feature_name]) is int or type(episode_entry[0][feature_name]) is float,f"Error: This feature detector constructs binary features from ints or floats, {feature_name} is of type {type(episode_entry[0][feature_name])}"
+            episode_length = len(episode_entry)
+            for trans_entry in episode_entry:
+                trans_entry[new_feature_name] = 1 if (trans_entry[feature_name] == threshold) else 0
+            return episode_entry
+    else:
+        raise ValueError("Unsupported mode for make_binary_feature_detector")    
     return binary_feature_detector
 
 @torch.no_grad()
@@ -205,7 +216,7 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
 
     return probing_data
 
-def make_selector(mode: str, feature_name: str = "agent_loc", threshold: int = 1, prob_accept: float = 0.1) -> list:
+def make_selector(mode: str, feature_name: str = "agent_loc", threshold: int = 1, prob_accept: float = 1.0) -> list:
     if mode == "random":
         def selector(probing_data: list) -> list:
             pruned_data = []
@@ -217,14 +228,14 @@ def make_selector(mode: str, feature_name: str = "agent_loc", threshold: int = 1
         def selector(probing_data: list) -> list:
             pruned_data = []
             for trans_entry in probing_data:
-                if trans_entry[feature_name] <= threshold:
+                if trans_entry[feature_name] <= threshold and prob_accept > uniform(0,1):
                     pruned_data.append(trans_entry)
             return pruned_data
     elif mode == "greaterthan":
         def selector(probing_data: list) -> list:
             pruned_data = []
             for trans_entry in probing_data:
-                if trans_entry[feature_name] >= threshold:
+                if trans_entry[feature_name] >= threshold and prob_accept > uniform(0,1):
                     pruned_data.append(trans_entry)
             return pruned_data
     else:
@@ -261,9 +272,9 @@ class ProbingDatasetCleaned(Dataset):
 if __name__=="__main__":
 
     mini = True
-    gpu = False
+    gpu = True
     pct_train = 0.8
-    num_episodes = 50
+    num_episodes = 30
     debug = False
 
     adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
@@ -300,13 +311,18 @@ if __name__=="__main__":
     future_feature_fncs += [make_future_feature_detector(feature_name="box_loc", mode="change_loc")]
 
 
-    binary_feature_fncs = [make_binary_feature_detector(feature_name="num_boxnotontar_until_change", threshold=1),
-                           make_binary_feature_detector(feature_name="num_boxnotontar_until_change", threshold=3),
-                           make_binary_feature_detector(feature_name="num_boxnotontar_until_change", threshold=5),
-                           make_binary_feature_detector(feature_name="steps_remaining", threshold=1),
-                           make_binary_feature_detector(feature_name="steps_remaining", threshold=3),
-                           make_binary_feature_detector(feature_name="steps_remaining", threshold=5),
-                           make_binary_feature_detector(feature_name="action_until_change", threshold=0)]
+    binary_feature_fncs = [make_binary_feature_detector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=1),
+                           make_binary_feature_detector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=3),
+                           make_binary_feature_detector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=5),
+                           make_binary_feature_detector(mode="lessthan", feature_name="steps_remaining", threshold=1),
+                           make_binary_feature_detector(mode="lessthan", feature_name="steps_remaining", threshold=3),
+                           make_binary_feature_detector(mode="lessthan", feature_name="steps_remaining", threshold=5),
+                           make_binary_feature_detector(mode="lessthan", feature_name="action_until_change", threshold=0),
+                           make_binary_feature_detector(mode="equal", feature_name="action", threshold=0),
+                           make_binary_feature_detector(mode="equal", feature_name="action", threshold=1),
+                           make_binary_feature_detector(mode="equal", feature_name="action", threshold=2),
+                           make_binary_feature_detector(mode="equal", feature_name="action", threshold=3),
+                           make_binary_feature_detector(mode="equal", feature_name="action", threshold=4)]
 
 
     env = make("Sokoban-v0",env_n=1,gpu=gpu,wrapper_type=1,has_model=False,train_model=False,parallel=False,save_flags=False,mini=mini)
@@ -353,17 +369,23 @@ if __name__=="__main__":
     print(f"Full train, val and test sets contain {len(probing_train_data)}, {len(probing_val_data)}, {len(probing_test_data)} transitions respectively")
     
     if not debug:
-        torch.save(ProbingDataset(probing_train_data), "./data/train_data.pt")
-        torch.save(ProbingDataset(probing_val_data), "./data/val_data.pt")
-        torch.save(ProbingDataset(probing_test_data), "./data/test_data.pt")
+        torch.save(ProbingDataset(probing_train_data), "./data/train_data_full.pt")
+        torch.save(ProbingDataset(probing_val_data), "./data/val_data_full.pt")
+        torch.save(ProbingDataset(probing_test_data), "./data/test_data_full.pt")
 
     selectors = [
-        ("random", make_selector(mode="random", prob_accept=0.1)),
-        ("adjbox", make_selector(mode="greaterthan", feature_name="adj_box", threshold=1)),
-        ("soon", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=5)),
-        ("nobox", make_selector(mode="lessthan", feature_name="adj_box", threshold=0)),
-        ("start", make_selector(mode="lessthan", feature_name="steps_taken", threshold=4)),
-        ("onebox", make_selector(mode="lessthan", feature_name="num_boxnotontar", threshold=1))
+        ("random", make_selector(mode="random", prob_accept=0.2)),
+        ("adjbox", make_selector(mode="greaterthan", feature_name="adj_box", threshold=1, prob_accept=0.2)),
+        ("noadjbox", make_selector(mode="lessthan", feature_name="adj_box", threshold=0, prob_accept=0.2)),
+        ("soon5", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=5, prob_accept=0.3)),
+        ("soon4", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=4, prob_accept=0.3)),
+        ("soon3", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=3, prob_accept=1)),
+        ("soon2", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=2, prob_accept=1)),
+        ("soon1", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=1, prob_accept=1)),
+        ("start3", make_selector(mode="lessthan", feature_name="steps_taken", threshold=3)),
+        ("start2", make_selector(mode="lessthan", feature_name="steps_taken", threshold=2)),
+        ("start1", make_selector(mode="lessthan", feature_name="steps_taken", threshold=1)),
+        ("onebox", make_selector(mode="lessthan", feature_name="num_boxnotontar", threshold=1, prob_accept=0.2))
     ]
 
     for subset_name, subset_selector in selectors:

@@ -119,6 +119,7 @@ def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: Pro
     else:
         device = torch.device("cpu")
     probe.to(device)
+    print(device)
 
     loss_fnc = torch.nn.CrossEntropyLoss()
 
@@ -133,11 +134,11 @@ def make_trained_probe_for_discrete_feature(probe_args: dict, train_dataset: Pro
     val_loader = DataLoader(dataset=val_dataset, batch_size=probe_args["batch_size"])
     test_loader = DataLoader(dataset=test_dataset, batch_size=probe_args["batch_size"])
     train_output = train_probe(probe=probe, n_epochs=probe_args["n_epochs"], optimiser=optimiser, loss_fnc=loss_fnc, train_loader=train_loader, val_loader=val_loader, display_loss_freq=display_loss_freq, device=device, wandb_run=wandb_run)
-    test_acc = calc_acc(probe=probe, data_loader=test_loader)
+    test_acc = calc_acc(probe=probe, data_loader=test_loader, device=device)
     train_output["test_acc"] = test_acc
     return train_output
 
-def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc_channels: list = [None], linears: list =[False], wandb_projname: Optional[str] = None):
+def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc_channels: list = [None], linears: list =[False], data_subset: str = "random", wandb_projname: Optional[str] = None):
 
     probe_args = {
         "linear": False,
@@ -167,9 +168,9 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
                     #print(probe_args["channels"])
                     for linear in linears:
                         probe_args["linear"] = linear
-                        train_dataset = torch.load("./data/train_data.pt")
-                        val_dataset = torch.load("./data/val_data.pt")
-                        test_dataset = torch.load("./data/test_data.pt")
+                        train_dataset = torch.load(f"./data/train_data_{data_subset}.pt")
+                        val_dataset = torch.load(f"./data/val_data_{data_subset}.pt")
+                        test_dataset = torch.load(f"./data/test_data_{data_subset}.pt")
                         expname = f"{probe_args['feature']}_{'linear' if probe_args['linear'] else 'nonlinear'}_layer{probe_args['layer']}_channel{probe_args['channels']}_tick{probe_args['tick']}" 
                         print(f"---{expname}---")
                         if wandb_projname is not None:
@@ -194,15 +195,17 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
 
 if __name__ == "__main__":
     import pandas as pd
-    for feature in ["box_loc_change_loc"]:
-        channels = ["hidden", "cell", "xenc"]
-        results = run_probe_experiments(features=[feature],
+    for feature in ["action_traj_1", "player_loc_traj_1"]:
+        for data_subset in ["random"]:
+            channels = [[58]]
+            results = run_probe_experiments(features=[feature],
                                     drc_layers=[0,1,2],
                                     drc_ticks=[3],
                                     drc_channels=channels,
-                                    linears=[False])
-        results_df = pd.DataFrame(results)
-        filename = f"{feature}_{'multi' if channels[0] == 'hidden' else 'indiv'}"
-        #results_df.to_csv(f"./results/{filename}.csv")
+                                    linears=[True],
+                                    data_subset=data_subset)
+            results_df = pd.DataFrame(results)
+            filename = f"{feature}_{'multi' if channels[0] == 'hidden' else 'indiv'}"
+            results_df.to_csv(f"./results/{filename}_{data_subset}.csv")
     
                                                                                                             
