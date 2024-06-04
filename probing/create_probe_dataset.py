@@ -335,7 +335,7 @@ if __name__=="__main__":
         record_state=True,
     )
     ckp_path = "../drc_mini"
-    ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep125000064.tar")
+    ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep249000192.tar")
     ckp = torch.load(ckp_path, env.device)
     drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
     drc_net.to(env.device)
