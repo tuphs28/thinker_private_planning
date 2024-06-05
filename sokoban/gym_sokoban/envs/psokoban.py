@@ -8,7 +8,7 @@ import pkg_resources
 import os 
 
 class SokobanEnv(gym.Env):
-    def __init__(self, difficulty='unfiltered', small=True, dan_num=0, seed=0, mini=True):
+    def __init__(self, difficulty='unfiltered', small=True, dan_num=0, seed=0, mini=True, mini_unqtar=False, mini_unqbox=False):
         if difficulty == 'unfiltered': 
             level_num = 900000                      
             path = '/'.join(('boxoban-levels', difficulty, 'train'))
@@ -28,6 +28,9 @@ class SokobanEnv(gym.Env):
         img_dir = pkg_resources.resource_filename(__name__, 'surface')
 
         self.mini = mini
+        self.mini_unqtar = mini_unqtar
+        self.mini_unqbox = mini_unqbox
+        print(f"mini={mini}, unqtar={mini_unqtar}, unqbox={mini_unqbox}")
         
         self.sokoban = cSokoban(small=small, 
                                 level_dir=level_dir.encode('UTF-8'), 
@@ -35,10 +38,18 @@ class SokobanEnv(gym.Env):
                                 level_num=level_num, 
                                 dan_num=dan_num,
                                 seed=seed,
-                                mini=mini)
+                                mini=mini,
+                                mini_unqtar=mini_unqtar,
+                                mini_unqbox=mini_unqbox)
         self.action_space = Discrete(5)
         if mini:
-            self.observation_space = Box(low=0, high=1, shape=(self.sokoban.obs_x-2, self.sokoban.obs_y-2, 7), dtype=np.uint8)
+            if mini_unqbox and mini_unqtar:
+                obs_z = 13
+            elif mini_unqtar and not mini_unqbox:
+                obs_z = 10
+            else:
+                obs_z = 7
+            self.observation_space = Box(low=0, high=1, shape=(self.sokoban.obs_x-2, self.sokoban.obs_y-2, obs_z), dtype=np.uint8)
         else:
             self.observation_space = Box(low=0, high=255, shape=(self.sokoban.obs_x, self.sokoban.obs_y, 3), dtype=np.uint8)
 

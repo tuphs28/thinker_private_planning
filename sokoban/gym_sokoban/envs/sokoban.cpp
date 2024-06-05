@@ -68,7 +68,7 @@ char roomStatus_to_char(const roomStatus r) {
 
 void read_bmp(const string &img_dir, const string &img_name, vector<unsigned char> &data)
 {
-	string full_path = img_dir + "//" + img_name;
+	string full_path = img_dir + "/" + img_name; // changed //->/
 	ifstream in(full_path.c_str(), ios::in | ios::binary);
 	if (in.is_open())
 	{
@@ -218,6 +218,20 @@ float Sokoban::move(const action a) {
 						move_player(old_r, new_r);
 						player_pos_x = new_pos_x;
 						player_pos_y = new_pos_y;
+
+						// if tracking boxes, update position of the box moved
+						if (mini && mini_unqbox){
+							int old_box_loc = (player_pos_y-1) * (room_x-2) + player_pos_x-1;
+							int new_box_loc = (new_box_pos_y-1) * (room_x-2) + new_box_pos_x-1;
+							for (int box_loc_idx = 0; box_loc_idx < 4; ++box_loc_idx)
+								{
+									//std::cout << "PROBLEM: " << box_locs[box_loc_idx] << " " << old_box_loc << "\n";
+									if (box_locs[box_loc_idx] == old_box_loc) {
+										box_locs[box_loc_idx] = new_box_loc;
+									}
+								}
+
+						}
 						return reward_step + reward;
 			 		} else {
 						return reward_step;
@@ -241,9 +255,26 @@ int Sokoban::print_level() {
 	return 0;
 }
 
+void Sokoban::print_tar_locs() {
+	std::cout << "tar_locs=[";
+        for (int i = 0; i < 4; ++i) {
+            cout << tar_locs[i] << ",";
+        }
+	std::cout << "]" << std::endl;
+    }
+
+void Sokoban::print_box_locs() {
+	std::cout << "box_locs=[";
+        for (int i = 0; i < 4; ++i) {
+            cout << box_locs[i] << ",";
+        }
+	std::cout << "]" << std::endl;
+    }
+
 int Sokoban::read_level(const int room_id)
 {
 	box_left = 0;
+	tar_left = 0;
 	done = false;
 
 	char file_name[10];
@@ -266,13 +297,28 @@ int Sokoban::read_level(const int room_id)
 				int x = 0;
 				while (row.get(c) && c != '\n')
 				{
+					//std::cout << "x: " << x << ",y: " << n - m - 1 << "\n";
 					roomStatus r = char_to_roomStatus(c);
 					room_status[n - m - 1][x] = r;
 					if (r == roomStatus::player_not_on_tar || r == roomStatus::player_on_tar) {
 						player_pos_x = x;
 						player_pos_y = n - m - 1;
 					}
-					else if (r == roomStatus::box_not_on_tar) box_left++;
+					else if (r == roomStatus::box_not_on_tar){
+						if (mini && mini_unqbox){
+							box_locs[box_left] = ((n - m - 2) * (room_x-2)) + x-1;
+						}
+						box_left++;
+					}
+					else if (r == roomStatus::tar || r == roomStatus::player_on_tar) {
+						if (mini && mini_unqtar){
+							// if tracking targets
+							int tar_loc = (((n - m - 2) * (room_x-2)) + (x-1));
+							//std::cout << "\n box!" << tar_loc << "\n";
+							tar_locs[tar_left] = ((n - m - 2) * (room_x-2)) + x-1;
+						}
+						tar_left++;
+					}
 					else if (r == roomStatus::empty) empty_positions.push_back(make_pair(n - m - 1, x)); 
 					x++;
 				}
@@ -280,18 +326,29 @@ int Sokoban::read_level(const int room_id)
 		};
 		in.close();
 	}
-	// Randomly shuffle empty positions
 
+	// Randomly shuffle empty positions
     // Create a vector of indices and shuffle it
     std::vector<int> indices(empty_positions.size());
     std::iota(indices.begin(), indices.end(), 0);  // Fill with 0, 1, ..., size-1
     std::shuffle(indices.begin(), indices.end(), defEngine);
+
+	// If tracking unique targets, randomly shuffle order of the targets
+	if (mini and mini_unqtar){
+		std::shuffle(std::begin(tar_locs), std::end(tar_locs), defEngine);
+	}
+
+	// If tracking unique boxes, randomly shuffle order of the boxes
+	if (mini and mini_unqbox){
+		std::shuffle(std::begin(box_locs), std::end(box_locs), defEngine);
+	}
 
     // Change first n empty tiles to roomStatus::dan
     for(int i = 0; i < min(dan_num, (int)empty_positions.size()); i++) {
         auto pos = empty_positions[indices[i]];
         room_status[pos.first][pos.second] = roomStatus::dan;
     }
+
 
     if (box_left != 4) {
         std::ostringstream error_msg;
@@ -306,21 +363,40 @@ void Sokoban::render(unsigned char* obs) {
 	// Nb: for mini sokoban, observation ignores the outer row and column (since these are always walls) so board is 8x8
 	if (mini)
 	{
+		//print_tar_locs();
 		for (int y = 1; y < room_y-1; y++) // iterate from row 1 to row 9 (exclude rows 0,10)
 		{
 			for (int x = 1; x < room_x-1; x++) // iterate from column 1 to column 9 (exclude column 0,10)
 			{
 				roomStatus room_status_yx = room_status[y][x]; 
-				int pos_idx = (((y-1) * (room_x-2)) + (x-1)) * 7; // obs array index, each square occupies 7 entries
+				int pos_xy = ((y-1) * (room_x-2)) + (x-1);
+				int pos_idx = pos_xy * obs_d; // obs array index, each square occupies 7 entries
 				obs[pos_idx] = (room_status_yx == roomStatus::wall ? 1 : 0);
 				obs[pos_idx+1] = (room_status_yx == roomStatus::empty ? 1 : 0);
-				obs[pos_idx+2] = (room_status_yx == roomStatus::box_not_on_tar ? 1 : 0);
 				obs[pos_idx+3] = (room_status_yx == roomStatus::box_on_tar ? 1 : 0);
 				obs[pos_idx+4] = (room_status_yx == roomStatus::player_not_on_tar ? 1 : 0);
 				obs[pos_idx+5] = (room_status_yx == roomStatus::player_on_tar ? 1 : 0);
-				obs[pos_idx+6] = (room_status_yx == roomStatus::tar ? 1 : 0);
+				if (mini_unqtar){
+					obs[pos_idx+6] = ((room_status_yx == roomStatus::tar && tar_locs[0] == pos_xy) ? 1 : 0);
+					obs[pos_idx+7] = ((room_status_yx == roomStatus::tar && tar_locs[1] == pos_xy) ? 1 : 0);
+					obs[pos_idx+8] = ((room_status_yx == roomStatus::tar && tar_locs[2] == pos_xy) ? 1 : 0);
+					obs[pos_idx+9] = ((room_status_yx == roomStatus::tar && tar_locs[3] == pos_xy) ? 1 : 0);
+				}
+				else{
+					obs[pos_idx+6] = (room_status_yx == roomStatus::tar ? 1 : 0);
+				}
+				if (mini_unqbox && mini_unqtar){
+					obs[pos_idx+2] = ((room_status_yx == roomStatus::box_not_on_tar && box_locs[0] == pos_xy) ? 1 : 0);
+					obs[pos_idx+10] = ((room_status_yx == roomStatus::box_not_on_tar && box_locs[1] == pos_xy) ? 1 : 0);
+					obs[pos_idx+11] = ((room_status_yx == roomStatus::box_not_on_tar && box_locs[2] == pos_xy) ? 1 : 0);
+					obs[pos_idx+12] = ((room_status_yx == roomStatus::box_not_on_tar && box_locs[3] == pos_xy) ? 1 : 0);					
+				}
+				else{
+					obs[pos_idx+2] = (room_status_yx == roomStatus::box_not_on_tar ? 1 : 0);
+				}
 			}
 		}
+		//print_box_locs();
 	}
 	else if (small)
 	{

@@ -122,3 +122,5 @@ ray_cpu: -1 # number of initial cpu (set to -1 for auto detect)
 gpu_learn: 0.5 # gpu for the model-learning ray actor
 # sokoban-specific argument
 mini: true # boolean determining whether to run "full sokoban" (so that board is shape (80,80,3)) or "mini sokoban" (so that board is shape (8,8,7))
+mini_unqtar: false # boolean; if true and if mini is true, this option makes the model observe the four sokoban *targets* as different one-hot features (in a way that is randomised each time)
+mini_unqbox: false # boolean; if true and if mini, mini_unqtar is true, this option makes the model observe the four sokoban *boxes* as different one-hot features (in a way that is randomised each time)

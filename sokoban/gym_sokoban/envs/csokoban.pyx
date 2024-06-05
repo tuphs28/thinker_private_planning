@@ -13,14 +13,14 @@ cdef class cSokoban:
 	cdef Sokoban c_sokoban
 	cdef int obs_x, obs_y, obs_n, dim_x, dim_y, dim_z
 
-	def __init__(self, bool small, string level_dir, string img_dir, int level_num, int dan_num, bool mini = True, int seed=0):
-		self.c_sokoban = Sokoban(small, level_dir, img_dir, level_num, dan_num, seed, mini)	
+	def __init__(self, bool small, string level_dir, string img_dir, int level_num, int dan_num, bool mini = True, bool mini_unqtar = False, bool mini_unqbox = False, int seed=0):
+		self.c_sokoban = Sokoban(small, level_dir, img_dir, level_num, dan_num, seed, mini, mini_unqtar, mini_unqbox)	
 		self.obs_x = self.c_sokoban.obs_x
 		self.obs_y = self.c_sokoban.obs_y
 		self.obs_n = self.c_sokoban.obs_n
 		self.dim_x = self.obs_x - 2 if mini else self.obs_x
 		self.dim_y = self.obs_y - 2 if mini else self.obs_y
-		self.dim_z = 7 if mini else 3
+		self.dim_z = self.c_sokoban.obs_d
 		
 	def reset(self):
 		cdef np.ndarray obs = np.zeros((self.obs_n), dtype=np.dtype("u1"))
@@ -40,7 +40,7 @@ cdef class cSokoban:
 		cdef unsigned char[::1] obs_view = obs
 		#obs = cvarray(shape=self.obs_n, itemsize=1, format="c")
 		#cdef unsigned char[::1] obs_view = obs
-		#cdef unsigned char obs[(shape=(self.obs_x-2) * (self.obs_y-2) * 7)]
+		#cdef unsigned char obs[(shape=(self.obs_x-2) * (self.obs_y-2) * self.dim_z)]
 		cdef float reward = 0.
 		cdef bool done = False
 		cdef bool truncated_done = False
@@ -49,7 +49,7 @@ cdef class cSokoban:
 		return obs.reshape((self.dim_x,self.dim_y,self.dim_z)), reward, done, {"step_n": self.step_n, "truncated_done": truncated_done, "cost": cost}
 
 	def clone_state(self):
-		cdef np.ndarray room_status = np.zeros(((self.obs_x-2) * (self.obs_y-2) * 7), dtype=np.dtype("u1"))
+		cdef np.ndarray room_status = np.zeros(((self.obs_x-2) * (self.obs_y-2) * self.dim_z), dtype=np.dtype("u1"))
 		cdef unsigned char[::1] room_status_view = room_status
 		cdef int step_n = 0
 		cdef bool done = False

@@ -898,8 +898,18 @@ class DRCNet(ActorBaseNet):
         k1, s1, p1 = 3 if flags.mini else 8, 1 if flags.mini else 4, 1 if flags.mini else 2
         k2, s2, p2 = 4, 2, 1
 
+        if flags.mini:
+            if flags.mini_unqtar and flags.mini_unqbox:
+                self.in_channels = 13
+            elif flags.mini_unqtar:
+                self.in_channels = 10
+            else:
+                self.in_channels = 7
+        else:
+            self.in_channels = 3
+
         encoder_layers = [nn.Conv2d(
-                in_channels= (7 if flags.mini else 3), out_channels=32, kernel_size=k1, stride=s1, padding=p1
+                in_channels=self.in_channels, out_channels=32, kernel_size=k1, stride=s1, padding=p1
             )] + ([] if flags.mini else [nn.Conv2d(
                 in_channels=32, out_channels=32, kernel_size=k2, stride=s2, padding=p2
             ),])

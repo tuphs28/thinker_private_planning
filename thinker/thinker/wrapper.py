@@ -213,7 +213,7 @@ def create_env_fn(name, flags):
     if name == "Sokoban-v0": 
         import gym_sokoban
         fn = gym.make
-        args = {"id": name, "dan_num": flags.detect_dan_num, "mini": flags.mini}
+        args = {"id": name, "dan_num": flags.detect_dan_num, "mini": flags.mini, "mini_unqtar": flags.mini_unqtar, "mini_unqbox": flags.mini_unqbox}
 
     elif name.startswith("Safexp"): 
         import mujoco_py, safety_gym
