@@ -5,32 +5,48 @@ from celluloid import Camera
 from torch import swapaxes
 import os
 
-def plot_mini_sokoban(state, legend=False):
-    """Plot board state for mini sokoban
+def plot_mini_sokoban(state, legend=False, unqtar=False, unqbox=False):
+    """Plot board state for mini/symbolic sokoban
 
     Args:
         state (numpy.ndarray): 8x8x7 array representing board
         legend (bool, optional): if True, include legend explaining colours. Defaults to False.
+        unqtar (bool, optional): set to True if symbolic sokoban set up in such a way as to track the four target locations as 4 distinct features. Defaults to False.
+        unqbox (bool, optional): set to True if symbolic sokoban set up in such a way as to track the boxes as 4 distinct features. Defaults to False.
     """
     if state.shape[0] != state.shape[1]:
         state = state.permute(1,2,0)
+    if unqtar and unqbox:
+        dim_z = 13
+    elif unqtar:
+        dim_z = 10
+    else:
+        dim_z = 7
     mini_board = np.zeros(state.shape[:-1])
-    for i in range(1,8):
+    for i in range(1,1+dim_z):
         mini_board[(state[:,:,i-1] == 1)] = i
     mini_board = np.flip(mini_board, axis=0)
-    cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "green","magenta", "khaki"])
-    bounds=[0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5]
+    #print(mini_board)
+    if unqtar and unqbox:
+        cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "hotpink","magenta", "khaki", "grey", "yellow", "purple", "lime", "brown", "turquoise", "coral", "peru"])
+        labs = ["wall", "empty", "box1", "box-on-target?", "player","player-on-target?", "target1", "target2", "target3", "target4", "box2", "box3", "box4"]
+    elif unqtar:
+        cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "green","magenta", "khaki", "grey", "yellow", "purple", "lime"])
+        labs = ["wall", "empty", "box", "box-on-target?", "player","player-on-target?", "target1", "target2", "target3", "target4"]
+    else:
+        cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "green","magenta", "khaki"])
+        labs = ["wall", "empty", "box", "box-on-target?", "player","player-on-target?", "target"]
+    bounds= [i+0.5 for i in range(1+dim_z)]
     norm = colors.BoundaryNorm(bounds, cmap.N)
     board_img = plt.imshow(mini_board, interpolation='nearest', origin='lower', cmap=cmap, norm=norm)
     board_img.axes.get_yaxis().set_visible(False)
     board_img.axes.get_xaxis().set_visible(False)
     if legend:
         board_cbar = plt.colorbar(board_img, cmap=cmap, norm=norm, boundaries=bounds, ticks=bounds)
-        board_cbar.ax.set_yticks(([1,2,3,4,5,6,7]))
+        board_cbar.ax.set_yticks(list(range(1,1+dim_z)))
         board_cbar.ax.tick_params(length=0)
-        board_cbar_text = board_cbar.ax.set_yticklabels(["wall", "empty", "box", "box-on-target?", "player","player-on-target?", "target"])
+        board_cbar_text = board_cbar.ax.set_yticklabels(labs)
     plt.show()
-
 
 def make_gif_channels(states_list, layer, channels, gif_fps=0.5, gif_file="../viz/interesting_channels", gif_name="test", max_iter=30, max_activ=0, min_activ=0):
     """Make gif of multiple channels across timesteps
@@ -148,7 +164,7 @@ def create_gif_single_env_multi_channels(agent_env_list, batch, layer, channels,
     animation.save(gif_file+"/"+f'{gif_name}.gif', writer='PillowWriter', fps=0.5) 
 
 
-def create_gif_multi_env_single_channel(agent_env_list, envs, layer, channel, mini=False, max_frames=100, gif_file="./viz", gif_name="test"):
+def create_gif_multi_env_single_channel(agent_env_list, envs, layer, channel, mini=False, max_frames=100, gif_file="./viz", gif_name="test", vmin=-5, vmax=5):
     fig, axs = plt.subplots(5,len(envs))
     for layer_idx in range(5):
         for tick_idx in range(len(envs)):
@@ -174,7 +190,7 @@ def create_gif_multi_env_single_channel(agent_env_list, envs, layer, channel, mi
             axs[0][env_idx].imshow(board, interpolation='nearest', origin='lower', cmap=cmap, norm=norm)
             axs[0][env_idx].set_title(env)
             for tick_idx in range(4):
-                axs[tick_idx+1, env_idx].imshow(agent_states[env, tick_idx,layer*64+channel,:,:].detach())
+                axs[tick_idx+1, env_idx].imshow(agent_states[env, tick_idx,layer*64+channel,:,:].detach(), vmin=vmin, vmax=vmax)
         plt.pause(0.1)
         camera.snap()
         n_frames += 1

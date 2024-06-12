@@ -21,6 +21,10 @@ class SokobanEnv(gym.Env):
         elif difficulty == 'hard': 
             level_num = 3332         
             path = '/'.join(('boxoban-levels', difficulty))
+        elif difficulty[:3] == 'exp': 
+            level_num = 1
+            _, exp_type, exp_baseline, exp_id = difficulty.split("_")
+            path = '/'.join(('boxoban-levels', 'experiments', exp_type, exp_id, exp_baseline))
         else:
             raise Exception(f"difficulty {difficulty} not accepted.")
 
@@ -30,7 +34,6 @@ class SokobanEnv(gym.Env):
         self.mini = mini
         self.mini_unqtar = mini_unqtar
         self.mini_unqbox = mini_unqbox
-        print(f"mini={mini}, unqtar={mini_unqtar}, unqbox={mini_unqbox}")
         
         self.sokoban = cSokoban(small=small, 
                                 level_dir=level_dir.encode('UTF-8'), 

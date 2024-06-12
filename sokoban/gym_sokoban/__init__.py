@@ -26,3 +26,15 @@ register(
     entry_point="gym_sokoban.envs:SokobanEnv",
     kwargs={"difficulty": "test"},
 )
+
+for exp_type, exp_ids in [("cutoff",range(5)),
+                          ("shortcut", range(5)),
+                          ("blockedpath",range(5)),
+                          ("cutoffpush", range(5))]:
+    for exp_id in exp_ids:
+        for mode in ["clean", "corrupt"]:
+            register(
+                id=f"Sokoban-{exp_type}_{mode}_{exp_id:03}-v0", 
+                entry_point="gym_sokoban.envs:SokobanEnv",
+                kwargs={"difficulty": f"exp_{exp_type}_{mode}_{exp_id:03}"},
+            )
