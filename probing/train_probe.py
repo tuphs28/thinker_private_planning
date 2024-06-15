@@ -146,7 +146,7 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
         "hidden_dim": 1024,
         "batch_size": 32,
         "optimiser": "Adam",
-        "n_epochs": 100,
+        "n_epochs": 400,
         "weight_decay": 0.0,
         "lr": 1e-3,
         "channels": None
@@ -168,9 +168,9 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
                     #print(probe_args["channels"])
                     for linear in linears:
                         probe_args["linear"] = linear
-                        train_dataset = torch.load(f"./data/train_data_{data_subset}.pt")
-                        val_dataset = torch.load(f"./data/val_data_{data_subset}.pt")
-                        test_dataset = torch.load(f"./data/test_data_{data_subset}.pt")
+                        train_dataset = torch.load(f"./data/MINIRANDOMtrain_data.pt") #torch.load(f"./data/MINItrain_data_{data_subset}.pt")
+                        val_dataset = torch.load(f"./data/MINIRANDOMval_data.pt") #torch.load(f"./data/MINIval_data_{data_subset}.pt")
+                        test_dataset = torch.load(f"./data/MINIRANDOMval_data.pt") #torch.load(f"./data/MINItest_data_{data_subset}.pt")
                         expname = f"{probe_args['feature']}_{'linear' if probe_args['linear'] else 'nonlinear'}_layer{probe_args['layer']}_channel{probe_args['channels']}_tick{probe_args['tick']}" 
                         print(f"---{expname}---")
                         if wandb_projname is not None:
@@ -195,17 +195,17 @@ def run_probe_experiments(features: list, drc_layers: list, drc_ticks: list, drc
 
 if __name__ == "__main__":
     import pandas as pd
-    for feature in ["action_traj_1", "player_loc_traj_1"]:
+    for feature in ["block"]:
         for data_subset in ["random"]:
-            channels = [[58]]
+            channels = [list(range(32))]
             results = run_probe_experiments(features=[feature],
-                                    drc_layers=[0,1,2],
+                                    drc_layers=[2],
                                     drc_ticks=[3],
                                     drc_channels=channels,
                                     linears=[True],
                                     data_subset=data_subset)
             results_df = pd.DataFrame(results)
             filename = f"{feature}_{'multi' if channels[0] == 'hidden' else 'indiv'}"
-            results_df.to_csv(f"./results/{filename}_{data_subset}.csv")
+            results_df.to_csv(f"./results/POSTERMINI{filename}_{data_subset}.csv")
     
                                                                                                             
