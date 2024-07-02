@@ -31,7 +31,7 @@ if __name__ == "__main__":
     out_dim = 5
     probe_args = {}
 
-    features = [f"tracked_box_next_push_onto_with"]
+    features = [f"tracked_box_next_push_onto_after"]
     #features = ["tar_next_current_0"]
     layers = [("layer0", 32), ("layer1", 96), ("layer2", 160)]
     #layers = [("layer2", 160)]
@@ -111,11 +111,11 @@ if __name__ == "__main__":
                                 for i in range(positive_targets.shape[0]):
                                     if out_dim ==2:
                                         positive_acc += 1 if positive_targets[i].sum().item()==0 else (torch.sum((logits[[i],:,:].argmax(dim=1)==targets[[i],:,:].view(-1,64))[positive_targets[[i],:,:].view(-1,64)==1]).item()) / positive_targets[i].sum().item()
-                                        prop_pos_cor +=  0 if logits[i,:,:].argmax(dim=0).sum().item()==0 else (torch.sum((logits[[i],:,:].argmax(dim=1)==targets[[i],:,:].view(-1,64))[logits[[i],:,:].argmax(dim=1)==1]).item()) / logits[i,:,:].argmax(dim=0).sum().item()
+                                        prop_pos_cor +=  1 if logits[i,:,:].argmax(dim=0).sum().item()==0 else (torch.sum((logits[[i],:,:].argmax(dim=1)==targets[[i],:,:].view(-1,64))[logits[[i],:,:].argmax(dim=1)==1]).item()) / logits[i,:,:].argmax(dim=0).sum().item()
                                     else:
                                         for j in range(out_dim):
                                             positive_accs[j] += 1 if (positive_targets[i]==j).sum().item()==0 else (torch.sum((logits[[i],:,:].argmax(dim=1)==targets[[i],:,:].view(-1,64))[positive_targets[[i],:,:].view(-1,64)==j]).item()) / (positive_targets[i]==j).sum().item()
-                                            prop_pos_cors[j] +=  0 if (logits[i,:,:].argmax(dim=0)==j).sum().item()==0 else (torch.sum((logits[[i],:,:].argmax(dim=1)==targets[[i],:,:].view(-1,64))[logits[[i],:,:].argmax(dim=1)==j]).item()) / (logits[i,:,:].argmax(dim=0)==j).sum().item()
+                                            prop_pos_cors[j] += 1 if (logits[i,:,:].argmax(dim=0)==j).sum().item()==0 else (torch.sum((logits[[i],:,:].argmax(dim=1)==targets[[i],:,:].view(-1,64))[logits[[i],:,:].argmax(dim=1)==j]).item()) / (logits[i,:,:].argmax(dim=0)==j).sum().item()
 
                         print(f"---- Epoch {epoch} -----")
                         print("Full acc:", full_acc/(len(val_dataset.data)*64))
