@@ -27,6 +27,8 @@ class ConvAttnLSTMCell(nn.Module):
         self.kernel_size = kernel_size
         self.padding = kernel_size // 2
 
+        self.gates = torch.tensor([])
+
         in_channels = c + self.embed_dim
 
         if pool_inject:
@@ -132,6 +134,7 @@ class ConvAttnLSTMCell(nn.Module):
             concat_k, concat_v = None, None
 
         h_next = o * torch.tanh(c_next)
+        self.gates = torch.cat([i, f, o, g], dim=1)
 
         return h_next, c_next, concat_k, concat_v
 
@@ -281,7 +284,7 @@ class ConvAttnLSTM(nn.Module):
             )
         return core_state
     
-    def forward(self, x, done, core_state, record_state=False, record_output=False):
+    def forward(self, x, done, core_state, record_state=False, record_output=False, record_gates=False):
         assert len(x.shape) == 5
         core_output_list = []
         reset = done.float()
@@ -289,10 +292,13 @@ class ConvAttnLSTM(nn.Module):
             self.hidden_state = []
             self.hidden_state.append(torch.concat(core_state, dim=1)) 
         if record_output:
-            self.output = [] 
+            self.output = []
+        if record_gates:
+            self.gates = [] 
         for n, (x_single, reset_single) in enumerate(
             zip(x.unbind(), reset.unbind())
         ):
+            gates = []
             for t in range(self.tran_t):
                 if t > 0:
                     reset_single = torch.zeros_like(reset_single)
@@ -301,6 +307,7 @@ class ConvAttnLSTM(nn.Module):
                     x_single, core_state, reset_single, reset_single
                 )  # output shape: 1, B, core_output_size        
                 if record_state: self.hidden_state.append(torch.concat(core_state, dim=1))
+                if record_gates: self.gates.append(torch.cat([cell.gates for cell in self.layers], dim=0))
                 if record_output: self.output.append(output)              
             core_output_list.append(output)
         core_output = torch.cat(core_output_list)
@@ -308,6 +315,8 @@ class ConvAttnLSTM(nn.Module):
             self.hidden_state = torch.stack(self.hidden_state, dim=1)
         if record_output:
             self.output = torch.cat(self.output, dim=0)
+        if record_gates:
+            self.gates = torch.cat(self.gates, dim=1)
         return core_output, core_state
 
     def forward_single(self, x, core_state, reset, reset_attn):

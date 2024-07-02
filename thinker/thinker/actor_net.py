@@ -944,6 +944,7 @@ class DRCNet(ActorBaseNet):
         self.baseline = nn.Linear(256, 1)
 
         self.record_core_output = False
+        self.record_gates = False
 
         if getattr(flags, "ppo_k", 1) > 1:
             kl_beta = torch.tensor(1.)
@@ -962,7 +963,7 @@ class DRCNet(ActorBaseNet):
         x = torch.flatten(x, 0, 1)
         x_enc = self.encoder(x)
         core_input = x_enc.view(*((T, B) + x_enc.shape[1:]))
-        core_output, core_state = self.core(core_input, done, core_state, record_state=self.record_state, record_output=self.record_core_output)
+        core_output, core_state = self.core(core_input, done, core_state, record_state=self.record_state, record_output=self.record_core_output, record_gates=self.record_gates)
         if self.record_state: 
             #self.hidden_state = self.core.hidden_state
             self.hidden_state = torch.cat([

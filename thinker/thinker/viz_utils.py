@@ -28,7 +28,7 @@ def plot_mini_sokoban(state, legend=False, unqtar=False, unqbox=False):
     mini_board = np.flip(mini_board, axis=0)
     #print(mini_board)
     if unqtar and unqbox:
-        cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "hotpink","magenta", "khaki", "grey", "yellow", "purple", "lime", "brown", "turquoise", "coral", "peru"])
+        cmap = colors.ListedColormap(['black', "white", "blue", "gold", "green","magenta", "salmon", "tomato", "darksalmon", "coral", "cadetblue", "aqua", "powderblue", "steelblue", "orchid"])
         labs = ["wall", "empty", "box1", "box-on-target?", "player","player-on-target?", "target1", "target2", "target3", "target4", "box2", "box3", "box4"]
     elif unqtar:
         cmap = colors.ListedColormap(['black', "white", "aqua", "gold", "green","magenta", "khaki", "grey", "yellow", "purple", "lime"])
@@ -125,7 +125,7 @@ def make_gif_channel_across_envs(states_list, layer, channel, gif_fps=0.5, gif_n
     animation.save(gif_file+"/"+f'{gif_name}.gif', writer='PillowWriter', fps=gif_fps)
 
 
-def create_gif_single_env_multi_channels(agent_env_list, batch, layer, channels, mini=False, max_frames=100, gif_file="./viz", gif_name="test"):
+def create_gif_single_env_multi_channels(agent_env_list, batch, layer, channels, mini=False, max_frames=100, gif_file="./viz", gif_name="test",vmin=-5, vmax=5):
     fig, axs = plt.subplots(5,len(channels))
     for layer_idx in range(5):
         for tick_idx in range(len(channels)):
@@ -152,7 +152,7 @@ def create_gif_single_env_multi_channels(agent_env_list, batch, layer, channels,
         for channel_idx, channel in enumerate(channels):
             axs[0,channel_idx].set_title(channel)
             for tick_idx in range(4):
-                axs[tick_idx+1, channel_idx].imshow(agent_states[batch, tick_idx,layer*64+channel,:,:].detach())
+                axs[tick_idx+1, channel_idx].imshow(agent_states[batch, tick_idx,layer*64+channel,:,:].detach(), vmin=vmin, vmax=vmax)
         plt.pause(0.1)
         camera.snap()
         n_frames += 1

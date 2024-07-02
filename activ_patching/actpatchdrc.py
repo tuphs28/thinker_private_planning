@@ -183,7 +183,7 @@ class ActPatchDRCNet:
         f = torch.sigmoid(cc_f)
         o = torch.sigmoid(cc_o)
         g = torch.tanh(cc_g)
-
+        print(c_cur.shape)
         c_next = f * c_cur + i * g
         if activ_type=="cell":
             if self.debug:

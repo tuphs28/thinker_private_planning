@@ -19,7 +19,8 @@ class SokobanEnv(gym.Env):
             level_num = 50000           
             path = '/'.join(('boxoban-levels', difficulty, 'valid'))
         elif difficulty == 'hard': 
-            level_num = 3332         
+            level_num = 3332
+            print("hard diff.")         
             path = '/'.join(('boxoban-levels', difficulty))
         elif difficulty[:3] == 'exp': 
             level_num = 1

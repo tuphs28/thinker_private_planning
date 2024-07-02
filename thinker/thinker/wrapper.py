@@ -210,9 +210,10 @@ def PreWrapper(env, name, flags):
     return env
 
 def create_env_fn(name, flags):
-    if name == "Sokoban-v0": 
+    if name == "Sokoban-v0" or name == "Sokoban-hard-v0": 
         import gym_sokoban
         fn = gym.make
+        print(name)
         args = {"id": name, "dan_num": flags.detect_dan_num, "mini": flags.mini, "mini_unqtar": flags.mini_unqtar, "mini_unqbox": flags.mini_unqbox}
 
     elif name.startswith("Safexp"): 
@@ -226,8 +227,9 @@ def create_env_fn(name, flags):
         fn = DMSuiteEnv
         args = {"domain_name": domain_name, "task_name": task_name, "rgb": flags.dm_rgb}
     else:
+        import gym_sokoban
         fn = gym.make
-        args = {"id": name}
+        args = {"id": name, "dan_num": flags.detect_dan_num, "mini": flags.mini, "mini_unqtar": flags.mini_unqtar, "mini_unqbox": flags.mini_unqbox}
 
     env_fn = lambda: PreWrapper(
         fn(**args), 
