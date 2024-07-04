@@ -30,7 +30,7 @@ register(
 for exp_type, exp_ids in [("cutoff",range(10)),
                           ("shortcutpush", range(100)),
                           ("blockedpath",range(100)),
-                          ("cutoffpush", range(152)),
+                          ("cutoffpush", range(400)),
                           ("cutoffpush2", range(304)),
                           ("goto", range(100))]:
     for exp_id in exp_ids:

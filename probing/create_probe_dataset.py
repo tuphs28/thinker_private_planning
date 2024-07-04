@@ -517,8 +517,8 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
     trans_entry = {feature:fnc(state["real_states"][0]) for feature, fnc in current_board_feature_fncs}
     trans_entry["action"] = actor_out.action.item()
     trans_entry["value"] = round(actor_out.baseline.item(), 3) 
-    trans_entry["board_state"] = state["real_states"][0] # tensor of size (channels, board_height, board_width)
-    trans_entry["hidden_states"] = drc_net.hidden_state[0] # tensor of size (ticks+1, layers*64, representation_height, representation_width)
+    trans_entry["board_state"] = state["real_states"][0].detach().cpu() # tensor of size (channels, board_height, board_width)
+    trans_entry["hidden_states"] = drc_net.hidden_state[0].detach().cpu() # tensor of size (ticks+1, layers*64, representation_height, representation_width)
     trans_entry["board_num"] = board_num
     episode_length += 1
 
@@ -753,11 +753,11 @@ if __name__=="__main__":
     future_feature_fncs += [make_future_feature_detector(feature_name="box_loc", mode="change_loc")]
     future_feature_fncs += [make_tar_info_extractor(unq=unq), make_box_info_extractor(unq=False), make_agent_info_extractor()]
 
-    future_feature_fncs += [make_trajectory_detector(feature_name="agent_loc", steps_ahead=i) for i in [1,2,3,4,5,6,7,8,9,10,15,20,40,120]]
-    future_feature_fncs += [make_trajectory_detector(feature_name="agent_loc", steps_ahead=i, mode="conjunction", alt_feature_name="action", alt_feature_value=j) for i in [5,30,40,120] for j in [1,2,3,4]]
-    future_feature_fncs += [make_trajectory_detector(feature_name="agent_loc", steps_ahead=i, mode="conjunction", alt_feature_name="action", alt_feature_value=[j,k]) for i in [5,20,40,120] for j in [1,2,3,4] for k in [1,2,3,4] if j>k]
-    future_feature_fncs += [make_trajectory_detector(feature_name="box_loc", steps_ahead=i) for i in [1,2,3,4,5,6,7,8,9,10,15,20,40,120]]
-    future_feature_fncs += [make_trajectory_detector(feature_name="tracked_box_loc_active", steps_ahead=i) for i in [1,2,3,4,5,6,7,8,9,10,15,20,40,120]]
+    future_feature_fncs += [make_trajectory_detector(feature_name="agent_loc", steps_ahead=i) for i in [1,5,10,20,120]]
+    #future_feature_fncs += [make_trajectory_detector(feature_name="agent_loc", steps_ahead=i, mode="conjunction", alt_feature_name="action", alt_feature_value=j) for i in [120] for j in [1,2,3,4]]
+    #future_feature_fncs += [make_trajectory_detector(feature_name="agent_loc", steps_ahead=i, mode="conjunction", alt_feature_name="action", alt_feature_value=[j,k]) for i in [120] for j in [1,2,3,4] for k in [1,2,3,4] if j>k]
+    future_feature_fncs += [make_trajectory_detector(feature_name="box_loc", steps_ahead=i) for i in [1,5,10,20,120]]
+    future_feature_fncs += [make_trajectory_detector(feature_name="tracked_box_loc_active", steps_ahead=i) for i in [1,5,10,20,120]]
     future_feature_fncs += [make_trajectory_detector(feature_name=f"tracked_box_loc_change_after_action_{j}", steps_ahead=i) for i in [10,20,120] for j in [1,2,3,4]]
     future_feature_fncs += [make_trajectory_detector(feature_name=f"tracked_box_loc_change_with_action_{j}", steps_ahead=i) for i in [10,20,120] for j in [1,2,3,4]]
     future_feature_fncs += [make_trajectory_detector(feature_name="tracked_box_loc_next", steps_ahead=0, inc_current=True)]
@@ -771,7 +771,7 @@ if __name__=="__main__":
     future_feature_fncs += [make_trajectory_detector(feature_name="next_start_move_box_loc", steps_ahead=0, inc_current=True)]
 
     if unq:
-        future_feature_fncs += [make_trajectory_detector(feature_name=f"box{j}_loc", steps_ahead=i) for i in [1,2,3,4,5,6,7,8,9,10,15,20,40,120] for j in [1,2,3,4]] 
+        future_feature_fncs += [make_trajectory_detector(feature_name=f"box{j}_loc", steps_ahead=i) for i in [1,5,10,20,120] for j in [1,2,3,4]] 
     
     
     
@@ -801,7 +801,7 @@ if __name__=="__main__":
                                        debug=debug)
     
     for trans in probing_data[:250]: # check that h,c,x_enc correctly ordered by ensuring decoding with policy head behaves as expected
-        x = trans["hidden_states"]
+        x = trans["hidden_states"].to(env.device)
         core_output = x[-1,64*2:64*2+32,:,:]
         x_enc = x[-1,192:224,:,:]
         core_output = torch.cat([x_enc, core_output], dim=0)
