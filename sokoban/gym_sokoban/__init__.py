@@ -27,12 +27,16 @@ register(
     kwargs={"difficulty": "test"},
 )
 
-for exp_type, exp_ids in [("cutoff",range(10)),
-                          ("shortcutpush", range(100)),
-                          ("blockedpath",range(100)),
-                          ("cutoffpush", range(400)),
-                          ("cutoffpush2", range(304)),
-                          ("goto", range(100))]:
+for exp_type, exp_ids in [
+    ("cutoffpush", range(250)),
+    ("cutoffcorridor", range(250)),
+    ("targetorder", range(80)),
+    ("shortcut", range(80)),
+    ("boxorder", range(80)),
+    ("sepgoal", range(80)),
+    ("plantest", range(80)),
+    ("conflictdetection", range(80))
+    ]:
     for exp_id in exp_ids:
         for mode in ["clean", "corrupt"]:
             register(
