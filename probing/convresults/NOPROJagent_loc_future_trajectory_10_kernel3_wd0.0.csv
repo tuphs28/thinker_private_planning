@@ -1,0 +1,8 @@
+,layer0_hidden_states,layer1_hidden_states,layer2_hidden_states,layer0_bl_hidden_states,layer1_bl_hidden_states,layer2_bl_hidden_states
+Acc,0.9378324468085106,0.944813829787234,0.9498005319148937,0.8863031914893617,0.8856382978723404,0.8873005319148937
+Precision_0,0.0,0.0,0.0,0.0,0.0,0.0
+Recall_0,0.0,0.0,0.0,0.0,0.0,0.0
+F1_0,0.0,0.0,0.0,0.0,0.0,0.0
+Precision_1,0.0,0.0,0.0,0.0,0.0,0.0
+Recall_1,0.0,0.0,0.0,0.0,0.0,0.0
+F1_1,0.0,0.0,0.0,0.0,0.0,0.0

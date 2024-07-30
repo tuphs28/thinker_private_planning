@@ -35,7 +35,7 @@ for exp_type, exp_ids in [
     ("boxorder", range(80)),
     ("sepgoal", range(80)),
     ("plantest", range(80)),
-    ("conflictdetection", range(80))
+    ("conflictdetection", range(96))
     ]:
     for exp_id in exp_ids:
         for mode in ["clean", "corrupt"]:

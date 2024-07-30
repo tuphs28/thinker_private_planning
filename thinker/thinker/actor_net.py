@@ -927,7 +927,7 @@ class DRCNet(ActorBaseNet):
         self.core = ConvAttnLSTM(            
             input_dim=32,
             hidden_dim=32,
-            num_layers=3,
+            num_layers=3, # I CHANGED THIS
             attn=False,
             h=h,
             w=w,            
@@ -936,7 +936,7 @@ class DRCNet(ActorBaseNet):
             num_heads=8,            
             attn_mask_b=None,
             tran_t=3,
-            pool_inject=True,
+            pool_inject=False, # changed True -> False
         )
         last_out_size = 32 * h * w * 2
         self.final_layer = nn.Linear(last_out_size, 256)

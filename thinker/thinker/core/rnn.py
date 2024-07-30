@@ -31,6 +31,7 @@ class ConvAttnLSTMCell(nn.Module):
 
         in_channels = c + self.embed_dim
 
+        #pool_inject = False # ADDED
         if pool_inject:
             in_channels += self.embed_dim
 
@@ -50,6 +51,7 @@ class ConvAttnLSTMCell(nn.Module):
         self.head_dim = embed_dim // num_heads
         self.attn = attn
         self.attn_mask_b = attn_mask_b
+        #pool_inject = False # ADDED
         self.pool_inject = pool_inject
 
         if self.attn:

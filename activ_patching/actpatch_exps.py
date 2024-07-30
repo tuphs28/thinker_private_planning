@@ -12,7 +12,7 @@ import gym_sokoban
 
 #exp = "cutoffpush"
 
-def run_act_patch_exps(exp: str, layer_channel_dict_list: list, mode: str, inter_ticks: list, final_ticks: list, num_steps: int, eval_metric: str = "prob", noise_mode: str = "noise", gpu: bool = False, disp_level_ids: bool = False):
+def run_act_patch_exps(exp: str, layer_channel_dict_list: list, mode: str, inter_ticks: list, final_ticks: list, num_steps: int, eval_metric: str = "prob", noise_mode: str = "noise", subset: int = -1, gpu: bool = False, disp_level_ids: bool = False):
 
     mini_sokoban = True
     mini_unqtar = False
@@ -26,7 +26,7 @@ def run_act_patch_exps(exp: str, layer_channel_dict_list: list, mode: str, inter
 
     num_levels = len(os.listdir(f"../sokoban/gym_sokoban/envs/boxoban-levels/experiments/{exp}"))
 
-    for i in range(num_levels):
+    for i in range(0 if subset < 0 else subset, num_levels, 1 if subset < 0 else 8):
         if disp_level_ids:
             print(f"------------- Level {i:04} -----------")
         results = {}
@@ -44,7 +44,7 @@ def run_act_patch_exps(exp: str, layer_channel_dict_list: list, mode: str, inter
             mini_unqbox=mini_unqbox         
         ) 
 
-        if i == 0:
+        if i == 0 or i == subset:
             drc_net = DRCNet(
                 obs_space=env.observation_space,
                 action_space=env.action_space,
@@ -52,7 +52,7 @@ def run_act_patch_exps(exp: str, layer_channel_dict_list: list, mode: str, inter
                 record_state=True,
                 )
             drc_net.to(env.device)
-            ckp_path = "../drc_mini"
+            ckp_path = "../drc_noproj"
             ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep249000192.tar")
             ckp = torch.load(ckp_path, env.device)
             drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
@@ -158,12 +158,12 @@ def run_act_patch_exps(exp: str, layer_channel_dict_list: list, mode: str, inter
         all_results.append(results)
     return all_results
 
-def run_act_patch_topk(exp: str, k: int, layer_channel_dict: dict, mode: str, inter_ticks: list, final_ticks: list, num_steps: int, eval_metric: str = "prob", noise_mode: str = "noise", gpu: bool = False, disp_level_ids: bool = False):
+def run_act_patch_topk(exp: str, k: int, layer_channel_dict: dict, mode: str, inter_ticks: list, final_ticks: list, num_steps: int, eval_metric: str = "prob", noise_mode: str = "noise", subset: int = -1, gpu: bool = False, disp_level_ids: bool = False):
     
     assert noise_mode in ["noise", "denoise"], f"noise mode {noise_mode} is not a valid noise mode"
     
     all_results = {}
-    exp_results = run_act_patch_exps(exp=exp, layer_channel_dict_list=[layer_channel_dict], mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=num_steps, gpu=gpu, disp_level_ids=disp_level_ids, noise_mode=noise_mode)
+    exp_results = run_act_patch_exps(exp=exp, layer_channel_dict_list=[layer_channel_dict], mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=num_steps, gpu=gpu, disp_level_ids=disp_level_ids, noise_mode=noise_mode, subset=subset)
     all_results[f"{layer_channel_dict}"] = list(exp_results[0].values())[0]
 
     channels = []
@@ -179,7 +179,7 @@ def run_act_patch_topk(exp: str, k: int, layer_channel_dict: dict, mode: str, in
         })
     
     while len(all_channel_subsets) > k:
-        exp_results = run_act_patch_exps(exp=exp, layer_channel_dict_list=layer_channel_dict_list, mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=num_steps, gpu=gpu, disp_level_ids=disp_level_ids, noise_mode=noise_mode)
+        exp_results = run_act_patch_exps(exp=exp, layer_channel_dict_list=layer_channel_dict_list, mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=num_steps, gpu=gpu, disp_level_ids=disp_level_ids, noise_mode=noise_mode, subset=subset)
         patch_effects = np.array([list(exp_result.values()) for exp_result in exp_results]).mean(axis=0)
         top_subset_dict = layer_channel_dict_list[patch_effects.argmax()]
         print(top_subset_dict)
@@ -209,18 +209,19 @@ if __name__ == "__main__":
     parser.add_argument("--expmode", type=str, default="topkprune")
     parser.add_argument("--k", type=int, default=2)
     parser.add_argument("--layer", type=int, default=2)
-    parser.add_argument("--alllayers", type=bool, default=False)
+    parser.add_argument("--alllayers", type=bool, default=True)
     parser.add_argument("--numsteps", type=int, required=True)
     parser.add_argument("--allsteps", type=bool, default=True)
     parser.add_argument("--gpu", type=bool, default=False)
     parser.add_argument("--noisemode", type=str, default="denoise")
+    parser.add_argument("--subset", type=int, default=-1)
     args = parser.parse_args()
 
     mode = "cell"
     inter_ticks = [0,1,2] if args.allsteps else []
     exp_name = f"{args.exp}_{args.expmode}__k{args.k}_layer{'alllayers' if args.alllayers else args.layer}_{'allsteps' if args.allsteps else 'finalstep'}"
     print(inter_ticks)
-    final_ticks = [0,1,2]
+    final_ticks = [0,1] # I CHANGED THIS FOR FINAL LAYER
     print(args.k, type(args.k))
 
     if args.expmode == "allk":
@@ -247,16 +248,16 @@ if __name__ == "__main__":
             ]
         else:
             raise ValueError("k>3 is not currently supported for allk")
-        exp_results = run_act_patch_exps(exp=args.exp, layer_channel_dict_list=layer_channel_dict_list, mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=args.numsteps, noise_mode=args.noisemode, gpu=args.gpu, disp_level_ids=True)
+        exp_results = run_act_patch_exps(exp=args.exp, layer_channel_dict_list=layer_channel_dict_list, mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=args.numsteps, noise_mode=args.noisemode, subset=args.subset, gpu=args.gpu, disp_level_ids=True)
         results_df = pd.DataFrame(exp_results).T
     elif args.expmode == "topkprune":
         if args.alllayers:
             layer_channel_dict = {0: list(range(32)), 1: list(range(32)), 2: list(range(32))}
         else:
             layer_channel_dict = {args.layer: list(range(32))}
-        top_subset, exp_results = run_act_patch_topk(exp=args.exp, k=args.k, layer_channel_dict=layer_channel_dict, mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=args.numsteps, noise_mode=args.noisemode, gpu=args.gpu, disp_level_ids=True)
+        top_subset, exp_results = run_act_patch_topk(exp=args.exp, k=args.k, layer_channel_dict=layer_channel_dict, mode=mode, inter_ticks=inter_ticks, final_ticks=final_ticks, num_steps=args.numsteps, noise_mode=args.noisemode, subset=args.subset, gpu=args.gpu, disp_level_ids=True)
         results_df = pd.DataFrame(exp_results.values(), index=[f"{subset_dict}" for subset_dict in exp_results.keys()])
 
-    if not os.path.exists(f"./results/{args.exp}"):
-        os.mkdir(f"./results/{args.exp}")
-    results_df.to_csv((f"./results/{args.exp}/{exp_name}_{mode}_{args.noisemode}.csv"))
+    if not os.path.exists(f"./results/NOPROJ{args.exp}"):
+        os.mkdir(f"./results/NOPROJ{args.exp}")
+    results_df.to_csv((f"./results/NOPROJ{args.exp}/{exp_name}_{mode}_{args.noisemode}_subset{args.subset}.csv"))
