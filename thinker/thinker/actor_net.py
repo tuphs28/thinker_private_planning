@@ -936,7 +936,7 @@ class DRCNet(ActorBaseNet):
             num_heads=8,            
             attn_mask_b=None,
             tran_t=3,
-            pool_inject=False, # changed True -> False
+            pool_inject=True, # changed True -> False
         )
         last_out_size = 32 * h * w * 2
         self.final_layer = nn.Linear(last_out_size, 256)

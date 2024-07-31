@@ -432,7 +432,9 @@ def make_box_info_extractor(unq: bool = False) -> Callable:
                         board_locs[(loc_idx-loc_idx%8)//8, loc_idx%8] = 4
                         break
             trans["tracked_box_next_push_onto_with"] = board_locs
-
+            new_board_locs = torch.zeros((8,8), dtype=int)
+            new_board_locs[board_locs != 0 ] = 1
+            trans["tracked_box_next_push_onto"] = new_board_locs
         return episode_entry
     return box_info_extractor
 
@@ -517,6 +519,7 @@ def create_probing_data(drc_net: DRCNet, env: Env, flags: NamedTuple, num_episod
             flags=flags,
             record_state=True,
         )
+    bl_drc_net.to(env.device)
 
     rnn_state = drc_net.initial_state(batch_size=1, device=env.device)
     bl_rnn_state = bl_drc_net.initial_state(batch_size=1, device=env.device)
@@ -640,10 +643,10 @@ class ProbingDatasetCleaned(Dataset):
 if __name__=="__main__":
 
     mini = True
-    gpu = False
+    gpu = True
     pct_train = 0.8
     unq = False
-    num_episodes = 200
+    num_episodes = 3000
     debug = False
 
     if unq:
@@ -712,7 +715,7 @@ if __name__=="__main__":
             flags=flags,
             record_state=True,
         )
-        ckp_path = "../drc_noproj"
+        ckp_path = "../drc_mini"
         ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep249000192.tar")
 
         adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
