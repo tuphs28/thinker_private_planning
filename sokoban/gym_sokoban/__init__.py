@@ -27,15 +27,21 @@ register(
     kwargs={"difficulty": "test"},
 )
 
+register(
+        id="Sokoban-valid-v0",
+        entry_point="gym_sokoban.envs:SokobanEnv",
+        kwargs={"difficulty": "valid"},
+)
+
 for exp_type, exp_ids in [
-    ("cutoffpush", range(250)),
-    ("cutoffcorridor", range(250)),
-    ("targetorder", range(80)),
-    ("shortcut", range(80)),
-    ("boxorder", range(80)),
-    ("sepgoal", range(80)),
-    ("plantest", range(80)),
-    ("conflictdetection", range(96))
+    ("cutoffpush", range(1)),
+    ("cutoffcorridor", range(1)),
+    ("targetorder", range(1)),
+    ("shortcut", range(1)),
+    ("boxorder", range(1)),
+    ("sepgoal", range(1)),
+    ("plantest", range(1)),
+    ("conflictdetection", range(1))
     ]:
     for exp_id in exp_ids:
         for mode in ["clean", "corrupt"]:

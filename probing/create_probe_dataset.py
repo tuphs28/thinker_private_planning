@@ -8,6 +8,7 @@ from thinker import util
 from typing import Callable, NamedTuple, Optional
 from numpy.random import uniform
 import os
+import argparse
 
 def make_current_board_feature_detector(feature_idxs: list, mode: str) -> Callable:
     """Create feature detector functions to extract discrete features from mini-sokoban boards. Boards must be (7,8,8) arrays
@@ -641,18 +642,30 @@ class ProbingDatasetCleaned(Dataset):
         
 
 if __name__=="__main__":
+    parser = argparse.ArgumentParser(description="run convprobe patching exps")
+    parser.add_argument("--num_episodes", type=int, default=10000)
+    parser.add_argument("--model_name", type=str, default="250m")
+    parser.add_argument("--env_name", type=str, default="")
+    parser.add_argument("--unq", type=bool, default=False)
+    parser.add_argument("--pct_train", type=float, default=0.5)
+    parser.add_argument("--gpu", type=bool, default=True)
+    parser.add_argument("--debug", type=bool, default=False)
+    parser.add_argument("--mini", type=bool, default=True)
+    args = parser.parse_args()
 
-    mini = True
-    gpu = True
-    pct_train = 0.8
-    unq = False
-    num_episodes = 3000
-    debug = False
+    mini = args.mini
+    gpu = args.gpu
+    pct_train = args.pct_train
+    unq = args.unq
+    num_episodes = args.num_episodes
+    debug = args.debug
+    model_name = args.model_name
+    env_name = args.env_name
 
     if unq:
         #env = make("Sokoban-v0",env_n=1,gpu=gpu,wrapper_type=1,has_model=False,train_model=False,parallel=False,save_flags=False,mini=mini)
         env = thinker.make(
-            "Sokoban-v0", 
+            f"Sokoban-{env_name}v0", 
             env_n=1, 
             gpu=gpu,
             wrapper_type=1, 
@@ -676,7 +689,7 @@ if __name__=="__main__":
 
         )
         ckp_path = "../drc_unq"
-        ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep249000192.tar")
+        ckp_path = os.path.join(util.full_path(ckp_path), f"ckp_actor_realstep{model_name}.tar")
 
         adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
         adj_boxnotontar_detector = make_current_board_feature_detector(feature_idxs=[2,10,11,12], mode="adj")
@@ -693,7 +706,7 @@ if __name__=="__main__":
 
     else:
         env = thinker.make(
-            "Sokoban-v0", 
+            f"Sokoban-{env_name}v0", 
             env_n=1, 
             gpu=gpu,
             wrapper_type=1, 
@@ -716,7 +729,7 @@ if __name__=="__main__":
             record_state=True,
         )
         ckp_path = "../drc_mini"
-        ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep249000192.tar")
+        ckp_path = os.path.join(util.full_path(ckp_path), f"ckp_actor_realstep{model_name}.tar")
 
         adj_wall_detector = make_current_board_feature_detector(feature_idxs=[0], mode="adj")
         adj_boxnotontar_detector = make_current_board_feature_detector(feature_idxs=[2], mode="adj")
@@ -794,7 +807,7 @@ if __name__=="__main__":
     future_feature_fncs += [make_trajectory_detector(feature_name="tracked_box_loc_active", steps_ahead=0, inc_current=True)]
 
     future_feature_fncs += [make_trajectory_detector(feature_name="next_end_move_box_loc", steps_ahead=0, inc_current=True)]
-    future_feature_fncs += [make_trajectory_detector(feature_name="next_end_move_box_loc", steps_ahead=i) for i in [10,20,120]]
+    #future_feature_fncs += [make_trajectory_detector(feature_name="next_end_move_box_loc", steps_ahead=i) for i in [10,20,120]]
     future_feature_fncs += [make_trajectory_detector(feature_name="next_start_move_box_loc", steps_ahead=0, inc_current=True)]
 
     if unq:
@@ -847,9 +860,9 @@ if __name__=="__main__":
     print(f"Full train, val and test sets contain {len(probing_train_data)}, {len(probing_val_data)}, {len(probing_test_data)} transitions respectively")
     
     if not debug:
-        torch.save(ProbingDataset(probing_train_data), "./data/train_data_full.pt")
-        torch.save(ProbingDataset(probing_val_data), "./data/val_data_full.pt")
-        torch.save(ProbingDataset(probing_test_data), "./data/test_data_full.pt")
+        torch.save(ProbingDataset(probing_train_data), f"./data/train_data_full_{model_name}.pt")
+        torch.save(ProbingDataset(probing_val_data), f"./data/val_data_full_{model_name}.pt")
+        torch.save(ProbingDataset(probing_test_data), f"./data/test_data_full_{model_name}.pt")
 
 
     selectors = [
@@ -873,6 +886,6 @@ if __name__=="__main__":
         subset_test = subset_selector(probing_test_data)
         print(f"{subset_name} train, val and test sets contain {len(subset_train)}, {len(subset_val)}, {len(subset_test)} transitions respectively")
         if not debug:
-            torch.save(ProbingDataset(subset_train), f"./data/train_data_{subset_name}.pt")
-            torch.save(ProbingDataset(subset_val), f"./data/val_data_{subset_name}.pt")
-            torch.save(ProbingDataset(subset_test), f"./data/test_data_{subset_name}.pt")
+            torch.save(ProbingDataset(subset_train), f"./data/train_data_{subset_name}_{model_name}.pt")
+            torch.save(ProbingDataset(subset_val), f"./data/val_data_{subset_name}_{model_name}.pt")
+            torch.save(ProbingDataset(subset_test), f"./data/test_data_{subset_name}_{model_name}.pt")

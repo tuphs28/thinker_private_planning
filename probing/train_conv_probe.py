@@ -36,12 +36,14 @@ if __name__ == "__main__":
     parser.add_argument("--kernel", type=int, default=1)
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--model_name", type=str, default="250m")
     args = parser.parse_args()
 
     channels = list(range(32))
     batch_size = 64
     num_epochs = args.num_epochs
     wd = args.weight_decay
+    model_name = args.model_name
     kernel = args.kernel
     assert kernel in [1,3]
     probe_args = {}
@@ -62,9 +64,9 @@ if __name__ == "__main__":
         probe_args["positive_feature"] = feature
         results = {}
 
-        train_dataset_c = torch.load("./data/train_data_full.pt")
-        test_dataset_c = torch.load("./data/test_data_full.pt")
-        val_dataset_c = torch.load("./data/val_data_random.pt")
+        train_dataset_c = torch.load(f"./data/train_data_full_{model_name}.pt")
+        test_dataset_c = torch.load(f"./data/test_data_full_{model_name}.pt")
+        val_dataset_c = torch.load(f"./data/val_data_random_{model_name}.pt")
         cleaned_train_data, cleaned_test_data, cleaned_val_data = [], [], []
         for trans in train_dataset_c.data:
             if type(trans[probe_args["feature"]]) == int:
@@ -89,8 +91,9 @@ if __name__ == "__main__":
         val_dataset_c.data = cleaned_val_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
         for seed in [0,1,2,3,4,5]:
+            print(f"=============== Seed: {seed} ================")
             torch.manual_seed(seed)
-            for mode in ["hidden_states", "bl_hidden_states"]:
+            for mode in ["hidden_states"]:
 
                 cleaned_train_data = [(trans[mode].cpu(), trans["board_state"], trans[probe_args["feature"]], trans[probe_args["positive_feature"]]) for trans in train_dataset_c.data]
                 cleaned_val_data = [(trans[mode].cpu(), trans["board_state"], trans[probe_args["feature"]], trans[probe_args["positive_feature"]]) for trans in val_dataset_c.data]
@@ -178,7 +181,7 @@ if __name__ == "__main__":
 
                     if not os.path.exists(f"./convresults/models/{feature}") and mode=="hidden_states":
                         os.mkdir(f"./convresults/models/{feature}")
-                    torch.save(convprobe.state_dict(), f"./convresults/models/{feature}/{layer_name}_kernel{kernel}_wd{wd}_seed{seed}.pt")
+                    torch.save(convprobe.state_dict(), f"./convresults/models/{feature}/{model_name}_{layer_name}_kernel{kernel}_wd{wd}_seed{seed}.pt")
 
             results_df = pd.DataFrame(results)
-            results_df.to_csv(f"./convresults/{feature}_kernel{kernel}_wd{wd}_seed{seed}.csv")
+            results_df.to_csv(f"./convresults/{model_name}_{feature}_kernel{kernel}_wd{wd}_seed{seed}.csv")
