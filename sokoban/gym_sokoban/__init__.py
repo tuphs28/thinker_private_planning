@@ -33,6 +33,12 @@ register(
         kwargs={"difficulty": "valid"},
 )
 
+register(
+        id="Sokoban-valid-v0",
+        entry_point="gym_sokoban.envs:SokobanEnv",
+        kwargs={"difficulty": "probing"},
+)
+
 for exp_type, exp_ids in [
     ("cutoffpush", range(1)),
     ("cutoffcorridor", range(1)),

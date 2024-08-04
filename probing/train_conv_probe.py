@@ -37,6 +37,7 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--model_name", type=str, default="250m")
+    parser.add_argument("--test_mode", type=str, default="test")
     args = parser.parse_args()
 
     channels = list(range(32))
@@ -45,6 +46,7 @@ if __name__ == "__main__":
     wd = args.weight_decay
     model_name = args.model_name
     kernel = args.kernel
+    testmode = args.test_mode
     assert kernel in [1,3]
     probe_args = {}
     torch.manual_seed(args.seed)
@@ -53,9 +55,9 @@ if __name__ == "__main__":
     else: 
         device = torch.device("cpu") 
     
-    features = ["tracked_box_next_push_onto_after", "tracked_box_next_push_onto_with", "agent_loc_future_trajectory_120", "agent_onto_with", "agent_onto_after"]
+    features = ["tracked_box_next_push_onto_after"]
     #features = ["tar_next_current_0"]
-    layers = [("layer1", 96), ("x", 0)]
+    layers = [("layer0", 32), ("layer1", 96), ("layer2", 160), ("x", 0)]
     #layers = [("layer2", 160)]
     for feature in features:
         print(f"=================================== FEATURE: {feature} =========================================")

@@ -15,6 +15,9 @@ class SokobanEnv(gym.Env):
         elif difficulty == 'test':     
             level_num = 1000                  
             path = '/'.join(('boxoban-levels', 'unfiltered', 'test'))
+        elif difficulty == "probing":
+            level_num = 5000
+            path = '/'.join(('boxoban-levels', 'unfiltered', 'probing'))
         elif difficulty == "valid":
             level_num = 100000
             path = '/'.join(('boxoban-levels', 'unfiltered', 'valid'))
