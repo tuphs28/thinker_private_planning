@@ -64,9 +64,11 @@ if __name__ == "__main__":
         probe_args["positive_feature"] = feature
         results = {}
 
-        train_dataset_c = torch.load(f"./data/train_data_random_{model_name}.pt")
-        test_dataset_c = torch.load(f"./data/test_data_random_{model_name}.pt")
-        val_dataset_c = torch.load(f"./data/val_data_random_{model_name}.pt")
+        train_dataset_c = torch.load(f"./data/train_data_full_{model_name}.pt")
+        if testmode == "test":
+            test_dataset_c = torch.load(f"./data/test_data_full_{model_name}.pt")
+        else:
+            test_dataset_c = torch.load(f"./data/val_data_random_{model_name}.pt")
         cleaned_train_data, cleaned_test_data, cleaned_val_data = [], [], []
         for trans in train_dataset_c.data:
             if type(trans[probe_args["feature"]]) == int:
@@ -80,15 +82,8 @@ if __name__ == "__main__":
                     cleaned_test_data.append(trans)
             else:
                 cleaned_test_data.append(trans)
-        for trans in val_dataset_c.data:
-            if type(trans[probe_args["feature"]]) == int:
-                if trans[probe_args["feature"]] != -1:
-                    cleaned_val_data.append(trans)
-            else:
-                cleaned_val_data.append(trans)
         train_dataset_c.data = cleaned_train_data
         test_dataset_c.data = cleaned_test_data
-        val_dataset_c.data = cleaned_val_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
         for seed in [0]:
             print(f"=============== Seed: {seed} ================")
@@ -96,10 +91,8 @@ if __name__ == "__main__":
             for mode in ["hidden_states"]:
 
                 cleaned_train_data = [(trans[mode].cpu(), trans["board_state"], trans[probe_args["feature"]], trans[probe_args["positive_feature"]]) for trans in train_dataset_c.data]
-                cleaned_val_data = [(trans[mode].cpu(), trans["board_state"], trans[probe_args["feature"]], trans[probe_args["positive_feature"]]) for trans in val_dataset_c.data]
                 cleaned_test_data = [(trans[mode].cpu(), trans["board_state"], trans[probe_args["feature"]], trans[probe_args["positive_feature"]]) for trans in test_dataset_c.data]
                 train_dataset = ProbingDatasetCleaned(cleaned_train_data)
-                val_dataset = ProbingDatasetCleaned(cleaned_val_data)
                 test_dataset = ProbingDatasetCleaned(cleaned_test_data)
                 
                 for layer_name, layer_idx in layers:
@@ -108,7 +101,6 @@ if __name__ == "__main__":
                     print(f"========= {layer_name} =========")
                     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True,persistent_workers=True)
                     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True,persistent_workers=True)
-                    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True,persistent_workers=True)
 
                     convprobe = ConvProbe(in_channels=7 if layer_name=="x" else 32, out_dim=out_dim, kernel_size=kernel, padding=(0 if kernel==1 else 1))
                     convprobe.to(device)
@@ -136,7 +128,7 @@ if __name__ == "__main__":
                         if epoch % 1 == 0:
                             with torch.no_grad():
                                 labs, preds = [], []
-                                for hiddens, states, targets, positive_targets in val_loader:
+                                for hiddens, states, targets, positive_targets in test_loader:
                                     hiddens = states.to(torch.float).to(device) if layer_name=="x" else hiddens[:,-1,[layer_idx+c for c in channels],:,:].to(device)
                                     targets = targets.to(torch.long).to(device)
                                     logits, loss = convprobe(hiddens, targets)
@@ -156,7 +148,7 @@ if __name__ == "__main__":
                                 precisions, recalls, fones, _ = precision_recall_fscore_support(labs, preds, average=None, zero_division=1)
 
                                 print(f"---- Epoch {epoch} -----")
-                                print("Full acc:", full_acc/(len(val_dataset.data)*64))
+                                print("Full acc:", full_acc/(len(test_dataset.data)*64))
                                 print("F1:", f1)
                                 print("Time:", time.time()-start_time)
                                 #if probe_args["positive_feature"] is not None:
@@ -171,7 +163,7 @@ if __name__ == "__main__":
                                         #print("F1: ", fones[j])
 
                     if out_dim != 1:
-                        results_dict = {"Acc": full_acc/(len(val_dataset.data)*64)}
+                        results_dict = {"Acc": full_acc/(len(test_dataset.data)*64)}
                         for j in range(out_dim):
                             results_dict[f"Precision_{j}"] = precisions[j]
                             results_dict[f"Recall_{j}"] = recalls[j]
