@@ -53,9 +53,9 @@ if __name__ == "__main__":
     else: 
         device = torch.device("cpu") 
     
-    features = ["tracked_box_next_push_onto_after", "tracked_box_next_push_onto_with", "tracked_box_next_push_onto", "agent_loc_future_trajectory_120", "agent_onto_after", "agent_onto_with"]
+    features = ["tracked_box_next_push_onto_after", "tracked_box_next_push_onto_with", "agent_loc_future_trajectory_120", "agent_onto_with", "agent_onto_after"]
     #features = ["tar_next_current_0"]
-    layers = [("layer0", 32), ("layer1", 96), ("layer2", 160), ("x", 0)]
+    layers = [("layer1", 96), ("x", 0)]
     #layers = [("layer2", 160)]
     for feature in features:
         print(f"=================================== FEATURE: {feature} =========================================")
@@ -64,8 +64,8 @@ if __name__ == "__main__":
         probe_args["positive_feature"] = feature
         results = {}
 
-        train_dataset_c = torch.load(f"./data/train_data_full_{model_name}.pt")
-        test_dataset_c = torch.load(f"./data/test_data_full_{model_name}.pt")
+        train_dataset_c = torch.load(f"./data/train_data_random_{model_name}.pt")
+        test_dataset_c = torch.load(f"./data/test_data_random_{model_name}.pt")
         val_dataset_c = torch.load(f"./data/val_data_random_{model_name}.pt")
         cleaned_train_data, cleaned_test_data, cleaned_val_data = [], [], []
         for trans in train_dataset_c.data:
@@ -90,7 +90,7 @@ if __name__ == "__main__":
         test_dataset_c.data = cleaned_test_data
         val_dataset_c.data = cleaned_val_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
-        for seed in [0,1,2,3,4,5]:
+        for seed in [0]:
             print(f"=============== Seed: {seed} ================")
             torch.manual_seed(seed)
             for mode in ["hidden_states"]:
@@ -136,7 +136,7 @@ if __name__ == "__main__":
                         if epoch % 1 == 0:
                             with torch.no_grad():
                                 labs, preds = [], []
-                                for hiddens, states, targets, positive_targets in test_loader:
+                                for hiddens, states, targets, positive_targets in val_loader:
                                     hiddens = states.to(torch.float).to(device) if layer_name=="x" else hiddens[:,-1,[layer_idx+c for c in channels],:,:].to(device)
                                     targets = targets.to(torch.long).to(device)
                                     logits, loss = convprobe(hiddens, targets)
@@ -156,7 +156,7 @@ if __name__ == "__main__":
                                 precisions, recalls, fones, _ = precision_recall_fscore_support(labs, preds, average=None, zero_division=1)
 
                                 print(f"---- Epoch {epoch} -----")
-                                print("Full acc:", full_acc/(len(test_dataset.data)*64))
+                                print("Full acc:", full_acc/(len(val_dataset.data)*64))
                                 print("F1:", f1)
                                 print("Time:", time.time()-start_time)
                                 #if probe_args["positive_feature"] is not None:
