@@ -34,7 +34,7 @@ register(
 )
 
 register(
-        id="Sokoban-valid-v0",
+        id="Sokoban-probing-v0",
         entry_point="gym_sokoban.envs:SokobanEnv",
         kwargs={"difficulty": "probing"},
 )
