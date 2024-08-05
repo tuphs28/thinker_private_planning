@@ -34,7 +34,7 @@ if __name__ == "__main__":
     parser.add_argument("--feature", type=str, default="agent_loc_future_trajectory_120")
     parser.add_argument("--num_epochs", type=int, default=30)
     parser.add_argument("--kernel", type=int, default=1)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--weight_decay", type=float, default=0.001)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--model_name", type=str, default="250m")
     parser.add_argument("--test_mode", type=str, default="test")
@@ -51,11 +51,12 @@ if __name__ == "__main__":
     probe_args = {}
     torch.manual_seed(args.seed)
     if torch.cuda.is_available(): 
+        print("test")
         device = torch.device("cuda")
     else: 
         device = torch.device("cpu") 
     
-    features = ["tracked_box_next_push_onto_after"]
+    features = [args.feature]
     #features = ["tar_next_current_0"]
     layers = [("layer0", 32), ("layer1", 96), ("layer2", 160), ("x", 0)]
     #layers = [("layer2", 160)]
@@ -87,7 +88,7 @@ if __name__ == "__main__":
         train_dataset_c.data = cleaned_train_data
         test_dataset_c.data = cleaned_test_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
-        for seed in [0]:
+        for seed in [0,1,2,4,5]:
             print(f"=============== Seed: {seed} ================")
             torch.manual_seed(seed)
             for mode in ["hidden_states"]:
