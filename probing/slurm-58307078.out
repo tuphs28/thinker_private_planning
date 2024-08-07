@@ -1,0 +1,38 @@
+Loading rhel8/default-amp
+  Loading requirement: dot rhel8/slurm singularity/current rhel8/global
+    cuda/11.4 libpciaccess/0.16/gcc-9.4.0-6fonbj6
+    libiconv/1.16/gcc-9.4.0-ahebbov libxml2/2.9.12/gcc-9.4.0-gnknt5e
+    ncurses/6.2/gcc-9.4.0-aiirok7 hwloc/2.5.0/gcc-9.4.0-7sqomga
+    libevent/2.1.12/gcc-9.4.0-hgny7cm numactl/2.0.14/gcc-9.4.0-52dwc6n
+    cuda/11.4.0/gcc-9.4.0-3hnxhjt gdrcopy/2.2/gcc-9.4.0-e4igtfp
+    knem/1.1.4/gcc-9.4.0-bpbxgva libnl/3.3.0/gcc-9.4.0-whwhrwb
+    rdma-core/34.0/gcc-9.4.0-5eo5n2u ucx/1.11.1/gcc-9.4.0-lktqyl4
+    openmpi/4.1.1/gcc-9.4.0-epagguv
+ERROR: Unable to locate a modulefile for 'python-3.9.6-gcc-5.4.0-sbr552h'
+ERROR: Unable to locate a modulefile for 'opencv-3.4.3-gcc-5.4.0-o3bzatj'
+ERROR: Unable to locate a modulefile for 'patchelf-0.9-gcc-5.4.0-v25fnm7'
+ERROR: Unable to locate a modulefile for 'glew-2.0.0-gcc-5.4.0-rja5lhn'
+Changed directory to /rds/user/tdb47/hpc-work/planning/thinker_private_planning/probing.
+
+JobID: 58307078
+======
+Time: Tue Aug  6 19:27:09 BST 2024
+Running on master node: gpu-q-8
+Current directory: /rds/user/tdb47/hpc-work/planning/thinker_private_planning/probing
+
+Nodes allocated:
+================
+gpu-q-8
+
+numtasks=1, numnodes=1, mpi_tasks_per_node=1 (OMP_NUM_THREADS=1)
+
+Executing command:
+==================
+python3 train_conv_probe.py --feature agent_loc_future_trajectory_120 --num_epochs 10 --weight_decay 0.001 --kernel_size 3 --model_name 250m 
+
+
+usage: train_conv_probe.py [-h] [--feature FEATURE] [--num_epochs NUM_EPOCHS]
+                           [--kernel KERNEL] [--weight_decay WEIGHT_DECAY]
+                           [--seed SEED] [--model_name MODEL_NAME]
+                           [--test_mode TEST_MODE]
+train_conv_probe.py: error: unrecognized arguments: --kernel_size 3
