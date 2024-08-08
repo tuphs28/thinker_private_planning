@@ -47,16 +47,13 @@ mpi_tasks_per_node=$(echo "$SLURM_TASKS_PER_NODE" | sed -e  's/^\([0-9][0-9]*\).
 
 #! Optionally modify the environment seen by the application
 #! (note that SLURM reproduces the environment at submission irrespective of ~/.bashrc):
-. /etc/profile.d/modules.sh
-module purge
-module load rhel8/default-amp
-module load cuda/11.1 python-3.9.6-gcc-5.4.0-sbr552h opencv-3.4.3-gcc-5.4.0-o3bzatj gcc/8 patchelf-0.9-gcc-5.4.0-v25fnm7 glew-2.0.0-gcc-5.4.0-rja5lhn
 source ~/rds/hpc-work/planning/env/bin/activate
 ulimit -u 127590
 
 #! Insert additional module load commands after this line if needed:
 
-application="python create_probe_dataset.py"
+application="python create_probe_dataset.py --env_name probing- --model_name 40m --num_episodes 5000 --pct_train 0.6"
+
 
 #! Run options for the application:
 options=""
