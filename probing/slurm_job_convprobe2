@@ -52,7 +52,7 @@ ulimit -u 127590
 
 #! Insert additional module load commands after this line if needed:
 
-application="python3 train_conv_probe_34.py --feature tracked_box_next_push_onto_after --num_epochs 10 --weight_decay 0.001 --kernel 1 --model_name 250m"
+application="python3 train_conv_probe_34.py --feature tracked_box_next_push_onto_with --num_epochs 10 --weight_decay 0.001 --kernel 1 --model_name 250m"
 
 #! Run options for the application:
 options=""
