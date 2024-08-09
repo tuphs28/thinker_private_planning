@@ -1,0 +1,19 @@
+Changed directory to /rds/user/tdb47/hpc-work/planning/thinker_private_planning/probing.
+
+JobID: 58597070
+======
+Time: Fri Aug  9 13:24:18 BST 2024
+Running on master node: gpu-q-36
+Current directory: /rds/user/tdb47/hpc-work/planning/thinker_private_planning/probing
+
+Nodes allocated:
+================
+gpu-q-36
+
+numtasks=1, numnodes=1, mpi_tasks_per_node=1 (OMP_NUM_THREADS=1)
+
+Executing command:
+==================
+python train_conv_probe.py --model_name 250m --feature agent_onto_with --num_epochs 10 --kernel 1 --weight_decay 0.001 
+
+/var/spool/slurm/slurmd/job58597070/slurm_script: line 106: 2428578 Illegal instruction     python train_conv_probe.py --model_name 250m --feature agent_onto_with --num_epochs 10 --kernel 1 --weight_decay 0.001

@@ -67,11 +67,11 @@ if __name__ == "__main__":
         probe_args["positive_feature"] = feature
         results = {}
 
-        train_dataset_c = torch.load(f"./data/train_data_random_{model_name}.pt")
+        train_dataset_c = torch.load(f"./data/train_data_full_{model_name}.pt")
         if testmode == "test":
-            test_dataset_c = torch.load(f"./data/test_data_random_{model_name}.pt")
+            test_dataset_c = torch.load(f"./data/test_data_full_{model_name}.pt")
         else:
-            test_dataset_c = torch.load(f"./data/val_data_random_{model_name}.pt")
+            test_dataset_c = torch.load(f"./data/val_data_full_{model_name}.pt")
         cleaned_train_data, cleaned_test_data, cleaned_val_data = [], [], []
         for trans in train_dataset_c.data:
             if type(trans[probe_args["feature"]]) == int:
@@ -88,7 +88,7 @@ if __name__ == "__main__":
         train_dataset_c.data = cleaned_train_data
         test_dataset_c.data = cleaned_test_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
-        for seed in [0]:
+        for seed in [3,4]:
             print(f"=============== Seed: {seed} ================")
             torch.manual_seed(seed)
             for mode in ["hidden_states"]:
