@@ -88,7 +88,7 @@ if __name__ == "__main__":
         train_dataset_c.data = cleaned_train_data
         test_dataset_c.data = cleaned_test_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
-        for seed in [3,4]:
+        for seed in [4]:
             print(f"=============== Seed: {seed} ================")
             torch.manual_seed(seed)
             for mode in ["hidden_states"]:
