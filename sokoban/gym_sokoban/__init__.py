@@ -43,8 +43,8 @@ for exp_type, exp_ids in [
     ("cutoffpush", range(1)),
     ("cutoffcorridor", range(1)),
     ("targetorder", range(1)),
-    ("shortcut", range(1)),
-    ("boxorder", range(1)),
+    ("shortcut", range(160)),
+    ("boxshortcut", range(160)),
     ("sepgoal", range(1)),
     ("plantest", range(1)),
     ("conflictdetection", range(1))
