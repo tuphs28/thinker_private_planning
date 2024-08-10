@@ -278,6 +278,9 @@ def make_agent_info_extractor() -> Callable:
                         board_locs[(loc_idx-loc_idx%8)//8, loc_idx%8] = future_trans["action"]
                         break
             trans["agent_onto_with"] = board_locs
+            new_board_locs = torch.zeros((8,8), dtype=int)
+            new_board_locs[board_locs != 0 ] = 1
+            trans["agent_from"] = new_board_locs
         episode_entry = aug_episode_entry[:-1]
         # track squares from which agent performs action to enter
         aug_episode_entry = episode_entry + [generate_aug_trans(episode_entry)]
@@ -500,6 +503,9 @@ def make_box_info_extractor(unq: bool = False) -> Callable:
                         board_locs[(loc_idx-loc_idx%8)//8, loc_idx%8] = 4
                         break
             trans["tracked_box_next_push_onto_with"] = board_locs
+            new_board_locs = torch.zeros((8,8), dtype=int)
+            new_board_locs[board_locs != 0 ] = 1
+            trans["tracked_box_next_push_from"] = new_board_locs
         episode_entry = aug_episode_entry[:-1]
         return episode_entry
     return box_info_extractor
