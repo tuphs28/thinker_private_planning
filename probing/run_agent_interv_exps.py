@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 import thinker
-import thinker.viz_utils as viz
 import thinker.util as util
 import gym
 import gym_sokoban
