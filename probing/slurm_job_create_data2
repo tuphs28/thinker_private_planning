@@ -55,7 +55,7 @@ ulimit -u 127590
 
 #! Insert additional module load commands after this line if needed:
 
-application="python create_probe_dataset.py --env_name probing- --model_name 60m --num_episodes 5000 --pct_train 0.6"
+application="python create_probe_dataset.py --env_name valid- --model_name 10m --num_episodes 1000 --name test"
 
 #! Run options for the application:
 options=""

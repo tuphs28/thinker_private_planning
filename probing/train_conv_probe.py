@@ -69,6 +69,7 @@ if __name__ == "__main__":
 
         train_dataset_c = torch.load(f"./data/train_data_full_{model_name}.pt")
         if testmode == "test":
+            print("!!!!")
             test_dataset_c = torch.load(f"./data/test_data_full_{model_name}.pt")
         else:
             test_dataset_c = torch.load(f"./data/val_data_random_{model_name}.pt")

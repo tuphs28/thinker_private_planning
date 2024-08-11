@@ -709,17 +709,19 @@ class ProbingDatasetCleaned(Dataset):
 if __name__=="__main__":
 
     parser = argparse.ArgumentParser(description="run convprobe patching exps")
-    parser.add_argument("--num_episodes", type=int, default=10000)
+    parser.add_argument("--num_episodes", type=int, default=1000)
     parser.add_argument("--model_name", type=str, default="250m")
-    parser.add_argument("--env_name", type=str, default="probing-")
+    parser.add_argument("--env_name", type=str, default="")
     parser.add_argument("--unq", type=bool, default=False)
-    parser.add_argument("--pct_train", type=float, default=0.5)
+    parser.add_argument("--pct_train", type=float, default=1)
     parser.add_argument("--gpu", type=bool, default=False)
     parser.add_argument("--debug", type=bool, default=False)
     parser.add_argument("--mini", type=bool, default=True)
+    parser.add_argument("--name", type=str, default="train")
     args = parser.parse_args()
 
     mini = args.mini
+    name = args.name
     gpu = args.gpu
     pct_train = args.pct_train
     unq = args.unq
@@ -911,13 +913,12 @@ if __name__=="__main__":
     print(f"Full train, val and test sets contain {len(probing_train_data)}, {len(probing_val_data)}, {len(probing_test_data)} transitions respectively")
     
     if not debug:
-        torch.save(ProbingDataset(probing_train_data), f"./data/train_data_full_{model_name}.pt")
-        torch.save(ProbingDataset(probing_val_data), f"./data/val_data_full_{model_name}.pt")
-        torch.save(ProbingDataset(probing_test_data), f"./data/test_data_full_{model_name}.pt")
+        torch.save(ProbingDataset(probing_train_data), f"./data/{name}_data_full_{model_name}.pt")
+        #torch.save(ProbingDataset(probing_val_data), f"./data/val_data_full_{model_name}.pt")
+        #torch.save(ProbingDataset(probing_test_data), f"./data/test_data_full_{model_name}.pt")
 
     selectors = [
-        ("random", make_selector(mode="random", prob_accept=0.2))
-    ]
+            ]
         #("adjbox", make_selector(mode="greaterthan", feature_name="adj_box", threshold=1, prob_accept=0.2)),
         #("noadjbox", make_selector(mode="lessthan", feature_name="adj_box", threshold=0, prob_accept=0.2)),
         #("soon5", make_selector(mode="lessthan", feature_name="num_boxnotontar_until_change", threshold=5, prob_accept=0.3)),
@@ -930,12 +931,3 @@ if __name__=="__main__":
         #("start1", make_selector(mode="lessthan", feature_name="steps_taken", threshold=1)),
         #("onebox", make_selector(mode="lessthan", feature_name="num_boxnotontar", threshold=1, prob_accept=0.2))
 
-    for subset_name, subset_selector in selectors:
-        subset_train = subset_selector(probing_train_data)
-        subset_val = subset_selector(probing_val_data)
-        subset_test = subset_selector(probing_test_data)
-        print(f"{subset_name} train, val and test sets contain {len(subset_train)}, {len(subset_val)}, {len(subset_test)} transitions respectively")
-        if not debug:
-            torch.save(ProbingDataset(subset_train), f"./data/train_data_{subset_name}_{model_name}.pt")
-            torch.save(ProbingDataset(subset_val), f"./data/val_data_{subset_name}_{model_name}.pt")
-            torch.save(ProbingDataset(subset_test), f"./data/test_data_{subset_name}_{model_name}.pt")
