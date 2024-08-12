@@ -181,11 +181,11 @@ if __name__ == "__main__":
     for seed in [0,1,2,3,4]:
         fails = []
         dlocprobe2 = ConvProbe(32,5, 1, 0)
-        dlocprobe2.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_after/250m_layer2_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+        dlocprobe2.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/250m_layer2_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
         dlocprobe1 = ConvProbe(32,5, 1, 0)
-        dlocprobe1.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_after/250m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+        dlocprobe1.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/250m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
         dlocprobe0 = ConvProbe(32,5, 1, 0)
-        dlocprobe0.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_after/250m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+        dlocprobe0.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/250m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
         dloc_probes = [dlocprobe0, dlocprobe1, dlocprobe2]
         results = []
         for layer in [0,1,2]:

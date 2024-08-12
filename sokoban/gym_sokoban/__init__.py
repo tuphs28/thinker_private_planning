@@ -40,7 +40,10 @@ register(
 )
 
 for exp_type, exp_ids in [
-    ("cutoffpush", range(1)),
+    ("cutoffpusht1", range(240)),
+    ("cutoffpusht2", range(240)),
+    ("cutoffpusht3", range(240)),
+    ("cutoffpusht4", range(240)),
     ("cutoffcorridor", range(1)),
     ("targetorder", range(1)),
     ("shortcut", range(160)),

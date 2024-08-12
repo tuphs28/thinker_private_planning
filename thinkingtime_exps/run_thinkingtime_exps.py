@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 from thinker.actor_net import DRCNet
 import os
-import seaborn as sns
 import pandas as pd
 import argparse
 
@@ -65,9 +64,7 @@ if __name__ == "__main__":
                         obs_space=env.observation_space,
                         action_space=env.action_space,
                         flags=flags,
-                        record_state=True,
-                        d=d,
-                        t=n
+                        record_state=True
                         )
                     drc_net.to(env.device)
                     ckp = torch.load(f"../drc_mini/ckp_actor_realstep{agent_name}.tar", env.device)
