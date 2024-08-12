@@ -185,3 +185,10 @@ Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action
 Sokoban-hard-v0
 hard diff.
 hard diff.
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.049
+==== Running agent 30m ====
+Sokoban-hard-v0
+hard diff.
+hard diff.

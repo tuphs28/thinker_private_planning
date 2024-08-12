@@ -127,3 +127,12 @@ Initializing env 0 with device cuda
 Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
 0.219
 ==== Running agent 40m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.321
+==== Running agent 50m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.389
+==== ********** STEPS: 5 ********** ====
+==== Running agent 10m ====
