@@ -55,7 +55,7 @@ ulimit -u 127590
 
 #! Insert additional module load commands after this line if needed:
 
-application="python run_thinkingtime_exps.py --env_name cutoffpusht2"
+application="python run_thinkingtime_exps2.py --env_name medium --num_episodes 1000"
 
 #! Run options for the application:
 options=""

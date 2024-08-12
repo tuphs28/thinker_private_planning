@@ -1,0 +1,129 @@
+Loading rhel8/default-amp
+  Loading requirement: dot rhel8/slurm singularity/current rhel8/global
+    cuda/11.4 libpciaccess/0.16/gcc-9.4.0-6fonbj6
+    libiconv/1.16/gcc-9.4.0-ahebbov libxml2/2.9.12/gcc-9.4.0-gnknt5e
+    ncurses/6.2/gcc-9.4.0-aiirok7 hwloc/2.5.0/gcc-9.4.0-7sqomga
+    libevent/2.1.12/gcc-9.4.0-hgny7cm numactl/2.0.14/gcc-9.4.0-52dwc6n
+    cuda/11.4.0/gcc-9.4.0-3hnxhjt gdrcopy/2.2/gcc-9.4.0-e4igtfp
+    knem/1.1.4/gcc-9.4.0-bpbxgva libnl/3.3.0/gcc-9.4.0-whwhrwb
+    rdma-core/34.0/gcc-9.4.0-5eo5n2u ucx/1.11.1/gcc-9.4.0-lktqyl4
+    openmpi/4.1.1/gcc-9.4.0-epagguv
+Changed directory to /rds/user/tdb47/hpc-work/planning/thinker_private_planning/thinkingtime_exps.
+
+JobID: 58764984
+======
+Time: Mon Aug 12 10:06:15 BST 2024
+Running on master node: gpu-q-29
+Current directory: /rds/user/tdb47/hpc-work/planning/thinker_private_planning/thinkingtime_exps
+
+Nodes allocated:
+================
+gpu-q-29
+
+numtasks=1, numnodes=1, mpi_tasks_per_node=1 (OMP_NUM_THREADS=1)
+
+Executing command:
+==================
+python run_thinkingtime_exps2.py --env_name medium --num_episodes 1000 
+
+
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+==== ********** STEPS: 0 ********** ====
+==== Running agent 10m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.007
+==== Running agent 20m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.152
+==== Running agent 30m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.193
+==== Running agent 40m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.286
+==== Running agent 50m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.343
+==== ********** STEPS: 1 ********** ====
+==== Running agent 10m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.008
+==== Running agent 20m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.159
+==== Running agent 30m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.205
+==== Running agent 40m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.312
+==== Running agent 50m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.368
+==== ********** STEPS: 2 ********** ====
+==== Running agent 10m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.01
+==== Running agent 20m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.17
+==== Running agent 30m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.211
+==== Running agent 40m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.32
+==== Running agent 50m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.383
+==== ********** STEPS: 3 ********** ====
+==== Running agent 10m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.009
+==== Running agent 20m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.164
+==== Running agent 30m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.216
+==== Running agent 40m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.32
+==== Running agent 50m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.388
+==== ********** STEPS: 4 ********** ====
+==== Running agent 10m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.01
+==== Running agent 20m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.161
+==== Running agent 30m ====
+Initializing env 0 with device cuda
+Init. environment with obs space [91mBox(0, 1, (7, 8, 8), uint8)[0m and action space [91mDiscrete(5)[0m
+0.219
+==== Running agent 40m ====

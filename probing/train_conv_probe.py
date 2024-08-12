@@ -145,11 +145,11 @@ if __name__ == "__main__":
                                                 #for k in range(out_dim):
                                                 #conf_mat[j][k] += torch.sum((logits[[i],:,:].argmax(dim=1)==k)[positive_targets[[i],:,:].view(-1,64)==j]).item()
                                 if out_dim == 2:
-                                    prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='binary', pos_label=1, zero_division=1)
+                                    prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='binary', pos_label=1, zero_division=1, labels=[0,1])
                                 else:
-                                    prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='macro', zero_division=1)
+                                    prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='macro', zero_division=1, labels=[0,1,2,3,4])
                                 
-                                precisions, recalls, fones, _ = precision_recall_fscore_support(labs, preds, average=None, zero_division=1)
+                                precisions, recalls, fones, _ = precision_recall_fscore_support(labs, preds, average=None, zero_division=1, labels=[0,1,2,3,4])
 
                                 print(f"---- Epoch {epoch} -----")
                                 print("Full acc:", full_acc/(len(test_dataset.data)*64))
