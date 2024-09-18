@@ -62,7 +62,7 @@ def process_levels(levels, cutoffpush=False):
     return all_levels
 
 
-expname = "cutoffpusht4"
+expname = "cutoffpushtall"
 
 with open(f"./exp-levels-txt/{expname}/clean.txt") as f:
     clean_levels = f.read()
