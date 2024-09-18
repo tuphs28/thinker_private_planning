@@ -67,8 +67,8 @@ def process_levels(levels, cutoffpush=False, rotate=False):
     return all_levels
 
 
-expname = "med"
-rotate = False
+expname = "cutoffpushtall"
+rotate = True
 
 with open(f"./exp-levels-txt/{expname}/clean.txt") as f:
     clean_levels = f.read()
