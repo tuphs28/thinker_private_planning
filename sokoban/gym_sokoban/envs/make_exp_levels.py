@@ -23,7 +23,7 @@ def make_rotations(level_lines, cutoffpush=False):
         rotate_lines_3.append(new_line_3)
     return (level_lines, rotate_lines_1, rotate_lines_2, rotate_lines_3)
 
-def process_levels(levels, cutoffpush=False):
+def process_levels(levels, cutoffpush=False, rotate=False):
     all_levels = []
     for j in range(len(levels.split(";")[1:])):
         if cutoffpush:
@@ -57,20 +57,26 @@ def process_levels(levels, cutoffpush=False):
                 mirror_list.append(line_list[-(i+1)])
             raw_lines.append(line_list)
             mirror_lines.append(mirror_list)
-        all_levels += make_rotations(raw_lines, cutoffpush)
-        all_levels += make_rotations(mirror_lines, cutoffpush)
+        if raw_lines[-1] == []:
+            raw_lines = raw_lines[:-1]
+        if rotate:
+            all_levels += make_rotations(raw_lines, cutoffpush)
+            all_levels += make_rotations(mirror_lines, cutoffpush)
+        else:
+            all_levels += [raw_lines]
     return all_levels
 
 
-expname = "cutoffpushtall"
+expname = "med"
+rotate = False
 
 with open(f"./exp-levels-txt/{expname}/clean.txt") as f:
     clean_levels = f.read()
 with open(f"./exp-levels-txt/{expname}/corrupt.txt") as f:
     corrupt_levels = f.read()
 
-all_clean_levels = process_levels(clean_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False)
-all_corrupt_levels = process_levels(corrupt_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False)
+all_clean_levels = process_levels(clean_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False, rotate=rotate)
+all_corrupt_levels = process_levels(corrupt_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False, rotate=rotate)
 
 level_id = 0
 exp_dir = f"./boxoban-levels/experiments/{expname}"
