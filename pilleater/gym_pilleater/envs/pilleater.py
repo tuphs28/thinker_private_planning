@@ -124,7 +124,7 @@ class PillEaterEnv(gym.Env):
         else:
             raise ValueError("Other modes not implemented yet, mucho sad")
 
-        self.observation_space = spaces.Box(low=0, high=5, shape=(self.height, self.width, 6), dtype=np.uint8)
+        self.observation_space = spaces.Box(low=0, high=5, shape=(self.height, self.width, self.nplanes), dtype=np.uint8)
         self.action_space = spaces.Discrete(5)
     
     def _make_pillman(self):
@@ -394,7 +394,7 @@ class PillEaterEnv(gym.Env):
             for y in range(width):
                 if obs[x, y, PillEater.PILLMAN] == 1:
                     rgb[x, y] = [0, 1, 0]
-                elif obs[x, y, PillEater.GHOSTS] > 0. or obs[x, y, PillEater.GHOSTS_EDIBLE] > 0.:
+                elif obs[x, y, PillEater.GHOSTS] > 0. or obs[x, y, PillEater.GHOSTS_EDIBLE] > 0. or obs[x, y, PillEater.GHOSTS_EDIBLE_END] > 0: # check this!
                     g = obs[x, y, PillEater.GHOSTS]
                     ge = obs[x, y, PillEater.GHOSTS_EDIBLE] + obs[x, y, PillEater.GHOSTS_EDIBLE_END]
                     rgb[x, y] = [g + ge, ge, 0]
