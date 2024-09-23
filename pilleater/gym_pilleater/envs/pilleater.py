@@ -10,6 +10,7 @@ class PillEater:
     GHOSTS = 3
     GHOSTS_EDIBLE = 4
     PILL = 5
+    GHOSTS_EDIBLE_END = 6
     NUM_ACTIONS = 5
     MODES = ('regular', 'avoid', 'hunt', 'ambush', 'rush')
 
@@ -98,7 +99,7 @@ class PillEaterEnv(gym.Env):
             pills=[None] * self.npills,
             power=0
         )
-        self.nplanes = 6
+        self.nplanes = 7
         self.image = np.zeros(
             shape=(self.height, self.width, self.nplanes), dtype=np.uint8)
         self.color_image = np.zeros(shape=(3, self.height, self.width),
@@ -293,8 +294,10 @@ class PillEaterEnv(gym.Env):
         for ghost in self.world_state['ghosts']:
             edibility = self.world_state['power'] / float(self.pill_duration)
             #print("edibility:", edibility)
-            if edibility > 0:
+            if edibility > 0.2:
                 self.image[ghost['pos'][0], ghost['pos'][1], PillEater.GHOSTS_EDIBLE] = 1 #edibility
+            elif edibility > 0.2:
+                self.image[ghost['pos'][0], ghost['pos'][1], PillEater.GHOSTS_EDIBLE_END] = 1 #edibility
             else:
                 self.image[ghost['pos'][0], ghost['pos'][1], PillEater.GHOSTS] = 1 #1. - edibility
         for pill in self.world_state['pills']:
@@ -393,7 +396,7 @@ class PillEaterEnv(gym.Env):
                     rgb[x, y] = [0, 1, 0]
                 elif obs[x, y, PillEater.GHOSTS] > 0. or obs[x, y, PillEater.GHOSTS_EDIBLE] > 0.:
                     g = obs[x, y, PillEater.GHOSTS]
-                    ge = obs[x, y, PillEater.GHOSTS_EDIBLE]
+                    ge = obs[x, y, PillEater.GHOSTS_EDIBLE] + obs[x, y, PillEater.GHOSTS_EDIBLE_END]
                     rgb[x, y] = [g + ge, ge, 0]
                 elif obs[x, y, PillEater.PILL] == 1:
                     rgb[x, y] = [0, 1, 1]
