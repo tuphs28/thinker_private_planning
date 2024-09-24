@@ -40,24 +40,16 @@ register(
 )
 
 for exp_type, exp_ids in [
-<<<<<<< HEAD
     ("med", range(1000)),
     ("cutoffpusht2", range(1)),
     ("cutoffpusht3", range(1)),
     ("cutoffpusht4", range(1)),
-=======
-    ("cutoffpusht1", range(240)),
-    ("cutoffpusht2", range(240)),
-    ("cutoffpusht3", range(240)),
-    ("cutoffpusht4", range(240)),
-    ("cutoffpushtall", range(400)),
->>>>>>> f226d9ff8de5bc00ffaa403bbb779cd4bfae0106
     ("cutoffcorridor", range(1)),
     ("targetorder", range(1)),
-    ("shortcut", range(160)),
-    ("boxshortcut", range(160)),
+    ("shortcut", range(200)),
+    ("boxshortcut", range(200)),
     ("sepgoal", range(1)),
-    ("plantest", range(1)),
+    ("plantest", range(80)),
     ("conflictdetection", range(1))
     ]:
     for exp_id in exp_ids:

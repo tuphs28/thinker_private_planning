@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import argparse
 
 def make_rotations(level_lines, cutoffpush=False):
     if cutoffpush:
@@ -66,51 +67,58 @@ def process_levels(levels, cutoffpush=False, rotate=False):
             all_levels += [raw_lines]
     return all_levels
 
+if __name__ == "__main__":
 
-expname = "cutoffpushtall"
-rotate = True
+    parser = argparse.ArgumentParser(description="make levels")
+    parser.add_argument("--expname", type=str, default="cutoffpusht4")
+    parser.add_argument("--rotate", type=bool, default=False)
+    args = parser.parse_args()
 
-with open(f"./exp-levels-txt/{expname}/clean.txt") as f:
-    clean_levels = f.read()
-with open(f"./exp-levels-txt/{expname}/corrupt.txt") as f:
-    corrupt_levels = f.read()
+    expname = args.expname
+    rotate = args.rotate
+    print(f"{expname=}, {rotate=}")
 
-all_clean_levels = process_levels(clean_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False, rotate=rotate)
-all_corrupt_levels = process_levels(corrupt_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False, rotate=rotate)
+    with open(f"./exp-levels-txt/{expname}/clean.txt") as f:
+        clean_levels = f.read()
+    with open(f"./exp-levels-txt/{expname}/corrupt.txt") as f:
+        corrupt_levels = f.read()
 
-level_id = 0
-exp_dir = f"./boxoban-levels/experiments/{expname}"
-if not os.path.exists(exp_dir):
-    os.mkdir(exp_dir)
+    all_clean_levels = process_levels(clean_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False, rotate=rotate)
+    all_corrupt_levels = process_levels(corrupt_levels, True if expname in ["cutoffpush", "cutoffcorridor"] else False, rotate=rotate)
 
-info_dict = {}
+    level_id = 0
+    exp_dir = f"./boxoban-levels/experiments/{expname}"
+    if not os.path.exists(exp_dir):
+        os.mkdir(exp_dir)
 
-for clean_level, corrupt_level in zip(all_clean_levels, all_corrupt_levels):
+    info_dict = {}
+
+    for clean_level, corrupt_level in zip(all_clean_levels, all_corrupt_levels):
+
+        if expname == "cutoffpush":
+            clean_info, corrupt_info = clean_level[0], corrupt_level[0]
+            info_dict[f"{expname}_{level_id:04}"] = {"tar_loc": list(clean_info[0]),
+                                                    "box_loc": list(clean_info[1]),
+                                                    "alttar_loc": list(clean_info[2]),
+                                                    "altbox_loc": list(clean_info[3]),
+                                                    "path1_loc": list(clean_info[4]),
+                                                    "path2_loc": list(clean_info[5])}
+        level_dir = exp_dir + f"/{level_id:04}"
+        if not os.path.exists(level_dir):
+            os.mkdir(level_dir)
+            os.mkdir(level_dir+"/clean")
+            os.mkdir(level_dir+"/corrupt")
+        clean_level = ["".join(line) for line in clean_level[1 if expname in ["cutoffpush", "cutoffcorridor"] else 0:]]
+        clean_level = [f"; {level_id}"] + clean_level
+        clean_level = "\n".join(clean_level)
+        with open(level_dir+"/clean/000.txt", "w") as f:
+            f.write(clean_level)
+        corrupt_level = ["".join(line) for line in corrupt_level[1 if expname in ["cutoffpush", "cutoffcorridor"] else 0:]]
+        corrupt_level = [f"; {level_id}"] + corrupt_level
+        corrupt_level = "\n".join(corrupt_level)
+        with open(level_dir+"/corrupt/000.txt", "w") as f:
+            f.write(corrupt_level)
+        level_id += 1
 
     if expname == "cutoffpush":
-        clean_info, corrupt_info = clean_level[0], corrupt_level[0]
-        info_dict[f"{expname}_{level_id:04}"] = {"tar_loc": list(clean_info[0]),
-                                                "box_loc": list(clean_info[1]),
-                                                "alttar_loc": list(clean_info[2]),
-                                                "altbox_loc": list(clean_info[3]),
-                                                "path1_loc": list(clean_info[4]),
-                                                "path2_loc": list(clean_info[5])}
-    level_dir = exp_dir + f"/{level_id:04}"
-    if not os.path.exists(level_dir):
-        os.mkdir(level_dir)
-        os.mkdir(level_dir+"/clean")
-        os.mkdir(level_dir+"/corrupt")
-    clean_level = ["".join(line) for line in clean_level[1 if expname in ["cutoffpush", "cutoffcorridor"] else 0:]]
-    clean_level = [f"; {level_id}"] + clean_level
-    clean_level = "\n".join(clean_level)
-    with open(level_dir+"/clean/000.txt", "w") as f:
-        f.write(clean_level)
-    corrupt_level = ["".join(line) for line in corrupt_level[1 if expname in ["cutoffpush", "cutoffcorridor"] else 0:]]
-    corrupt_level = [f"; {level_id}"] + corrupt_level
-    corrupt_level = "\n".join(corrupt_level)
-    with open(level_dir+"/corrupt/000.txt", "w") as f:
-        f.write(corrupt_level)
-    level_id += 1
-
-if expname == "cutoffpush":
-    info_df = pd.DataFrame(info_dict).to_csv(f"./exp-levels-txt/{expname}.csv")
+        info_df = pd.DataFrame(info_dict).to_csv(f"./exp-levels-txt/{expname}.csv")
