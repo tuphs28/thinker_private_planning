@@ -25,6 +25,26 @@ class ConvProbe(nn.Module):
             loss = None
         return out, loss
     
+class LinProbe(nn.Module):
+    def __init__(self, in_channels: int, out_dim: int, nl: bool = False):
+        super().__init__()
+        self.ff = nn.Linear(in_features=in_channels*64, out_features=out_dim*64, bias=False)
+        #self.conv = nn.Conv2d(in_channels=in_channels, out_channels=out_dim, kernel_size=kernel_size, padding=padding, bias=False)
+        self.out_dim = out_dim
+        self.loss_fnc = nn.CrossEntropyLoss()
+    def forward(self, input: torch.tensor, targets: Optional[torch.tensor] = None):
+        input = input.view(input.shape[0], -1)
+        #out = self.conv(input)
+        out = self.ff(input)
+        if targets is not None:
+            assert out.shape[0] == targets.shape[0]
+            out = out.view(out.shape[0], self.out_dim, 64)
+            targets = targets.view(out.shape[0], 64)
+            loss = self.loss_fnc(out, targets)
+        else:
+            loss = None
+        return out, loss
+    
 if __name__ == "__main__":
     import pandas as pd
     import argparse
@@ -38,15 +58,19 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--model_name", type=str, default="250m")
     parser.add_argument("--test_mode", type=str, default="test")
+    parser.add_argument("--convprobe_off", action="store_false", default=True, help="use linprobe rather than convprobe")
+    parser.add_argument("--debug", action="store_false", default=True, help="debug")
     args = parser.parse_args()
 
     channels = list(range(32))
     batch_size = 16
     num_epochs = args.num_epochs
     wd = args.weight_decay
-    model_name = args.model_name
     kernel = args.kernel
     testmode = args.test_mode
+    conv = args.convprobe_off
+    model_name = args.model_name 
+    debug = args.debug
     assert kernel in [1,3]
     probe_args = {}
     torch.manual_seed(args.seed)
@@ -89,7 +113,7 @@ if __name__ == "__main__":
         train_dataset_c.data = cleaned_train_data
         test_dataset_c.data = cleaned_test_data
         out_dim = 1 + max([c[feature].max().item() for c in train_dataset_c.data])
-        for seed in [0,1,2,3,4]:
+        for seed in [0]: # CHANGE BACK
             print(f"=============== Seed: {seed} ================")
             torch.manual_seed(seed)
             for mode in ["hidden_states"]:
@@ -106,9 +130,16 @@ if __name__ == "__main__":
                     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True,persistent_workers=True)
                     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True,persistent_workers=True)
 
-                    convprobe = ConvProbe(in_channels=7 if layer_name=="x" else 32, out_dim=out_dim, kernel_size=kernel, padding=(0 if kernel==1 else 1))
-                    convprobe.to(device)
-                    optimiser = torch.optim.AdamW(params=convprobe.parameters(), lr=1e-3, weight_decay=wd)
+                    if conv:
+                        if debug:
+                            print("convprobe")
+                        probe = ConvProbe(in_channels=7 if layer_name=="x" else 32, out_dim=out_dim, kernel_size=kernel, padding=(0 if kernel==1 else 1))
+                    else:
+                        if debug:
+                            print("linprobe")
+                        probe = LinProbe(in_channels=7 if layer_name=="x" else 32, out_dim=out_dim)
+                    probe.to(device)
+                    optimiser = torch.optim.AdamW(params=probe.parameters(), lr=1e-3, weight_decay=wd)
                
                     for epoch in range(1, num_epochs+1):
                         start_time = time.time()
@@ -123,7 +154,7 @@ if __name__ == "__main__":
                             hiddens = states.to(torch.float).to(device) if layer_name=="x" else hiddens[:,-1,[layer_idx+c for c in channels],:,:].to(device)
                             targets = targets.to(torch.long).to(device)
                             optimiser.zero_grad()
-                            logits, loss = convprobe(hiddens, targets)
+                            logits, loss = probe(hiddens, targets)
                             loss.backward()
                             optimiser.step()
                         full_acc = 0
@@ -135,7 +166,7 @@ if __name__ == "__main__":
                                 for hiddens, states, targets, positive_targets in test_loader:
                                     hiddens = states.to(torch.float).to(device) if layer_name=="x" else hiddens[:,-1,[layer_idx+c for c in channels],:,:].to(device)
                                     targets = targets.to(torch.long).to(device)
-                                    logits, loss = convprobe(hiddens, targets)
+                                    logits, loss = probe(hiddens, targets)
                                     full_acc += (torch.sum(logits.argmax(dim=1)==targets.view(-1,64)).item())
                                     preds += logits.argmax(dim=1).view(-1).tolist()
                                     labs += positive_targets.view(-1).tolist()
@@ -147,9 +178,9 @@ if __name__ == "__main__":
                                 if out_dim == 2:
                                     prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='binary', pos_label=1, zero_division=1, labels=[0,1])
                                 else:
-                                    prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='macro', zero_division=1, labels=[0,1,2,3,4])
+                                    prec, rec, f1, sup = precision_recall_fscore_support(labs, preds, average='macro', zero_division=1, labels=list(range(out_dim)))
                                 
-                                precisions, recalls, fones, _ = precision_recall_fscore_support(labs, preds, average=None, zero_division=1, labels=[0,1,2,3,4])
+                                precisions, recalls, fones, _ = precision_recall_fscore_support(labs, preds, average=None, zero_division=1, labels=list(range(out_dim)))
 
                                 print(f"---- Epoch {epoch} -----")
                                 print("Full acc:", full_acc/(len(test_dataset.data)*64))
@@ -177,7 +208,7 @@ if __name__ == "__main__":
 
                     if not os.path.exists(f"./convresults/models/{feature}") and mode=="hidden_states":
                         os.mkdir(f"./convresults/models/{feature}")
-                    torch.save(convprobe.state_dict(), f"./convresults/models/{feature}/{model_name}_{layer_name}_kernel{kernel}_wd{wd}_seed{seed}.pt")
+                    torch.save(probe.state_dict(), f"./convresults/models/{feature}/{model_name}{'full' if not conv else ''}_{layer_name}_kernel{kernel}_wd{wd}_seed{seed}.pt")
 
             results_df = pd.DataFrame(results)
-            results_df.to_csv(f"./convresults/{model_name}_{feature}_kernel{kernel}_wd{wd}_seed{seed}.csv")
+            results_df.to_csv(f"./convresults/{model_name}{'full' if not conv else ''}_{feature}_kernel{kernel}_wd{wd}_seed{seed}.csv")

@@ -27,8 +27,8 @@ if __name__ == "__main__":
         ([(2,3)], [(3,3), (3,4), (3,5)], [], [], [], [(2,3)], [(3,3)]),
         ([(0,4)], [], [(2,4), (2,3)], [(1,4)], [], [(0,4)], [(1,4)]),
         ([(2,2)], [(3,2), (3,3), (3,4)], [], [], [], [(2,2)], [(3,2)]),
-        ([(1,2), (2,2)], [(4,2), (4,3)], [], [(3,2)], [], [(1,2)], [(3,2)]),
-        ([(3,4), (3,3)], [(1,2)], [], [], [(3,2), (2,2)], [(3,3)], [(3,2)]),
+        ([(2,2), (3,2)], [(5,2), (5,3)], [], [(4,2)], [], [(2,2)], [(4,2)]), #
+        ([(3,4), (3,3)], [(1,2)], [], [], [(3,2), (2,2)], [(3,4)], [(3,2)]),
         ([(2,6)], [], [(1,6), (1,5)], [(1,4)], [], [(2,6)], [(1,6)]),
         ([(1,5)], [], [], [(1,6), (2,6), (3,6)], [], [(1,5)], [(1,6)]),
         ([(2,3), (2,4), (2,5)], [], [(4,6)], [(2,6), (3,6)], [], [(2,3)], [(2,6)]),
@@ -36,7 +36,12 @@ if __name__ == "__main__":
         ([(2,4)], [], [(1,4), (1,3), (1,2)], [], [], [(2,4)], [(1,4)]),
         ([(5,5), (4,5)], [], [(4,4), (4,3), (4,2)], [], [], [(5,5)], [(4,4)]),
         ([(1,2), (1,3)], [], [(3,4)], [(1,4), (2,4)], [], [(1,2)], [(1,4)]),
-        ([(1,4), (1,5), (1,6)], [], [], [(2,6), (3,6), (4,6)], [], [(1,4)], [(2,6)])
+        ([(1,4), (1,5), (1,6)], [], [], [(2,6), (3,6), (4,6)], [], [(1,4)], [(2,6)]),
+        ([(1,5)], [], [], [(2,5), (3,5), (4,5)], [], [(1,5)], [(2,5)]),
+        ([(3,5), (2,5)], [], [(5,5), (5,4)], [(4,5)], [], [(3,5)], [(4,5)]), #
+        ([(3,6), (4,6)], [], [(5,6), (5,5), (5,4)], [], [], [(3,6)], [(5,6)]),
+        ([(4,1)], [(5,1), (5,2), (5,3)], [], [], [], [(4,1)], [(5,1)]),
+        ([(5,7), (6,7)], [], [(5,6), (5,5), (5,4)], [], [], [(5,7)], [(5,6)])
     ]
 
     paths_2intervs = [
@@ -50,8 +55,8 @@ if __name__ == "__main__":
         ([(2,3)], [(3,3), (3,4)], [], [], [], [(2,3)], [(3,3)]),
         ([(0,4)], [], [(2,4)], [(1,4)], [], [(0,4)], [(1,4)]),
         ([(2,2)], [(3,2), (3,3)], [], [], [], [(2,2)], [(3,2)]),
-        ([(1,2), (2,2)], [(4,2)], [], [(3,2)], [], [(1,2)], [(3,2)]),
-        ([(3,4), (3,3)], [], [], [], [(3,2), (2,2)], [(3,3)], [(3,2)]),
+        ([(2,2), (3,2)], [(5,2)], [], [(4,2)], [], [(2,2)], [(4,2)]),#
+        ([(3,4), (3,3)], [], [], [], [(3,2), (2,2)], [(3,4)], [(3,2)]),
         ([(2,6)], [], [(1,6), (1,5)], [], [], [(2,6)], [(1,6)]),
         ([(1,5)], [], [], [(1,6), (2,6)], [], [(1,5)], [(1,6)]),
         ([(2,3), (2,4), (2,5)], [], [], [(2,6), (3,6)], [], [(2,3)], [(2,6)]),
@@ -59,7 +64,12 @@ if __name__ == "__main__":
         ([(2,4)], [], [(1,4), (1,3)], [], [], [(2,4)], [(1,4)]),
         ([(5,5), (4,5)], [], [(4,4), (4,3)], [], [], [(5,5)], [(4,4)]),
         ([(1,2), (1,3)], [], [], [(1,4), (2,4)], [], [(1,2)], [(1,4)]),
-        ([(1,4), (1,5), (1,6)], [], [], [(2,6), (3,6)], [], [(1,4)], [(2,6)])
+        ([(1,4), (1,5), (1,6)], [], [], [(2,6), (3,6)], [], [(1,4)], [(2,6)]),
+        ([(1,5)], [], [], [(2,5), (3,5)], [], [(1,5)], [(2,5)]),
+        ([(3,5), (2,5)], [], [(5,5)], [(4,5)], [], [(3,5)], [(4,5)]),
+        ([(3,6), (4,6)], [], [(5,6), (5,5)], [], [], [(3,6)], [(5,6)]),
+        ([(4,1)], [(5,1), (5,2)], [], [], [], [(4,1)], [(5,1)]),
+        ([(5,7), (6,7)], [], [(5,6), (5,5)], [], [], [(5,7)], [(5,6)])
     ]
 
     paths_1intervs = [
@@ -73,8 +83,8 @@ if __name__ == "__main__":
         ([(2,3)], [(3,3)], [], [], [], [(2,3)], [(3,3)]),
         ([(0,4)], [], [], [(1,4)], [], [(0,4)], [(1,4)]),
         ([(2,2)], [(3,2)], [], [], [], [(2,2)], [(3,2)]),
-        ([(1,2), (2,2)], [], [], [(3,2)], [], [(1,2)], [(3,2)]),
-        ([(3,4), (3,3)], [], [], [], [(3,2)], [(3,3)], [(3,2)]),
+        ([(2,2), (3,2)], [], [], [(4,2)], [], [(2,2)], [(4,2)]),
+        ([(3,4), (3,3)], [], [], [], [(3,2)], [(3,4)], [(3,2)]),
         ([(2,6)], [], [(1,6)], [], [], [(2,6)], [(1,6)]),
         ([(1,5)], [], [], [(1,6)], [], [(1,5)], [(1,6)]),
         ([(2,3), (2,4), (2,5)], [], [], [(2,6)], [], [(2,3)], [(2,6)]),
@@ -82,7 +92,12 @@ if __name__ == "__main__":
         ([(2,4)], [], [(1,4)], [], [], [(2,4)], [(1,4)]),
         ([(5,5), (4,5)], [], [(4,4)], [], [], [(5,5)], [(4,4)]),
         ([(1,2), (1,3)], [], [], [(1,4)], [], [(1,2)], [(1,4)]),
-        ([(1,4), (1,5), (1,6)], [], [], [(2,6)], [], [(1,4)], [(2,6)])
+        ([(1,4), (1,5), (1,6)], [], [], [(2,6)], [], [(1,4)], [(2,6)]),
+        ([(1,5)], [], [], [(2,5)], [], [(1,5)], [(2,5)]),
+        ([(3,5), (2,5)], [], [], [(4,5)], [], [(3,5)], [(4,5)]),
+        ([(3,6), (4,6)], [], [(5,6)], [], [], [(3,6)], [(5,6)]),
+        ([(4,1)], [(5,1)], [], [], [], [(4,1)], [(5,1)]),
+        ([(5,7), (6,7)], [], [(5,6)], [], [], [(5,7)], [(5,6)])
     ]
 
     paths_0intervs = [
@@ -96,8 +111,8 @@ if __name__ == "__main__":
         ([(2,3)], [], [], [], [], [(2,3)], [(3,3)]),
         ([(0,4)], [], [], [], [], [(0,4)], [(1,4)]),
         ([(2,2)], [], [], [], [], [(2,2)], [(3,2)]),
-        ([(1,2), (2,2)], [], [], [], [], [(1,2)], [(3,2)]),
-        ([(3,4), (3,3)], [], [], [], [], [(3,3)], [(3,2)]),
+    ([(2,2), (3,2)], [], [], [], [], [(2,2)], [(4,2)]),
+        ([(3,4), (3,3)], [], [], [], [], [(3,4)], [(3,2)]),
         ([(2,6)], [], [], [], [], [(2,6)], [(1,6)]),
         ([(1,5)], [], [], [], [], [(1,5)], [(1,6)]),
         ([(2,3), (2,4), (2,5)], [], [], [], [], [(2,3)], [(2,6)]),
@@ -105,7 +120,12 @@ if __name__ == "__main__":
         ([(2,4)], [], [], [], [], [(2,4)], [(1,4)]),
         ([(5,5), (4,5)], [], [], [], [], [(5,5)], [(4,4)]),
         ([(1,2), (1,3)], [], [], [], [], [(1,2)], [(1,4)]),
-        ([(1,4), (1,5), (1,6)], [], [], [], [], [(1,4)], [(2,6)])
+        ([(1,4), (1,5), (1,6)], [], [], [], [], [(1,4)], [(2,6)]),
+        ([(1,5)], [], [], [], [], [(1,5)], [(2,5)]),
+        ([(3,5), (2,5)], [], [], [], [], [(3,5)], [(4,5)]),
+        ([(3,6), (4,6)], [], [], [], [], [(3,6)], [(5,6)]),
+        ([(4,1)], [], [], [], [], [(4,1)], [(5,1)]),
+        ([(5,7), (6,7)], [], [], [], [], [(5,7)], [(5,6)])
     ]
     exp_paths = []
     for name, paths in zip([0, 1, 2, 3], [paths_0intervs, paths_1intervs, paths_2intervs, paths_3intervs]):
@@ -176,7 +196,8 @@ if __name__ == "__main__":
             boxchecks += [boxpoint, boxpoint_1, boxpoint_2, boxpoint_3, boxpoint_4, boxpoint_5, boxpoint_6, boxpoint_7]
         exp_paths.append([name, (olds, new_rs, new_ls, new_ds, new_us, checks, boxchecks)])
 
-    num_trials = 160
+    num_trials = 200
+    fails = []
     flags = util.create_setting(args=[], save_flags=False, wrapper_type=1) 
     for seed in [0,1,2,3,4]:
         fails = []
@@ -186,13 +207,22 @@ if __name__ == "__main__":
         dlocprobe1.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/250m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
         dlocprobe0 = ConvProbe(32,5, 1, 0)
         dlocprobe0.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/250m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
-        dloc_probes = [dlocprobe0, dlocprobe1, dlocprobe2]
+        baseprobe0 = ConvProbe(32,5, 1, 0)
+        baseprobe1 = ConvProbe(32,5, 1, 0)
+        baseprobe2 = ConvProbe(32,5, 1, 0)
+        dloc_probes = [dlocprobe0, dlocprobe1, dlocprobe2, baseprobe0, baseprobe1, baseprobe2]
         results = []
-        for layer in [0,1,2]:
+        for layer in [0,1,2,3,4,5]:
             for interv, (olds, new_rs, new_ls, new_ds, new_us, checks, boxchecks) in exp_paths:
-                for alpha in [0.25,0.5,1,2,4]:
+                for alpha in [1]:
+                    alpha_t = alpha
+                    if layer > 2:
+                        alpha *= dloc_probes[layer%3].conv.weight.norm() / dloc_probes[layer].conv.weight.norm()
+                    print(f"========================================= {layer=}, {alpha=}, {interv=}, {seed=}==================================")
                     successes = 0
-                    for j in range(num_trials):
+                    alls = []
+                    for j in range(0,num_trials):
+                        steps = []
                         env = thinker.make(
                                     f"Sokoban-boxshortcut_clean_{j:04}-v0", 
                                     env_n=1, 
@@ -206,17 +236,18 @@ if __name__ == "__main__":
                                     mini_unqtar=False,
                                     mini_unqbox=False         
                                 ) 
-                        drc_net = DRCNet(
-                                        obs_space=env.observation_space,
-                                        action_space=env.action_space,
-                                        flags=flags,
-                                        record_state=True,
-                                        )
-                        ckp_path = "../drc_mini"
-                        ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep250m.tar")
-                        ckp = torch.load(ckp_path, map_location=torch.device('cpu'))
-                        drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
-                        patch_net = ProbeIntervDRCNet(drc_net)
+                        if j == 0 and layer == 0 and seed == 0:
+                            drc_net = DRCNet(
+                                            obs_space=env.observation_space,
+                                            action_space=env.action_space,
+                                            flags=flags,
+                                            record_state=True,
+                                            )
+                            ckp_path = "../drc_mini"
+                            ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep250m.tar")
+                            ckp = torch.load(ckp_path, map_location=torch.device('cpu'))
+                            drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
+                            patch_net = ProbeIntervDRCNet(drc_net)
 
                         rnn_state = drc_net.initial_state(batch_size=1, device=env.device)
                         state = env.reset()
@@ -226,7 +257,7 @@ if __name__ == "__main__":
                         fail = False
                         done = False
                         ep_len = 0
-                        levs = []
+                        #levs = []
 
                         rot = j % 8
                         if rot in [3,5]:
@@ -266,25 +297,31 @@ if __name__ == "__main__":
                                     notonstart += 1 # need to fix this 
                                 if (box_y, box_x) in checks[j]:
                                     fail = True
+                                    #print(box_y, box_x, checks[j], ep_len)
                             if notonstart != 1:
                                 patch_old = False
 
                             if patch_old:
-                                patch_info = {layer: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha},
+                                patch_info = {layer % 3: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha},
                                             {"vec": dloc_probes[layer].conv.weight[right_idx].view(32), "locs": new_rs[j], "alpha": alpha},
                                             {"vec": dloc_probes[layer].conv.weight[left_idx].view(32), "locs": new_ls[j], "alpha": alpha},
                                             {"vec": dloc_probes[layer].conv.weight[down_idx].view(32), "locs": new_ds[j], "alpha": alpha},
                                             {"vec": dloc_probes[layer].conv.weight[up_idx].view(32), "locs": new_us[j], "alpha": alpha}] }
                             else:
-                                patch_info = {layer: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha}]}
+                                patch_info = {layer % 3: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha}]}
                             patch_action, patch_action_probs, patch_logits, rnn_state, value = patch_net.forward_patch(env_out, rnn_state, activ_ticks=[0,1,2],
                                                                                     patch_info=patch_info)
                             state, reward, done, info = env.step(patch_action)
                             ep_len += 1
                             env_out = util.create_env_out(patch_action, state, reward, done, info, flags)
-                            levs.append(state["real_states"][0])
+                            #steps.append(state)
                         if not fail and ep_len < 115:
                             successes += 1
-                    print(successes / num_trials)
-                    results.append({"layer": layer, "alpha": alpha, "success_rate": (successes / num_trials), "intervs": interv})
+                            #print(f"SUCCESS! {j=}, {fail=}, {ep_len}")
+                        #else:
+                            #print(f"{j=}, {fail=}, {ep_len}")
+                            #fails.append(j)
+                            #alls += [steps]
+                    #print(successes / num_trials)
+                    results.append({"layer": layer, "alpha": alpha_t, "success_rate": (successes / num_trials), "intervs": interv})
         pd.DataFrame(results).to_csv(f"interv_results/boxinterv_seed{seed}.csv")
