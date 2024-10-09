@@ -2,7 +2,6 @@ import torch
 from create_probe_dataset import ProbingDataset, make_current_board_feature_detector, make_tar_info_extractor, make_agent_info_extractor, make_box_info_extractor
 import numpy as np
 import thinker
-import thinker.viz_utils as viz
 import thinker.util as util
 import gym
 import gym_sokoban
@@ -15,15 +14,15 @@ import os
 
 env_name = ""
 checkpoint = 20
-gpu = False
-num_episodes = 100
+gpu = True
+num_episodes = 1000
 debug = False
 seed = 0
 num_steps = 6
 thinking_steps = 6
 
 results = {}
-for checkpoint in range(1,51):
+for checkpoint in range(10,51):
     print(f"========== {checkpoint} =============")
     env = thinker.make(
         f"Sokoban-{env_name}v0", 
@@ -87,21 +86,23 @@ for checkpoint in range(1,51):
     future_feature_fncs = [make_tar_info_extractor(unq=False), make_box_info_extractor(unq=False), make_agent_info_extractor()]
 
     dlocprobe2 = ConvProbe(32,5, 1, 0)
-    dlocprobe2.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/{checkpoint}m_layer2_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+    dlocprobe2.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/{checkpoint}m_layer2_kernel1_wd0.001_seed{seed}.pt", map_location=env.device))
     dlocprobe1 = ConvProbe(32,5, 1, 0)
-    dlocprobe1.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/{checkpoint}m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+    dlocprobe1.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/{checkpoint}m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=env.device))
     dlocprobe0 = ConvProbe(32,5, 1, 0)
-    dlocprobe0.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/{checkpoint}m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+    dlocprobe0.load_state_dict(torch.load(f"./convresults/models/tracked_box_next_push_onto_with/{checkpoint}m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=env.device))
     box_probes = [dlocprobe0, dlocprobe1, dlocprobe2]
-
+    
     dlocprobe2 = ConvProbe(32,5, 1, 0)
-    dlocprobe2.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/{checkpoint}m_layer2_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+    dlocprobe2.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/{checkpoint}m_layer2_kernel1_wd0.001_seed{seed}.pt", map_location=env.device))
     dlocprobe1 = ConvProbe(32,5, 1, 0)
-    dlocprobe1.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/{checkpoint}m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+    dlocprobe1.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/{checkpoint}m_layer1_kernel1_wd0.001_seed{seed}.pt", map_location=env.device))
     dlocprobe0 = ConvProbe(32,5, 1, 0)
-    dlocprobe0.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/{checkpoint}m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
+    dlocprobe0.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/{checkpoint}m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=env.device))
     agent_probes = [dlocprobe0, dlocprobe1, dlocprobe2]
 
+    for probe in box_probes + agent_probes:
+        probe.to(env.device)
     rnn_state = drc_net.initial_state(batch_size=1, device=env.device)
     state = env.reset() 
     env_out = util.init_env_out(state, flags, dim_actions=1, tuple_action=False)
@@ -130,10 +131,10 @@ for checkpoint in range(1,51):
             for tick in [1,2,3]:
                 for layer, boxprobe in enumerate(box_probes):
                     logits, _ = boxprobe(drc_net.core.hidden_state[0,tick,(layer*64)+32:(layer*64)+64,:,:])
-                    trans_entry[f"plan_box_layer{layer+1}_tick_{tick}"] = logits.argmax(dim=0)
+                    trans_entry[f"plan_box_layer{layer+1}_tick_{tick}"] = logits.argmax(dim=0).detach().cpu()
                 for layer, agentprobe in enumerate(agent_probes):
                     logits, _ = agentprobe(drc_net.core.hidden_state[0,tick,(layer*64)+32:(layer*64)+64,:,:])
-                    trans_entry[f"plan_agent_layer{layer+1}_tick_{tick}"] = logits.argmax(dim=0)
+                    trans_entry[f"plan_agent_layer{layer+1}_tick_{tick}"] = logits.argmax(dim=0).detach().cpu()
         episode_entry.append(trans_entry)
 
         if done:
@@ -177,7 +178,7 @@ for checkpoint in range(1,51):
                     preds_a[(trans["steps_taken"]-1)*3 + tick] += trans[f"plan_agent_layer{layer+1}_tick_{tick+1}"].view(-1).tolist()
         for i in range(len(labs_a)):
             prec, rec, f1, sup = precision_recall_fscore_support(labs_a[i], preds_a[i], average='macro', zero_division=1)
-            checkpoint_results[f"plan_agent_layer{layer+1}_tick_{tick+1}"] = f1.item()
+            checkpoint_results[f"plan_agent_layer{layer+1}_tick_{i+1}"] = f1.item()
 
         labs_b, preds_b = [[] for i in range((num_steps-1)*3)], [[] for i in range((num_steps-1)*3)]
         for trans in probing_data:
@@ -187,7 +188,8 @@ for checkpoint in range(1,51):
                     preds_b[(trans["steps_taken"]-1)*3 + tick] += trans[f"plan_box_layer{layer+1}_tick_{tick+1}"].view(-1).tolist()
         for i in range(len(labs_b)):
             prec, rec, f1, sup = precision_recall_fscore_support(labs_b[i], preds_b[i], average='macro', zero_division=1)
-            checkpoint_results[f"plan_box_layer{layer+1}_tick_{tick+1}"] = f1.item()
+            checkpoint_results[f"plan_box_layer{layer+1}_tick_{i+1}"] = f1.item()
 
     results[checkpoint] = checkpoint_results
+    pd.DataFrame({checkpoint: checkpoint_results}).to_csv(f"./{checkpoint}planaccs_over_ticks.csv")
     pd.DataFrame(results).to_csv("./planaccs_over_ticks.csv")
