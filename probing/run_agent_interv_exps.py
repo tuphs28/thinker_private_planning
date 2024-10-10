@@ -196,7 +196,12 @@ if __name__ == "__main__":
         ([(1,1), (1,0), (2,0)], [(3,1), (3,2)], [], [(4,2)], [], [(1,1)]),
         ([(2,1), (1,1), (1,2), (1,3)], [(1,6), (1,7)], [], [(2,7)], [], [(2,1)]),
         ([(4,2), (4,3), (4,4)], [], [], [(5,5), (6,5), (7,5)], [], [(4,2)]),
-        ([(5,3), (4,3), (3,3), (3,4)], [(4,6), (4,7)], [], [(4,5)], [], [(5,3)])
+        ([(5,3), (4,3), (3,3), (3,4)], [(4,6), (4,7)], [], [(4,5)], [], [(5,3)]),
+        ([(1,1), (0,1), (0,2), (0,3)], [(0,5), (0,6), (0,7)], [], [], [], [(1,1)]),
+        ([(1,1), (0,1), (0,2)], [(0,4), (0,5)], [], [(1,5)], [], [(1,1)]),
+        ([(3,3), (3,4)], [], [(5,4)], [(4,5), (5,5)], [], [(3,3)]),
+        ([(3,4)], [], [(5,4)], [(4,5), (5,5)], [], [(3,4)]),
+        ([(3,1), (3,2), (3,3)], [], [], [], [(2,0), (1,0), (0,0)], [(3,1)])
     ]
 
     paths_2intervs = [
@@ -219,7 +224,12 @@ if __name__ == "__main__":
         ([(1,1), (1,0), (2,0)], [(3,1), (3,2)], [], [], [], [(1,1)]),
         ([(2,1), (1,1), (1,2), (1,3)], [(1,6), (1,7)], [], [], [], [(2,1)]),
         ([(4,2), (4,3), (4,4)], [], [], [(5,5), (6,5)], [], [(4,2)]),
-        ([(5,3), (4,3), (3,3), (3,4)], [(4,6)], [], [(4,5)], [], [(5,3)])
+        ([(5,3), (4,3), (3,3), (3,4)], [(4,6)], [], [(4,5)], [], [(5,3)]),
+        ([(1,1), (0,1), (0,2), (0,3)], [(0,5), (0,6)], [], [], [], [(1,1)]),
+        ([(1,1), (0,1), (0,2)], [(0,4), (0,5)], [], [], [], [(1,1)]),
+        ([(3,3), (3,4)], [], [], [(4,5), (5,5)], [], [(3,3)]),
+        ([(3,4)], [], [], [(4,5), (5,5)], [], [(3,4)]),
+        ([(3,1), (3,2), (3,3)], [], [], [], [(2,0), (1,0)], [(3,1)])
     ]
 
     paths_1intervs = [
@@ -242,7 +252,12 @@ if __name__ == "__main__":
         ([(1,1), (1,0), (2,0)], [(3,1)], [], [], [], [(1,1)]),
         ([(2,1), (1,1), (1,2), (1,3)], [(1,6)], [], [], [], [(2,1)]),
         ([(4,2), (4,3), (4,4)], [], [], [(5,5)], [], [(4,2)]),
-        ([(5,3), (4,3), (3,3), (3,4)], [], [], [(4,5)], [], [(5,3)])
+        ([(5,3), (4,3), (3,3), (3,4)], [], [], [(4,5)], [], [(5,3)]),
+        ([(1,1), (0,1), (0,2), (0,3)], [(0,5)], [], [], [], [(1,1)]),
+        ([(1,1), (0,1), (0,2)], [(0,4)], [], [], [], [(1,1)]),
+        ([(3,3), (3,4)], [], [], [(4,5)], [], [(3,3)]),
+        ([(3,4)], [], [], [(4,5)], [], [(3,4)]),
+        ([(3,1), (3,2), (3,3)], [], [], [], [(2,0)], [(3,1)])
     ]
 
 
@@ -266,7 +281,12 @@ if __name__ == "__main__":
         ([(1,1), (1,0), (2,0)], [], [], [], [], [(1,1)]),
         ([(2,1), (1,1), (1,2), (1,3)], [], [], [], [], [(2,1)]),
         ([(4,2), (4,3), (4,4)], [], [], [], [], [(4,2)]),
-        ([(5,3), (4,3), (3,3), (3,4)], [], [], [], [], [(5,3)])
+        ([(5,3), (4,3), (3,3), (3,4)], [], [], [], [], [(5,3)]),
+        ([(1,1), (0,1), (0,2), (0,3)], [], [], [], [], [(1,1)]),
+        ([(1,1), (0,1), (0,2)], [], [], [], [], [(1,1)]),
+        ([(3,3), (3,4)], [], [], [], [], [(3,3)]),
+        ([(3,4)], [], [], [], [], [(3,4)]),
+        ([(3,1), (3,2), (3,3)], [], [], [], [], [(3,1)])
     ]
 
     exp_paths = []
@@ -330,8 +350,12 @@ if __name__ == "__main__":
             checks += [checkpoint, checkpoint_1, checkpoint_2, checkpoint_3, checkpoint_4, checkpoint_5, checkpoint_6, checkpoint_7]
         exp_paths.append([name, (olds, new_rs, new_ls, new_ds, new_us, checks)])
 
-    num_trials = 160
+    num_trials = 200
     flags = util.create_setting(args=[], save_flags=False, wrapper_type=1) 
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
 
     for seed in [0,1,2,3,4]:
         results = []
@@ -342,100 +366,108 @@ if __name__ == "__main__":
         dlocprobe0 = ConvProbe(32,5, 1, 0)
         dlocprobe0.load_state_dict(torch.load(f"./convresults/models/agent_onto_after/250m_layer0_kernel1_wd0.001_seed{seed}.pt", map_location=torch.device('cpu')))
         dloc_probes = [dlocprobe0, dlocprobe1, dlocprobe2]
-        for layer in [0,1,2]:
-            for alpha in [0.25,0.5,1,2,4]:
-                for interv, (olds, new_rs, new_ls, new_ds, new_us, checks) in exp_paths:
-                    print(f"========================================= {layer=}, {alpha=}, {interv=}, {seed=}==================================")
-                    successes = 0
-                    for j in range(num_trials):
-                        env = thinker.make(
-                                    f"Sokoban-shortcut_clean_{j:04}-v0", 
-                                    env_n=1, 
-                                    gpu=False,
-                                    wrapper_type=1, 
-                                    has_model=False, 
-                                    train_model=False, 
-                                    parallel=False, 
-                                    save_flags=False,
-                                    mini=True,
-                                    mini_unqtar=False,
-                                    mini_unqbox=False         
-                                ) 
-                        drc_net = DRCNet(
-                                        obs_space=env.observation_space,
-                                        action_space=env.action_space,
-                                        flags=flags,
-                                        record_state=True,
-                                        )
-                        ckp_path = "../drc_mini"
-                        ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep250m.tar")
-                        ckp = torch.load(ckp_path, map_location=torch.device('cpu'))
-                        drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
-                        patch_net = ProbeIntervDRCNet(drc_net)
+        for probe in dloc_probes:
+            probe.to(device)
+        for layer in [0,1,2,3,4,5]:
+                for alpha in [0.25,0.5,1,2,4]:
+                    alpha_t = alpha
+                    if layer > 2:
+                        alpha *= dloc_probes[layer%3].conv.weight.norm() / dloc_probes[layer].conv.weight.norm()
 
-                        rnn_state = drc_net.initial_state(batch_size=1, device=env.device)
-                        state = env.reset()
-                        env_out = util.init_env_out(state, flags, dim_actions=1, tuple_action=False)
+                    for interv, (olds, new_rs, new_ls, new_ds, new_us, checks) in exp_paths:
+                        print(f"========================================= {layer=}, {alpha=}, {interv=}, {seed=}==================================")
+                        successes = 0
+                        for j in range(num_trials):
+                            env = thinker.make(
+                                        f"Sokoban-shortcut_clean_{j:04}-v0", 
+                                        env_n=1, 
+                                        gpu= (True if torch.cuda.is_available() else False),
+                                        wrapper_type=1, 
+                                        has_model=False, 
+                                        train_model=False, 
+                                        parallel=False, 
+                                        save_flags=False,
+                                        mini=True,
+                                        mini_unqtar=False,
+                                        mini_unqbox=False         
+                                    ) 
+                            if j == 0 and layer == 0:
+                                drc_net = DRCNet(
+                                                obs_space=env.observation_space,
+                                                action_space=env.action_space,
+                                                flags=flags,
+                                                record_state=True,
+                                                )
+                                ckp_path = "../drc_mini"
+                                ckp_path = os.path.join(util.full_path(ckp_path), "ckp_actor_realstep250m.tar")
+                                ckp = torch.load(ckp_path, map_location=torch.device('cpu'))
+                                drc_net.load_state_dict(ckp["actor_net_state_dict"], strict=False)
+                                drc_net.to(env.device)
+                                patch_net = ProbeIntervDRCNet(drc_net)
 
-                        patch_old = True
-                        fail = False
-                        done = False
-                        ep_len = 0
+                            rnn_state = drc_net.initial_state(batch_size=1, device=env.device)
+                            state = env.reset()
+                            env_out = util.init_env_out(state, flags, dim_actions=1, tuple_action=False)
 
-                        rot = j % 8
-                        if rot in [3,5]:
-                            right_idx = 1
-                            left_idx = 2
-                        elif rot in [1,7]:
-                            right_idx = 2
-                            left_idx = 1
-                        elif rot in [2,4]:
-                            right_idx = 3
-                            left_idx = 4
-                        elif rot in [0,6]:
-                            right_idx = 4
-                            left_idx = 3
-                        else:
-                            raise ValueError("index problem :(")
-                        if rot in [0,4]:
-                            down_idx = 2
-                            up_idx = 1
-                        elif rot in [1,5]:
-                            down_idx = 3
-                            up_idx = 4
-                        elif rot in [2,6]:
-                            down_idx = 1
-                            up_idx = 2
-                        elif rot in [3,7]:
-                            down_idx = 4
-                            up_idx = 3
-                        else:
-                            raise ValueError("index problem :(")
+                            patch_old = True
+                            fail = False
+                            done = False
+                            ep_len = 0
 
-                        while not done:
-                            agent_loc = (state["real_states"][0][4] == 1).to(int).argmax() 
-                            agent_x, agent_y = agent_loc % 8, (agent_loc -(agent_loc % 8))//8
-                            if (agent_y, agent_x) in new_rs[j] or (agent_y, agent_x) in new_ls[j] or (agent_y, agent_x) in new_us[j] or (agent_y, agent_x) in new_ds[j]:
-                                patch_old = False
-                            elif (agent_y, agent_x) in checks[j]:
-                                fail = True
-
-                            if patch_old:
-                                patch_info = {layer: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha},
-                                            {"vec": dloc_probes[layer].conv.weight[right_idx].view(32), "locs": new_rs[j], "alpha": alpha},
-                                            {"vec": dloc_probes[layer].conv.weight[left_idx].view(32), "locs": new_ls[j], "alpha": alpha},
-                                            {"vec": dloc_probes[layer].conv.weight[down_idx].view(32), "locs": new_ds[j], "alpha": alpha},
-                                            {"vec": dloc_probes[layer].conv.weight[up_idx].view(32), "locs": new_us[j], "alpha": alpha}] }
+                            rot = j % 8
+                            if rot in [3,5]:
+                                right_idx = 1
+                                left_idx = 2
+                            elif rot in [1,7]:
+                                right_idx = 2
+                                left_idx = 1
+                            elif rot in [2,4]:
+                                right_idx = 3
+                                left_idx = 4
+                            elif rot in [0,6]:
+                                right_idx = 4
+                                left_idx = 3
                             else:
-                                patch_info = {layer: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha}]}
-                            patch_action, patch_action_probs, patch_logits, rnn_state, value = patch_net.forward_patch(env_out, rnn_state, activ_ticks=[0,1,2],
-                                                                                    patch_info=patch_info)
-                            state, reward, done, info = env.step(patch_action)
-                            ep_len += 1
-                            env_out = util.create_env_out(patch_action, state, reward, done, info, flags)
-                        if not fail and ep_len < 115:
-                            successes += 1
+                                raise ValueError("index problem :(")
+                            if rot in [0,4]:
+                                down_idx = 2
+                                up_idx = 1
+                            elif rot in [1,5]:
+                                down_idx = 3
+                                up_idx = 4
+                            elif rot in [2,6]:
+                                down_idx = 1
+                                up_idx = 2
+                            elif rot in [3,7]:
+                                down_idx = 4
+                                up_idx = 3
+                            else:
+                                raise ValueError("index problem :(")
 
-                    results.append({"layer": layer, "alpha":alpha, "interv": interv, "success_rate": successes / num_trials}) 
+                            while not done:
+                                agent_loc = (state["real_states"][0][4] == 1).to(int).argmax() 
+                                agent_x, agent_y = agent_loc % 8, (agent_loc -(agent_loc % 8))//8
+                                if (agent_y, agent_x) in new_rs[j] or (agent_y, agent_x) in new_ls[j] or (agent_y, agent_x) in new_us[j] or (agent_y, agent_x) in new_ds[j]:
+                                    patch_old = False
+                                elif (agent_y, agent_x) in checks[j]:
+                                    fail = True
 
-        pd.DataFrame(results).to_csv(f"interv_results/agentinterv_seed{seed}.csv")
+                                if patch_old:
+                                    patch_info = {layer % 3: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha},
+                                                {"vec": dloc_probes[layer].conv.weight[right_idx].view(32), "locs": new_rs[j], "alpha": alpha},
+                                                {"vec": dloc_probes[layer].conv.weight[left_idx].view(32), "locs": new_ls[j], "alpha": alpha},
+                                                {"vec": dloc_probes[layer].conv.weight[down_idx].view(32), "locs": new_ds[j], "alpha": alpha},
+                                                {"vec": dloc_probes[layer].conv.weight[up_idx].view(32), "locs": new_us[j], "alpha": alpha}] }
+                                else:
+                                    patch_info = {layer % 3: [{"vec": dloc_probes[layer].conv.weight[0].view(32), "locs": olds[j], "alpha": alpha}]}
+                                patch_action, patch_action_probs, patch_logits, rnn_state, value = patch_net.forward_patch(env_out, rnn_state, activ_ticks=[0,1,2],
+                                                                                        patch_info=patch_info)
+                                state, reward, done, info = env.step(patch_action)
+                                ep_len += 1
+                                env_out = util.create_env_out(patch_action, state, reward, done, info, flags)
+                            if not fail and ep_len < 115:
+                                successes += 1
+
+                        results.append({"layer": layer, "alpha":alpha, "interv": interv, "success_rate": successes / num_trials}) 
+
+            pd.DataFrame(results).to_csv(f"interv_results/agentinterv_seed{seed}.csv")
