@@ -5,34 +5,25 @@ import math
 
 class PillEater:
     WALLS = 0
+
     FOOD = 1
-    PILLMAN = 2
-    GHOSTS = 3
-    GHOSTS_EDIBLE = 4
-    PILL = 5
-    GHOSTS_EDIBLE_END = 6
-    NUM_ACTIONS = 5
-    MODES = ('regular', 'avoid', 'hunt', 'ambush', 'rush')
+    GHOSTONFOOD = 2
+    GHOSTONFOOD_EDIBLE = 3
+    GHOSTONFOOD_EDIBLE_END = 4
 
+    NOTFOOD = 5
+    GHOSTNOTONFOOD = 6
+    GHOSTNOTONFOOD_EDIBLE = 7
+    GHOSTNOTONFOOD_EDIBLE_END = 8
 
-STANDARD_MAP = np.array([
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-    [1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
-    [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1],
-    [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1],
-    [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
-    [1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-    [1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
+    PILL = 9
+    GHOSTONPILL = 10
+    GHOSTONPILL_EDIBLE = 11
+    GHOSTONPILL_EDIBLE_END = 12
+    
+    PILLMAN = 13
 
-STANDARD_MAP = np.array([
+STANDARD_MAP = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
     [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
     [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
@@ -47,435 +38,319 @@ STANDARD_MAP = np.array([
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
     [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
     [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
-
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+    ]
 
 
 class PillEaterEnv(gym.Env):
 
-    metadata = {
-        "render_modes": ["human", "rgb_array"],
-        "render_fps": 4,
-        "walls": 0,
-        "food": 1,
-        "pillman": 2,
-        "ghosts": 3,
-        "ghost_edible": 4,
-        "pill": 5,
-        "num_actions": 5,
-        "modes": ("regular", "avoid", "hunt", "ambush", "rush")
-        }
-    
-    def __init__(self, mode="regular", frame_cap=300, dan_num=0, mini=True, mini_unqtar=False, mini_unqbox=False):
+    def __init__(self, mini=True, mini_unqtar=False, mini_unqbox=False, dan_num=0):
 
-        assert mode in self.metadata["modes"]
+        self.map_basic = np.array(STANDARD_MAP, dtype=np.uint8)
+        self.height, self.width = self.map_basic.shape
+        self.nplanes = 14  
+        self.image = np.zeros((self.height, self.width, self.nplanes), dtype=np.uint8)
+        
+        self.pillman_pos = None 
+        self.ghosts_pos = None
+        self.food = None
+        self.pills = None
+
         self.nghosts_init = 1
         self.ghost_speed_init = 0.5
         self.ghost_speed = self.ghost_speed_init
         self.ghost_speed_increase = 0.1
-        self.end_on_collect = False
+        self.stochasticity = 0.0
+        self.safe_distance = 5
+
         self.npills = 2
         self.pill_duration = 20
-        self.seed_value = 123
-        self.discount = 1
-        self.stochasticity = 0.05
-        self.obs_is_rgb = True
-        self.frame_cap = frame_cap
-        self.safe_distance = 5
-        map_array = STANDARD_MAP
-        self.map, self.walls = self.parse_map(map_array)
-        self.map = np.array(self.map)
-        self.nactions = self.map.shape[2]
-        self.height = self.map.shape[0]
-        self.width = self.map.shape[1]
-        #self.reverse_dir = (4, 5, 2, 3)
-        self.reverse_dir = (3, 2, 5, 4)
-        self.dir_vec = np.array([[-1, 0], [1, 0], [0, -1], [0, 1]])
-        #self.dir_vec = np.array([[0, 1], [-1, 0], [0, -1], [1, 0]]) # what is this?
-        self.world_state = dict(
-            pillman=self._make_pillman(),
-            ghosts=[],
-            food=np.zeros(shape=(self.height, self.width), dtype=np.float32),
-            pills=[None] * self.npills,
-            power=0
-        )
-        self.nplanes = 7
-        self.image = np.zeros(
-            shape=(self.height, self.width, self.nplanes), dtype=np.uint8)
-        self.color_image = np.zeros(shape=(3, self.height, self.width),
-                                    dtype=np.float32)
-        self.frame = 0
-        self.reward = 0.
-        self.pcontinue = 1.
-        self._init_level(1)
-        self._make_image()
-        self.mode = mode
-        self.timer = 0
-        if self.mode == 'regular':
-            self.step_reward = 0
-            self.food_reward = 1
-            self.big_pill_reward = 2
-            self.ghost_hunt_reward = 5
-            self.ghost_death_reward = 0
-            self.all_pill_terminate = False
-            self.all_ghosts_terminate = False
-            self.all_food_terminate = True
-            self.timer_terminate = -1
-        else:
-            raise ValueError("Other modes not implemented yet, mucho sad")
 
-        self.observation_space = spaces.Box(low=0, high=5, shape=(self.height, self.width, self.nplanes), dtype=np.uint8)
-        self.action_space = spaces.Discrete(5)
+        self.dir_vec = np.array([
+            [0, 0],     # no-op
+            [-1, 0],    # up 
+            [1, 0],     # down
+            [0, -1],    # left
+            [0, 1]      # right
+        ])
+        self.reverse_dir = (0, 2, 1, 4, 3)
+        self.nactions = len(self.reverse_dir)
+
+        self.step_reward = 0
+        self.food_reward = 1
+        self.big_pill_reward = 2
+        self.ghost_hunt_reward = 5
+        self.ghost_death_reward = 0
+        self.all_pill_terminate = False
+        self.all_ghosts_terminate = False
+        self.all_food_terminate = True
+        self.timer_terminate = -1
+        self.discount = 1
+        self.frame_cap = 5000
+    
+        self.observation_space = spaces.Box(low=0, high=2, shape=(self.height, self.width, self.nplanes), dtype=np.uint8)
+        self.action_space = spaces.Discrete(self.nactions)
+        
+        
+    def make_movement_arrays(self, map_array):
+        """Create movement arrays corresponding to the change in location following actions in grid squares, and corresponding to the wall locations."""
+
+        walls = (map_array == 1).astype(np.uint8)
+
+        height, width = map_array.shape
+        movement_map = np.zeros((height, width, self.nactions, 2), dtype=np.int32)
+        for y in range(height):
+            for x in range(width):
+                for action in range(self.nactions):
+                    if y == 0 and action == 1:
+                        movement_map[y, x, action] = [y, x]
+                    elif y == height - 1 and action == 2:
+                        movement_map[y, x, action] = [y, x]
+                    elif x == 0 and action == 3:
+                        movement_map[y, x, action] = [y, x]
+                    elif x == width - 1 and action == 4:
+                        movement_map[y, x, action] == [y, x]
+                    else:
+                        ny, nx = y + self.dir_vec[action][0], x + self.dir_vec[action][1]
+                        if walls[ny, nx] == 0:
+                            movement_map[y, x, action] = [ny, nx]
+                        else:
+                            movement_map[y, x, action] = [y, x]
+
+        return movement_map, walls
+    
+    def reset(self, options=None, room_id=None):
+        """Initialize a new episode."""
+        print("beginning reset")
+        self.frame = 0
+        self.level = 1
+        self.ghost_speed = self.ghost_speed_init
+        self.timer = 0
+        self.pcontinue = 1
+        self.reward = 0
+
+        self.map, self.walls = self.make_movement_arrays(self.map_basic)
+        
+        self.world_state = {
+            "pillman": self._make_pillman(),
+            "ghosts": [],
+            "food": np.zeros((self.height, self.width), dtype=np.uint8),
+            "notfood": np.zeros((self.height, self.width), dtype=np.uint8),
+            "pills": [],
+            "power": 0
+        }
+
+        print("reseting..")
+        self._init_level(self.level)
+        observation = self._make_image()
+
+        return observation
+    
+    def step(self, action):
+        """Move environment one time-step forward after Pillman performs action."""
+        self.frame += 1
+        self.pcontinue = self.discount
+        self.reward = self.step_reward
+        self.timer += 1
+        self.world_state["power"] = max(0, self.world_state["power"] - 1)
+        ghost_speed_modifier = 0.5 if self.world_state["power"] > 0 else 1
+
+        # Move Pillman
+        self._move_pillman(action)
+        for i, ghost in enumerate(self.world_state["ghosts"]):
+            if np.array_equal(ghost["pos"], self.world_state["pillman"]["pos"]):
+                if self.world_state["power"] == 0:
+                    self._die_by_ghost()
+                else:
+                    self._kill_ghost(i)
+                break 
+
+        # Move ghosts
+        for i, ghost in enumerate(self.world_state["ghosts"]):
+            speed = self.ghost_speed * ghost_speed_modifier
+            if np.random.uniform() < speed:
+                self._move_ghost(ghost)
+                if np.array_equal(ghost["pos"], self.world_state["pillman"]["pos"]):
+                    if self.world_state["power"] == 0:
+                        self._die_by_ghost()
+                    else:
+                        self._kill_ghost(i)
+                        break 
+
+        # Check if move to next level or end
+        if self.nfood == 0:
+            self._init_level(self.level + 1)
+        if self.frame_cap > 0 and self.frame >= self.frame_cap:
+            self.pcontinue = 0
+
+        observation = self._make_image()
+        done = self.pcontinue == 0
+        info = {}
+        print(observation.shape, self.reward, done, info)
+        return observation, self.reward, done, info
+    
+    def get_random_position(self, map_array):
+        """Get a random available position"""
+        zeros = np.argwhere(map_array == 0)
+        idx = np.random.randint(zeros.shape[0])
+        return zeros[idx]
     
     def _make_pillman(self):
-        return self._make_actor(0)
+        """Initalize Pillman at a random position."""
+        pos = self.get_random_position(self.walls)
+        return {"pos": pos}
+    
 
     def _make_enemy(self):
-        return self._make_actor(self.safe_distance)
-
-    def _make_actor(self, safe_distance):
-        """Creates an actor.
-
-        An actor is a `ConfigDict` with a positions `pos` and a direction `dir`.
-        The position is an array with two elements, the height and width. The
-        direction is an integer representing the direction faced by the actor.
-
-        Args:
-        safe_distance: a `float`. The minimum distance from Pillman.
-
-        Returns:
-        A `ConfigDict`.
-        """
-        actor = {}
-        if safe_distance > 0:
-            occupied_map = np.copy(self.walls)
-
-            from_ = (self.world_state['pillman']['pos'] - np.array(
-                [self.safe_distance, self.safe_distance]))
-            to = (self.world_state['pillman']['pos'] + np.array(
-                [self.safe_distance, self.safe_distance]))
-            from_[0] = max(from_[0], 1)
-            from_[1] = max(from_[1], 1)
-            to[0] = min(to[0], occupied_map.shape[0])
-            to[1] = min(to[1], occupied_map.shape[1])
-
-            occupied_map[from_[0]:to[0], from_[1]:to[1]] = 1
-
-            actor['pos'] = self.get_random_position(occupied_map)
-            actor['dir'] = np.random.randint(4)
-        else:
-            actor['pos'] = self.get_random_position(self.walls)
-            actor['dir'] = np.random.randint(4)
-
-        return actor
-
+        """Initialize a ghost at a random position >= self.safe_distance away from Pillman"""
+        occupied_map = self.walls.copy()
+        y_pillman, x_pillman = self.world_state["pillman"]["pos"]
+        y_indices, x_indices = np.ogrid[:self.height, :self.width]
+        distance_squared = (y_indices - y_pillman) ** 2 + (x_indices - x_pillman) ** 2
+        mask = (distance_squared >= self.safe_distance ** 2)
+        available_positions = np.argwhere((occupied_map == 0) & mask)
+        idx = np.random.randint(available_positions.shape[0])
+        pos = available_positions[idx]
+        dir = np.random.randint(4)
+        return {"pos": pos, "dir": dir}
+    
     def _make_pill(self):
-        pill = dict(
-            pos=self.get_random_position(self.walls)
-        )
-        return pill
-
+        """Initialize a pill at a random position"""
+        pos = self.get_random_position(self.walls)
+        return {"pos": pos}
+    
     def _init_level(self, level):
-        """Initialises the level."""
+        """Initializes a new level"""
         self.level = level
-        self._fill_food(self.walls, self.world_state['food'])
-        self.world_state['pills'] = [self._make_pill() for _ in range(self.npills)]
-        self.world_state['pillman']['pos'] = self.get_random_position(self.walls)
 
-        self.nghosts = int(self.nghosts_init + math.floor((level - 1) / 2))
-        self.world_state['ghosts'] = [self._make_enemy() for _ in range(self.nghosts)]
-        self.world_state['power'] = 0
+        self.world_state["food"] = (self.walls == 0).astype(np.uint8)
+        self.world_state["notfood"] = np.zeros_like(self.world_state["food"])
+        y_pillman, x_pillman = self.world_state["pillman"]["pos"]
+        self.world_state["food"][y_pillman, x_pillman] = 0
+        self.world_state["notfood"][y_pillman, x_pillman] = 1
+        self.nfood = np.sum(self.world_state["food"])
 
-        self.ghost_speed = (
-            self.ghost_speed_init + self.ghost_speed_increase * (level - 1))
+        self.world_state["pills"] = [self._make_pill() for _ in range(self.npills)]
+
+        self.nghosts = int(self.nghosts_init + ((level - 1) // 2))
+        self.world_state["ghosts"] = [self._make_enemy() for _ in range(self.nghosts)]
+        self.world_state["power"] = 0
+        self.ghost_speed = self.ghost_speed_init + self.ghost_speed_increase * (level - 1)
         self.timer = 0
 
-    def _fill_food(self, walls, food):
-        food.fill(-1)
-        food *= walls
-        food += 1
-        self.nfood = food.sum()
-
-    def _get_food(self, posx, posy):
+    def _get_food(self, y, x):
+        """Remove food from the tile Pillman just entered"""
         self.reward += self.food_reward
-        self.world_state['food'][posx][posy] = 0
+        self.world_state["food"][y, x] = 0
+        self.world_state["notfood"][y, x] = 1
         self.nfood -= 1
-        if self.nfood == 0 and self.all_food_terminate:
-            self._init_level(self.level + 1)
 
     def _get_pill(self, pill_index):
-        self.world_state['pills'].pop(pill_index)
+        """Consume pill from tile Pillman just entered"""
+        pill = self.world_state["pills"].pop(pill_index)
         self.reward += self.big_pill_reward
-        self.world_state['power'] = self.pill_duration
-        if (not self.world_state['pills']) and self.all_pill_terminate:
-            self._init_level(self.level + 1)
+        self.world_state["power"] = self.pill_duration
 
     def _kill_ghost(self, ghost_index):
-        self.world_state['ghosts'].pop(ghost_index)
+        """Pillman kills a ghost."""
+        self.world_state["ghosts"].pop(ghost_index)
         self.reward += self.ghost_hunt_reward
-        if (not self.world_state['ghosts']) and self.all_ghosts_terminate:
-            self._init_level(self.level + 1)
 
     def _die_by_ghost(self):
+        """Pillman is killed by a ghost."""
         self.reward += self.ghost_death_reward
         self.pcontinue = 0
 
     def _move_pillman(self, action):
-        """Moves Pillman following the action in the proto `action_proto`."""
-        action += 1  # our code is 1 based
-        pos = self.world_state['pillman']['pos']
-        pillman = self.world_state['pillman']
-        self.update_2d_pos(self.map, pos, action, pos)
-        if self.world_state['food'][pos[0]][pos[1]] == 1:
-            self._get_food(pos[0], pos[1])
-        for i, pill in enumerate(self.world_state['pills']):
-            pos = pill['pos']
-            if pos[0] == pillman['pos'][0] and pos[1] == pillman['pos'][1]:
+        """Pillman performs the action."""
+        pos = self.world_state["pillman"]["pos"]
+        new_pos = self.map[pos[0], pos[1], action]
+        self.world_state["pillman"]["pos"] = new_pos
+
+        y, x = new_pos
+        if self.world_state["food"][y, x] == 1:
+            self._get_food(y, x)
+
+        for i, pill in enumerate(self.world_state["pills"]):
+            if np.array_equal(pill["pos"], new_pos):
                 self._get_pill(i)
                 break
 
     def _move_ghost(self, ghost):
-        """Moves the given ghost."""
-        pos = ghost['pos']
-        new_pos = np.zeros(shape=(2,), dtype=np.float32)
-        pillman = self.world_state['pillman']
-        available = []
-        for i in range(2, self.nactions + 1):
-            self.update_2d_pos(self.map, pos, i, new_pos)
-            if pos[0] != new_pos[0] or pos[1] != new_pos[1]:
-                available.append(i)
-        n_available = len(available)
-        #print(f"{available=}, ghost_dir={ghost['dir']}")
-        if n_available == 1:
-            ghost['dir'] = available[0]
-        elif n_available == 2:
-            if ghost['dir'] not in available:
-                if self.reverse_dir[ghost['dir'] - 2] == available[0]:
-                    ghost['dir'] = available[1]
-                else:
-                    ghost['dir'] = available[0]
+        """Moves the ghost."""
+
+        pos = ghost["pos"]
+        available_moves = []
+        for i in range(1, self.nactions):
+            new_pos = self.map[pos[0], pos[1], i]
+            if not np.array_equal(new_pos, pos):
+                available_moves.append(i)
+
+        if len(available_moves) == 0:
+            return  
+
+        reverse_dir = self.reverse_dir[ghost["dir"]]
+        if reverse_dir in available_moves and len(available_moves) > 1:
+            available_moves.remove(reverse_dir) # ghosts will only reverse direction (e.g. up -> down if no other possible move can be made)
+
+        pillman_pos = self.world_state["pillman"]["pos"]
+        direction_vectors = self.dir_vec[available_moves]
+        direction_to_pillman = pillman_pos - pos
+        norm = np.linalg.norm(direction_to_pillman)
+        if norm > 0:
+            direction_to_pillman = direction_to_pillman / norm
+            prods = np.matmul(direction_vectors, direction_to_pillman) # prods is array of dot products of available movement vectors with the (unit) difference vector between ghost and pillman
+            if self.world_state["power"] == 0:
+                chosen_idx = np.argmax(prods)
+            else:
+                chosen_idx = np.argmin(prods)
+            chosen_move = available_moves[chosen_idx]
         else:
-            #print("current dir:", ghost['dir'])
-            rev_dir = self.reverse_dir[ghost['dir'] - 2]
-            #print("rev dir:", rev_dir)
-            for i in range(n_available):
-                if available[i] == rev_dir:
-                    available.pop(i)
-                    n_available -= 1
-                    break
-            prods = np.zeros(n_available, dtype=np.float32)
-            x = np.array(
-                [pillman['pos'][0] - pos[0], pillman['pos'][1] - pos[1]], dtype=np.float32)
-            norm = np.linalg.norm(x)
-            if norm > 0:
-                x *= 1. / norm
-                for i in range(n_available):
-                    prods[i] = np.dot(x, self.dir_vec[available[i] - 2])
-                if self.world_state['power'] == 0:
-                    if self.stochasticity > np.random.uniform():
-                        j = np.random.randint(n_available)
-                    else:
-                        # move towards pillman:
-                        j = np.argmax(prods)
-                else:
-                # run away from pillman:
-                    j = np.argmin(prods)
-                ghost['dir'] = available[j]
-        #print(f"ghost_dir={ghost['dir']}")
-        self.update_2d_pos(self.map, pos, ghost['dir'], pos)
+            chosen_move = np.random.choice(available_moves)
+
+        ghost["dir"] = chosen_move
+        ghost["pos"] = self.map[pos[0], pos[1], ghost["dir"]]
+
 
     def _make_image(self):
-        """Represents world in a `height x width x 6` `Tensor`."""
+        """Create the symbolic observation"""
         self.image.fill(0)
         self.image[:, :, PillEater.WALLS] = self.walls
-        self.image[:, :, PillEater.FOOD] = self.world_state['food']
-        self.image[self.world_state['pillman']['pos'][0], self.world_state['pillman']['pos'][1],
-                PillEater.PILLMAN] = 1
-        for ghost in self.world_state['ghosts']:
-            edibility = self.world_state['power'] / float(self.pill_duration)
-            #print("edibility:", edibility)
-            if edibility > 0.2:
-                self.image[ghost['pos'][0], ghost['pos'][1], PillEater.GHOSTS_EDIBLE] = 1 #edibility
-            elif edibility > 0.2:
-                self.image[ghost['pos'][0], ghost['pos'][1], PillEater.GHOSTS_EDIBLE_END] = 1 #edibility
+        self.image[:, :, PillEater.FOOD] = self.world_state["food"]
+        self.image[:, :, PillEater.NOTFOOD] = self.world_state["notfood"]
+
+        y_pillman, x_pillman = self.world_state["pillman"]["pos"]
+        self.image[y_pillman, x_pillman, PillEater.PILLMAN] = 1 
+
+        if self.world_state["pills"]:
+            pill_positions = np.array([pill["pos"] for pill in self.world_state["pills"]])
+            y_pill, x_pill = pill_positions[:, 0], pill_positions[:, 1]
+            self.image[y_pill, x_pill, PillEater.PILL] = 1
+            self.image[y_pill, x_pill, PillEater.FOOD] = 0
+
+        edibility = self.world_state['power'] / float(self.pill_duration)
+        if edibility > 0.2:
+            ghost_idx = 3
+        elif edibility > 0:
+            ghost_idx = 2
+        else:
+            ghost_idx = 1
+
+        for ghost in self.world_state["ghosts"]:
+            y_ghost, x_ghost = ghost["pos"]
+            if self.image[y_ghost, x_ghost, PillEater.FOOD] == 1:
+                self.image[y_ghost, x_ghost, PillEater.FOOD] = 0
+                self.image[y_ghost, x_ghost, PillEater.FOOD+ghost_idx] = 1
+            elif self.image[y_ghost, x_ghost, PillEater.NOTFOOD] == 1:
+                self.image[y_ghost, x_ghost, PillEater.NOTFOOD] = 0
+                self.image[y_ghost, x_ghost, PillEater.NOTFOOD+ghost_idx] = 1
             else:
-                self.image[ghost['pos'][0], ghost['pos'][1], PillEater.GHOSTS] = 1 #1. - edibility
-        for pill in self.world_state['pills']:
-            self.image[pill['pos'][0], pill['pos'][1], PillEater.PILL] = 1
+                self.image[y_ghost, x_ghost, PillEater.PILL] = 0
+                self.image[y_ghost, x_ghost, PillEater.PILL+ghost_idx] = 1
+
         return self.image
 
-    def start(self):
-        """Starts a new episode."""
-        self.frame = 0
-        self._init_level(1)
-        self.reward = 0
-        self.pcontinue = 1
-        self.ghost_speed = self.ghost_speed_init
-        return self._make_image(), self.reward, self.pcontinue
-    
-    def reset(self, options=None):
-        """Starts a new episode."""
-        #self.seed = seed
-        self.frame = 0
-        self._init_level(1)
-        self.reward = 0
-        self.pcontinue = 1
-        self.ghost_speed = self.ghost_speed_init
-        return self._make_image()
-    
-    def step(self, action):
-        """Advances environment one time-step following the given action."""
-        self.frame += 1
-        pillman = self.world_state['pillman']
-        self.pcontinue = self.discount
-        self.reward = self.step_reward
-        self.timer += 1
-        # Update world state
-        self.world_state['power'] = max(0, self.world_state['power']-1)
-
-        # move pillman
-        self._move_pillman(action)
-        #print("pillman moved")
-        for i, ghost in enumerate(self.world_state['ghosts']):
-            #print(f"moving ghost {i}")
-        # first check if pillman went onto a ghost
-            pos = ghost['pos']
-            if pos[0] == pillman['pos'][0] and pos[1] == pillman['pos'][1]:
-                if self.world_state['power'] == 0:
-                    self._die_by_ghost()
-                else:
-                    self._kill_ghost(i)
-                    break
-            # Then move ghosts
-            speed = self.ghost_speed
-            if self.world_state['power'] != 0:
-                speed *= 0.5
-            if np.random.uniform() < speed:
-                self._move_ghost(ghost)
-                pos = ghost['pos']
-                # check if ghost went onto pillman
-                if pos[0] == pillman['pos'][0] and pos[1] == pillman['pos'][1]:
-                    if self.world_state['power'] == 0:
-                        self._die_by_ghost()
-                    else:
-                        self._kill_ghost(i)
-                        # assume you can only eat one ghost per turn:
-                        break
-        
-
-    # Check if level over
-        if self.timer == self.timer_terminate:
-            self._init_level(self.level + 1)
-
-    # Check if framecap reached
-        if self.frame_cap > 0 and self.frame >= self.frame_cap:
-            self.pcontinue = 0
-
-        return (self._make_image(), self.reward, self.pcontinue == 0, {})
-    
-    def observation(self, agent_id=0):
-        return (self.reward,
-                self.pcontinue,
-                self.observation_as_rgb(self.image))
-
-    def observation_as_rgb(self, obs):
-        """Reduces the 6 channels of `obs` to 3 RGB.
-
-        Args:
-            obs: the observation as a numpy array.
-
-        Returns:
-            An RGB image in the form of a numpy array, with values between 0 and 1.
-        """
-        height = obs.shape[0]
-        width = obs.shape[1]
-        rgb = np.zeros((height, width, 3), dtype=np.float32)
-        for x in range(height):
-            for y in range(width):
-                if obs[x, y, PillEater.PILLMAN] == 1:
-                    rgb[x, y] = [0, 1, 0]
-                elif obs[x, y, PillEater.GHOSTS] > 0. or obs[x, y, PillEater.GHOSTS_EDIBLE] > 0. or obs[x, y, PillEater.GHOSTS_EDIBLE_END] > 0: # check this!
-                    g = obs[x, y, PillEater.GHOSTS]
-                    ge = obs[x, y, PillEater.GHOSTS_EDIBLE] + obs[x, y, PillEater.GHOSTS_EDIBLE_END]
-                    rgb[x, y] = [g + ge, ge, 0]
-                elif obs[x, y, PillEater.PILL] == 1:
-                    rgb[x, y] = [0, 1, 1]
-                elif obs[x, y, PillEater.FOOD] == 1:
-                    rgb[x, y] = [0, 0, 1]
-                elif obs[x, y, PillEater.WALLS] == 1:
-                    rgb[x, y] = [1, 1, 1]
-        return rgb
-    
-    def parse_map(self, map_array):
-        """Parses a map when there are actions: stay, right, up, left, down.
-
-        Args:
-            map_array: 2D numpy array that contains the map.
-
-        Returns:
-            A 3D numpy array (height, width, actions) that contains the resulting state
-            for a given position + action, and a 2D numpy array (height, width) with the
-            walls of the map.
-
-        Raises:
-            ValueError: if the map does not contain only zeros and ones.
-        """
-        act_def = [[0,0], [-1, 0], [1, 0], [0, -1], [0, 1]] # no-op, up, down, left, right
-        #act_def = [[0, 0], [0, 1], [-1, 0], [0, -1], [1, 0]]
-        walls = np.zeros_like(map_array)
-        new_map_array = []
-        for i in range(map_array.shape[0]):
-            new_map_array.append([])
-            for j in range(map_array.shape[1]):
-                new_map_array[i].append([])
-                if map_array[i, j] == 0:
-                    for k in range(len(act_def)):
-                        new_map_array[i][j].append([i + act_def[k][0], j + act_def[k][1]])
-                elif map_array[i, j] == 1:
-                    for k in range(len(act_def)):
-                        new_map_array[i][j].append([i, j])
-                    walls[i, j] = 1
-                else:
-                    raise ValueError("Option not understood, %d" % map_array[i, j])
-                for k in range(len(new_map_array[i][j])):
-                    if map_array[new_map_array[i][j][k][0]][new_map_array[i][j][k][1]] == 1:
-                        new_map_array[i][j][k][0] = i
-                        new_map_array[i][j][k][1] = j
-        return np.array(new_map_array), walls
-    
-    def update_2d_pos(self, array_map, pos, action, pos_result):
-        posv = array_map[pos[0]][pos[1]][action - 1]
-        pos_result[0] = posv[0]
-        pos_result[1] = posv[1]
-        return pos_result
-    
-    def get_random_position(self, map_array):
-        """Gets a random available position in a binary map array; available positions are noughts, walls are ones
-
-        Args:
-        map_array: numpy array of the map to search an available position on.
-
-        Returns:
-        The chosen random position.
-
-        Raises:
-        ValueError: if there is no available space in the map.
-        """
-        if map_array.sum() <= 0:
-            raise ValueError("There is no available space in the map.")
-        map_dims = len(map_array.shape)
-        pos = np.zeros(map_dims, dtype=np.int32)
-        while True:
-            result = map_array
-            for i in range(map_dims):
-                pos[i] = np.random.randint(map_array.shape[i])
-                result = result[pos[i]]
-            if result == 0:
-                break
-        return pos
-    
     def seed(self, seed):
-        #print("seed:", seed)
+        """Sets the random seed."""
         self.seed_value = seed
         np.random.seed(seed)
-        #return [seed]
