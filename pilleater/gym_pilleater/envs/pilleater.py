@@ -121,13 +121,16 @@ class PillEaterEnv(gym.Env):
     
     def reset(self, options=None, room_id=None):
         """Initialize a new episode."""
-        print("beginning reset")
         self.frame = 0
-        self.level = 1
         self.ghost_speed = self.ghost_speed_init
         self.timer = 0
         self.pcontinue = 1
         self.reward = 0
+
+        if room_id:
+            self.level = room_id
+        else:
+            self.level = 1
 
         self.map, self.walls = self.make_movement_arrays(self.map_basic)
         
@@ -140,7 +143,7 @@ class PillEaterEnv(gym.Env):
             "power": 0
         }
 
-        print("reseting..")
+        #print("reseting..")
         self._init_level(self.level)
         observation = self._make_image()
 
@@ -186,7 +189,7 @@ class PillEaterEnv(gym.Env):
         observation = self._make_image()
         done = self.pcontinue == 0
         info = {}
-        print(observation.shape, self.reward, done, info)
+        #print(observation.shape, self.reward, done, info)
         return observation, self.reward, done, info
     
     def get_random_position(self, map_array):
@@ -344,7 +347,7 @@ class PillEaterEnv(gym.Env):
             elif self.image[y_ghost, x_ghost, PillEater.NOTFOOD] == 1:
                 self.image[y_ghost, x_ghost, PillEater.NOTFOOD] = 0
                 self.image[y_ghost, x_ghost, PillEater.NOTFOOD+ghost_idx] = 1
-            else:
+            elif self.image[y_ghost, x_ghost, PillEater.PILL] == 1:
                 self.image[y_ghost, x_ghost, PillEater.PILL] = 0
                 self.image[y_ghost, x_ghost, PillEater.PILL+ghost_idx] = 1
 
